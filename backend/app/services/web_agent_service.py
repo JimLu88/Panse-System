@@ -302,6 +302,72 @@ def campaign_export_items(
             "screenshot_base64": res.get("screenshot_base64")}
 
 
+def campaign_candidate_price_evidence(
+        db: Session, campaign_title: str, *, campaign_id: str,
+        united_activity_id: str, sign_record_id: str,
+        campaign_phase: str, campaign_start: str, campaign_end: str,
+        official_rate: str, candidate_scope: list[dict],
+        timeout_s: int = 420) -> dict:
+    """Read the exact sign-record candidate price ceilings; never select items."""
+    payload = {
+        "campaign_title": str(campaign_title or "").strip(),
+        "campaign_id": str(campaign_id or "").strip(),
+        "united_activity_id": str(united_activity_id or "").strip(),
+        "sign_record_id": str(sign_record_id or "").strip(),
+        "campaign_phase": str(campaign_phase or "").strip(),
+        "campaign_start": str(campaign_start or "").strip(),
+        "campaign_end": str(campaign_end or "").strip(),
+        "official_rate": str(official_rate or "").strip(),
+        "candidate_scope": candidate_scope,
+    }
+    if (not all(payload[key] for key in (
+            "campaign_title", "campaign_phase", "campaign_start",
+            "campaign_end", "official_rate"))
+            or not all(payload[key].isdigit() for key in (
+                "campaign_id", "united_activity_id", "sign_record_id"))
+            or not isinstance(candidate_scope, list) or not candidate_scope):
+        return {"ok": False, "error": "candidate_evidence_identity_required"}
+    j = _post(db, "/api/campaign/candidate-price-evidence", payload, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get(
+            "error", "取数服务(:8500)未响应")}
+    job_id = j["job"]
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True,
+                "error": res.get("message") or "淘宝登录态已失效",
+                "job_id": job_id}
+    records = res.get("records")
+    if not res.get("ok") or not isinstance(records, list):
+        return {
+            "ok": False,
+            "step": res.get("step"),
+            "error": res.get("error") or res.get("message")
+                     or "候选商品价格证据读取失败",
+            "job_id": job_id,
+            "detail": {key: value for key, value in res.items()
+                       if key != "screenshot_base64"},
+            "screenshot_base64": res.get("screenshot_base64"),
+        }
+    return {
+        "ok": True,
+        "records": records,
+        "missing_sku_ids": res.get("missing_sku_ids") or [],
+        "requested_sku_count": res.get("requested_sku_count"),
+        "observed_sku_count": res.get("observed_sku_count"),
+        "candidate_items_scanned": res.get("candidate_items_scanned"),
+        "page_count": res.get("page_count"),
+        "sha256": res.get("sha256"),
+        "identity": res.get("identity"),
+        "source": res.get("source"),
+        "selection_guard": res.get("selection_guard"),
+        "execution_boundary": res.get("execution_boundary"),
+        "job_id": job_id,
+        "screenshot_base64": res.get("screenshot_base64"),
+    }
+
+
 def super_reduce_feedback(db: Session, *, timeout_s: int = 200) -> dict:
     """只读下载超级立减最近一次批量结果，返回明确失败商品及原因。"""
     j = _post(db, "/api/super-reduce/feedback", {}, timeout=30)

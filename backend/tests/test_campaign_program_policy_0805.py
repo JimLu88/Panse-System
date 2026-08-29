@@ -217,6 +217,63 @@ def test_missing_platform_floor_evidence_blocks_before_upload(db_session):
         "min_list_price", "min_coupon_line"]
 
 
+def test_fresh_platform_candidate_ceiling_is_exact_r17_evidence(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, daily=3000)
+    campaign_price_floor_service.record_candidate_price_evidence(
+        db_session,
+        [{
+            "item_id": "991880805",
+            "sku_id": "881880805",
+            "sku_name": "1.8米",
+            "min_list_price": 3200,
+            "max_eligible_activity_price": 3000,
+        }],
+        source="campaign_candidate_selectable:plan=pytest:sha256=abc",
+        plan=plan,
+    )
+    db_session.commit()
+
+    checks = {
+        row["rule"]: row for row in campaign_service.preflight(
+            db_session, plan)}
+
+    assert checks["R17"]["level"] == "pass"
+    candidate = checks["R17"]["platform_candidate_ceiling_rows"][0]
+    assert candidate["taobao_sku_id"] == "881880805"
+    assert candidate["max_eligible_activity_price"] == 3000.0
+
+
+def test_platform_candidate_ceiling_holds_whole_item_without_changing_price(
+        db_session):
+    plan = _plan(db_session)
+    _sku(db_session, daily=3000)
+    campaign_price_floor_service.record_candidate_price_evidence(
+        db_session,
+        [{
+            "item_id": "991880805",
+            "sku_id": "881880805",
+            "sku_name": "1.8米",
+            "min_list_price": 3200,
+            "max_eligible_activity_price": 2999.99,
+        }],
+        source="campaign_candidate_selectable:plan=pytest:sha256=def",
+        plan=plan,
+    )
+    db_session.commit()
+
+    holds = campaign_service.price_hold_items(db_session, plan)
+    signup, stats = campaign_service.build_signup_rows(db_session, plan)
+    raw_scope, _ = campaign_service.build_signup_rows(
+        db_session, plan, enforce_price_holds=False)
+
+    assert signup == []
+    assert raw_scope[0]["price"] == 3000.0
+    assert holds[0]["skus"][0]["reasons"][0]["type"] == (
+        "official_candidate_activity_price_ceiling")
+    assert stats["excluded_price_hold_items"] == holds
+
+
 def test_fresh_terminal_platform_acceptance_is_exact_r17_evidence(db_session):
     plan = _plan(db_session)
     _sku(db_session, legacy_list=4000, legacy_coupon=3000)

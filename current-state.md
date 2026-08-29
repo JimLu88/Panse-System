@@ -2,6 +2,27 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## 2026-08-29 Super88 candidate price-evidence gate
+
+- Formal `/api/campaigns/refresh-evidence` keeps the existing enrolled-item H/I
+  export and, only for an exact fixed-window sign record, adds the Web-Agent's
+  read-only not-yet-enrolled candidate evidence for the remaining ERP item/SKU
+  allowlist.
+- Candidate evidence stores `最低标价` and the platform's explicit
+  `符合要求的建议活动价` as a distinct maximum eligible activity-price ceiling;
+  it never fabricates a coupon-after line. R17 accepts this stricter platform
+  ceiling only from the exact audited candidate source. If ERP daily/signup
+  price exceeds it, the whole item is held without price mutation. Existing
+  enrolled items still require the original fresh minimum-list and
+  minimum-coupon-after H/I pair.
+- Candidate `一口价` also refreshes R16 placeholder current-price evidence.
+  Missing or ambiguous candidates remain hard-blocked. The same service-only
+  refresh command remains read-only: no signup, upload, price change, account
+  action, notification or automatic retry.
+- Focused evidence/policy tests passed 33/33; the complete ERP campaign suite
+  passed 187 tests with 2 intentional sample-dependent skips. Python compilation
+  and diff checks passed.
+
 ## 2026-08-29 Feishu live QR handoff for finance login gates
 
 - ERP code commit `70fb4d2` makes the existing live scan path explicit in the Feishu alert group. Finance/login alerts now tell the user to reply `@Panse System 扫码`; `发二维码`, `发送二维码`, `二维码`, `扫码登录`, `开始扫码` and `我要扫码` are accepted aliases.

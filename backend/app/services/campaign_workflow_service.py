@@ -456,7 +456,7 @@ def refresh_evidence_and_prepare(
             "job_id": refreshed.get("job_id"),
             "detail": refreshed.get("detail"),
             "execution_boundary": {
-                "platform_read": "current_activity_export_only",
+                "platform_read": "current_activity_export_and_candidate_read_if_required",
                 "platform_write": False,
                 "account_action": False,
                 "notification": False,
@@ -473,6 +473,8 @@ def refresh_evidence_and_prepare(
     package.update({
         "plan_id": plan.id,
         "floor_refresh": refreshed.get("floor_refresh"),
+        "candidate_floor_refresh": refreshed.get("candidate_floor_refresh"),
+        "candidate_evidence": refreshed.get("candidate_evidence"),
         "placeholder_price_refresh": refreshed.get("placeholder_price_refresh"),
         "export_evidence": refreshed.get("export_evidence"),
         "gate_results": {
@@ -480,8 +482,13 @@ def refresh_evidence_and_prepare(
             "R17": by_rule.get("R17"),
         },
     })
+    platform_read = (
+        "current_activity_export_and_candidate_selectable_items"
+        if refreshed.get("candidate_evidence")
+        else "current_activity_export_only"
+    )
     package["execution_boundary"].update({
-        "platform_read": "current_activity_export_only",
+        "platform_read": platform_read,
         "platform_write": False,
         "account_action": False,
         "notification": False,

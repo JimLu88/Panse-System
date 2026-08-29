@@ -165,6 +165,79 @@ def record_activity_export(
     return {"observed": observed, "source": source, "scope": _storage_key(plan)}
 
 
+def record_candidate_price_evidence(
+    db: Session,
+    records: Iterable[dict],
+    *,
+    source: str,
+    observed_at: Optional[datetime] = None,
+    plan=None,
+) -> dict:
+    """Persist the platform's exact per-SKU eligible activity-price ceiling.
+
+    A not-yet-enrolled item has no marketing record and QianNiu does not expose
+    its raw coupon-after line.  The selectable-item API instead returns a field
+    labelled ``符合要求的建议活动价``.  It is a stricter direct admission ceiling,
+    not an inferred coupon line, and is kept as a distinct evidence type.
+    """
+    if not str(source or "").startswith("campaign_candidate_selectable:"):
+        raise ValueError("candidate_evidence_source_invalid")
+    now = observed_at or datetime.now(timezone.utc)
+    seen_at = now.astimezone(timezone.utc).isoformat()
+    payload = _load(db, plan=plan, fallback_legacy=False)
+    grouped: dict[str, dict] = {}
+    observed = 0
+    for record in records:
+        sid = str(record.get("sku_id") or "").strip()
+        item_id = str(record.get("item_id") or "").strip()
+        if not sid.isdigit() or not item_id.isdigit():
+            continue
+        observed += 1
+        current = grouped.setdefault(sid, {
+            "sku_id": sid,
+            "item_id": item_id,
+            "sku_name": str(record.get("sku_name") or "").strip(),
+            "min_list_values": [],
+            "eligible_values": [],
+        })
+        if current["item_id"] != item_id:
+            raise ValueError("candidate_sku_item_ambiguous")
+        min_list = _decimal(record.get("min_list_price"))
+        eligible = _decimal(record.get("max_eligible_activity_price"))
+        if min_list is not None:
+            current["min_list_values"].append(min_list)
+        if eligible is not None:
+            current["eligible_values"].append(eligible)
+
+    for sid, current in grouped.items():
+        min_list = min(current["min_list_values"], default=None)
+        eligible = min(current["eligible_values"], default=None)
+        payload[sid] = {
+            "sku_id": sid,
+            "item_id": current["item_id"],
+            "sku_name": current["sku_name"],
+            "min_list_price": float(min_list) if min_list is not None else None,
+            "min_coupon_line": None,
+            "max_eligible_activity_price": (
+                float(eligible) if eligible is not None else None),
+            "min_list_price_observed": min_list is not None,
+            "min_coupon_line_observed": False,
+            "max_eligible_activity_price_observed": eligible is not None,
+            "observed_at": seen_at,
+            "source": source,
+        }
+    _write(db, payload, plan=plan)
+    db.flush()
+    return {
+        "observed": observed,
+        "complete": sum(
+            1 for entry in grouped.values()
+            if entry["min_list_values"] and entry["eligible_values"]),
+        "source": source,
+        "scope": _storage_key(plan),
+    }
+
+
 def record_partial_evidence(
     db: Session,
     records: Iterable[dict],

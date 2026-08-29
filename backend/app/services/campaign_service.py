@@ -870,6 +870,12 @@ def price_hold_items(db: Session, plan) -> list[dict]:
             entry = evidence.get(str(sid)) if isinstance(evidence.get(str(sid)), dict) else {}
             min_list = _d(entry.get("min_list_price"))
             min_coupon = _d(entry.get("min_coupon_line"))
+            eligible_activity_ceiling = None
+            if (str(entry.get("source") or "").startswith(
+                    "campaign_candidate_selectable:")
+                    and entry.get("max_eligible_activity_price_observed")):
+                eligible_activity_ceiling = _d(
+                    entry.get("max_eligible_activity_price"))
             if min_list is not None and daily > min_list + Decimal("0.005"):
                 reasons.append({
                     "type": "signup_floor",
@@ -880,6 +886,19 @@ def price_hold_items(db: Session, plan) -> list[dict]:
                     "evidence_source": entry.get("source"),
                     "evidence_observed_at": entry.get("observed_at"),
                 })
+            if (eligible_activity_ceiling is not None
+                    and daily > eligible_activity_ceiling + Decimal("0.005")):
+                reasons.append({
+                    "type": "official_candidate_activity_price_ceiling",
+                    "taobao_sku_id": str(sid),
+                    "erp_signup_price": float(daily),
+                    "platform_eligible_activity_price": float(
+                        eligible_activity_ceiling),
+                    "difference": float(
+                        (daily - eligible_activity_ceiling).quantize(_CENT)),
+                    "evidence_source": entry.get("source"),
+                    "evidence_observed_at": entry.get("observed_at"),
+                })
             concession, _authorization = _authorized_concession_for_sku(
                 plan, s, str(sid))
             platform_coupon_after = (
@@ -887,7 +906,8 @@ def price_hold_items(db: Session, plan) -> list[dict]:
                 if erp_target is not None else None
             )
             if (
-                min_coupon is not None
+                eligible_activity_ceiling is None
+                and min_coupon is not None
                 and platform_coupon_after is not None
                 and platform_coupon_after > min_coupon + Decimal("0.005")
             ):
@@ -1099,7 +1119,9 @@ def _erp_listed_product_codes(db: Session) -> set[str] | None:
     ).scalars().all())
 
 
-def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
+def build_signup_rows(
+        db: Session, plan, *, enforce_price_holds: bool = True
+) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
     返回 (rows, stats); 行 = {taobao_item_id, taobao_sku_id, sku_code, price, is_placeholder, remark}。"""
@@ -1117,7 +1139,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
-    holds = price_hold_items(db, plan)
+    holds = price_hold_items(db, plan) if enforce_price_holds else []
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)
     mapped_pairs = _mapped_pairs(db)
@@ -1736,6 +1758,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     authorized_new_rows: list[dict] = []
     terminal_accepted_rows: list[dict] = []
     terminal_coupon_floor_rows: list[dict] = []
+    candidate_ceiling_rows: list[dict] = []
     sku_by_id = {
         mapped_sid: sku
         for sku, promo in _mapped_pairs(db)
@@ -1799,8 +1822,17 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
                 ),
             })
             continue
-        missing = [key for key in ("min_list_price", "min_coupon_line")
-                   if entry.get(key) is None and not entry.get(f"{key}_observed")]
+        candidate_ceiling = (
+            str(entry.get("source") or "").startswith(
+                "campaign_candidate_selectable:")
+            and entry.get("min_list_price") is not None
+            and entry.get("min_list_price_observed")
+            and entry.get("max_eligible_activity_price") is not None
+            and entry.get("max_eligible_activity_price_observed")
+        )
+        missing = [] if candidate_ceiling else [
+            key for key in ("min_list_price", "min_coupon_line")
+            if entry.get(key) is None and not entry.get(f"{key}_observed")]
         age = campaign_price_floor_service.evidence_age_hours(entry)
         stale = age is None or age > max_age
         if missing or stale:
@@ -1814,12 +1846,23 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
                 "max_age_hours": max_age,
                 "source": entry.get("source"),
             })
+        elif candidate_ceiling:
+            candidate_ceiling_rows.append({
+                "taobao_item_id": item_id,
+                "taobao_sku_id": sid,
+                "sku_code": row.get("sku_code"),
+                "signup_price": row.get("price"),
+                "min_list_price": entry.get("min_list_price"),
+                "max_eligible_activity_price": entry.get(
+                    "max_eligible_activity_price"),
+                "source": entry.get("source"),
+            })
     return {
         "rule": "R17",
         "level": "error" if problems else "pass",
         "title": (
-            "逐SKUID平台价格线证据：最低标价和最低普惠券后价必须齐全且新鲜；"
-            "缺失/过期即在上传前停止"
+            "逐SKUID平台价格证据：已报名商品须有最低标价和最低普惠券后价；"
+            "未报名候选须有最低标价和平台合格建议活动价上限；缺失/过期即停止"
         ),
         "items": problems[:500],
         "checked": len(seen),
@@ -1827,6 +1870,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
         "authorized_new_item_rows": authorized_new_rows,
         "platform_terminal_accepted_rows": terminal_accepted_rows,
         "platform_terminal_coupon_floor_rows": terminal_coupon_floor_rows,
+        "platform_candidate_ceiling_rows": candidate_ceiling_rows,
         "platform_terminal_acceptance": {
             "observed_at": terminal_acceptance["observed_at"],
             "age_hours": (
@@ -3378,7 +3422,7 @@ def _stop_signup(db: Session, plan, result: dict) -> dict:
 
 
 def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
-    """Read-only export of the target activity and persist its H/I floor columns."""
+    """Refresh enrolled H/I plus exact not-yet-enrolled candidate price ceilings."""
     from app.services import (
         campaign_price_floor_service,
         campaign_recon_service,
@@ -3392,6 +3436,8 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
             "error": "campaign_identity_incomplete",
             "missing": identity["missing"],
         }
+    evidence_scope_rows, evidence_scope_stats = build_signup_rows(
+        db, plan, enforce_price_holds=False)
     exported = web_agent_service.campaign_export_items(
         db,
         identity["campaign_title"],
@@ -3432,17 +3478,92 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
         plan=plan,
     )
-    # Identify placeholder candidates against the freshly parsed H/I evidence,
-    # then replace their plan-scoped current-price observations from column G.
-    # This is ERP-only processing of the same read-only workbook.
-    _, signup_stats = build_signup_rows(db, plan)
+    covered_sku_ids = {
+        str(row.get("sku_id") or "").strip() for row in floor_rows
+        if str(row.get("sku_id") or "").strip().isdigit()
+    }
+    missing_scope: dict[str, set[str]] = defaultdict(set)
+    for row in evidence_scope_rows:
+        item_id = str(row.get("taobao_item_id") or "").strip()
+        sku_id = str(row.get("taobao_sku_id") or "").strip()
+        if (item_id.isdigit() and sku_id.isdigit()
+                and sku_id not in covered_sku_ids):
+            missing_scope[item_id].add(sku_id)
+
+    candidate_result = None
+    candidate_refresh = None
+    candidate_records: list[dict] = []
+    if (missing_scope
+            and identity["platform_activity_mode"] == "fixed_window"
+            and identity.get("sign_record_id")):
+        candidate_scope = [
+            {"item_id": item_id, "sku_ids": sorted(sku_ids)}
+            for item_id, sku_ids in sorted(missing_scope.items())
+        ]
+        candidate_result = web_agent_service.campaign_candidate_price_evidence(
+            db,
+            identity["campaign_title"],
+            campaign_id=identity["campaign_id"],
+            united_activity_id=identity["united_activity_id"],
+            sign_record_id=identity["sign_record_id"],
+            campaign_phase=identity["campaign_phase"],
+            campaign_start=identity["campaign_start"],
+            campaign_end=identity["campaign_end"],
+            official_rate=identity["official_rate"],
+            candidate_scope=candidate_scope,
+        )
+        if not candidate_result.get("ok"):
+            return {
+                "ok": False,
+                "step": candidate_result.get("step")
+                        or "candidate_price_evidence",
+                "error": candidate_result.get("error")
+                         or "候选商品价格证据读取失败",
+                "job_id": candidate_result.get("job_id"),
+                "detail": candidate_result.get("detail"),
+            }
+        candidate_records = candidate_result.get("records") or []
+        candidate_refresh = (
+            campaign_price_floor_service.record_candidate_price_evidence(
+                db,
+                candidate_records,
+                source=(
+                    f"campaign_candidate_selectable:plan={getattr(plan, 'id', '')}:"
+                    f"sha256={candidate_result.get('sha256') or 'missing'}"),
+                plan=plan,
+            )
+        )
+
+    # Replace placeholder current-price observations from the union of the
+    # enrolled export and the exact candidate response.  Missing candidates are
+    # deliberately omitted so R16 remains a hard stop.
+    placeholder_price_rows = list(floor_rows)
+    placeholder_price_rows.extend({
+        "sku_id": row.get("sku_id"),
+        "list_price": row.get("current_list_price"),
+    } for row in candidate_records)
     placeholder_refresh = record_placeholder_live_prices(
-        db, plan, floor_rows,
-        signup_stats.get("placeholder_candidate_sku_ids") or [])
+        db, plan, placeholder_price_rows,
+        evidence_scope_stats.get("placeholder_candidate_sku_ids") or [])
     return {
         "ok": True,
         "rows": live_rows,
         "floor_refresh": refresh,
+        "candidate_floor_refresh": candidate_refresh,
+        "candidate_evidence": ({
+            "sha256": candidate_result.get("sha256"),
+            "job_id": candidate_result.get("job_id"),
+            "requested_sku_count": candidate_result.get(
+                "requested_sku_count"),
+            "observed_sku_count": candidate_result.get("observed_sku_count"),
+            "missing_sku_ids": candidate_result.get("missing_sku_ids") or [],
+            "candidate_items_scanned": candidate_result.get(
+                "candidate_items_scanned"),
+            "page_count": candidate_result.get("page_count"),
+            "identity": candidate_result.get("identity"),
+            "selection_guard": candidate_result.get("selection_guard"),
+            "execution_boundary": candidate_result.get("execution_boundary"),
+        } if candidate_result else None),
         "placeholder_price_refresh": placeholder_refresh,
         "export_evidence": {
             "filename": exported.get("filename"),
