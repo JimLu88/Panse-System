@@ -17,7 +17,8 @@ from app.models.base import Base, TimestampMixin
 
 # 状态机 (spec §五): draft→precheck→discount_pushed→signup_pushed→reconciled→alarmed
 CAMPAIGN_PLAN_STATUSES = (
-    "draft", "precheck", "discount_pushed", "signup_pushed", "reconciled", "alarmed",
+    "draft", "precheck", "discount_pushed", "resume_executing",
+    "signup_pushed", "reconciled", "alarmed",
 )
 
 

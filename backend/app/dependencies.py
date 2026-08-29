@@ -22,10 +22,14 @@ CAMPAIGN_EVIDENCE_REFRESH_PATH = "/api/campaigns/refresh-evidence"
 CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH = (
     "/api/campaigns/correct-official-exemptions"
 )
+CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH = (
+    "/api/campaigns/resume-super-reduce-plan7"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
     CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH,
+    CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH,
 })
 
 
@@ -248,7 +252,11 @@ def require_campaign_prepare_principal(
                 else (
                     "campaign.official_exemptions.correct"
                     if path == CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH
-                    else "campaign.prepare"
+                    else (
+                        "campaign.super_reduce.plan7.resume_execute"
+                        if path == CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH
+                        else "campaign.prepare"
+                    )
                 )
             ),
         )

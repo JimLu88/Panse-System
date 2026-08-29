@@ -2,6 +2,26 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## 2026-08-29 Super Reduce plan 7 one-shot resume gate
+
+- A dedicated audited route and container CLI now resume only
+  `campaign:super-reduce:2026-09-01` / plan 7 from `alarmed`.  The local NAS
+  wrapper has no campaign parameters and cannot select plan 8.
+- The route locks workflow+plan, requires the exact reviewed two-SKU scope and
+  price/final-price SHA-256, the exact plan-level exemption `805268708396`, and
+  fresh plan-7 R16/R17 evidence.  It uses an explicit `resume_executing` CAS
+  state and a durable one-shot receipt; a claimed, failed or unknown attempt is
+  never automatically retried.
+- The final preflight checks the actual two rows even when an older empty
+  platform-qualified marker exists.  The recovery reuses the already persisted
+  plan-scoped evidence and performs no duplicate pre-submit platform export.
+  It preserves the mandatory post-submit exact export/SKU verification.
+- This entry allows one Super Reduce signup upload only.  It cannot change
+  prices, rotate SKUs, withdraw/pause/remove existing rows, touch plan 8, or
+  auto-create a single-item discount after a no-sales result.
+- Campaign regression, deployment commit, migration/head and production
+  version/health evidence are recorded in the release handoff for this change.
+
 ## 2026-08-29 Super88 candidate price-evidence gate
 
 - Formal `/api/campaigns/refresh-evidence` keeps the existing enrolled-item H/I

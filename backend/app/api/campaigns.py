@@ -84,6 +84,17 @@ class CampaignOfficialExemptionsCorrectionIn(BaseModel):
     official_exempt_item_ids: list[str] = Field(default_factory=list)
 
 
+class CampaignPlan7ResumeExecuteIn(BaseModel):
+    """Exact CAS input for the one approved Super Reduce recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -389,6 +400,39 @@ def refresh_campaign_evidence(
             code = 422
         raise HTTPException(code, detail=result)
     result["plan"] = _plan_out(result["plan"])
+    return result
+
+
+@router.post("/resume-super-reduce-plan7")
+def resume_super_reduce_plan7(
+        body: CampaignPlan7ResumeExecuteIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Resume exactly plan 7 once from its fresh stored evidence.
+
+    The service is fail-closed and cannot select another workflow/plan, refresh
+    pre-submit evidence, rotate SKUs, change prices, or automatically retry.
+    A successful platform submission is still followed by the normal exact
+    post-submit export/verification so submission is not mistaken for success.
+    """
+    from app.services import campaign_resume_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    result = campaign_resume_service.resume_super_reduce_plan7(
+        db,
+        workflow_key=workflow_key,
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        expected_scope_sha256=body.expected_scope_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "resume_identity_not_allowed", "resume_request_not_allowed",
+                "resume_scope_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
     return result
 
 

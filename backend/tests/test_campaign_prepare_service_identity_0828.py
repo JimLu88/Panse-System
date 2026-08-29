@@ -11,6 +11,7 @@ from app import dependencies, middleware
 from app.cli import campaign_prepare as prepare_cli
 from app.cli import campaign_refresh_evidence as refresh_cli
 from app.cli import campaign_correct_official_exemptions as correction_cli
+from app.cli import campaign_resume_super_reduce_plan7 as resume_plan7_cli
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -67,6 +68,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/correct-official-exemptions"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/resume-super-reduce-plan7"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"
@@ -194,6 +199,124 @@ def test_official_exemption_correction_cli_has_fixed_direct_endpoint(monkeypatch
         "token": TOKEN,
         "timeout": 300,
     }
+
+
+def test_plan7_resume_cli_has_fixed_direct_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["token"] = req.get_header("X-api-key")
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        resume_plan7_cli.request, "build_opener", lambda *_: Opener())
+    payload = (
+        b'{"workflow_key":"campaign:super-reduce:2026-09-01",'
+        b'"plan_id":7,"expected_status":"alarmed",'
+        b'"expected_scope_sha256":'
+        b'"73d73f5e78d5f7149b4425f6c7e9909e9892f037d4859498e6dea26f0163b7a4"}'
+    )
+    status, body = resume_plan7_cli.call_resume(payload, token=TOKEN)
+
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured == {
+        "url": (
+            "http://127.0.0.1:8000/api/campaigns/"
+            "resume-super-reduce-plan7"
+        ),
+        "token": TOKEN,
+        "timeout": 1200,
+    }
+
+
+def test_plan7_resume_endpoint_is_exact_scoped_and_audited(monkeypatch):
+    from app.services import campaign_resume_service
+
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_resume(_db, **kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True, "plan_id": 7,
+            "workflow_key": kwargs["workflow_key"],
+            "execution_boundary": {
+                "platform_write": False, "automatic_retry": False,
+            },
+        }
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        campaign_resume_service, "resume_super_reduce_plan7", fake_resume)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    payload = {
+        "workflow_key": "campaign:super-reduce:2026-09-01",
+        "plan_id": 7,
+        "expected_status": "alarmed",
+        "expected_scope_sha256": campaign_resume_service.EXPECTED_SCOPE_SHA256,
+    }
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/campaigns/resume-super-reduce-plan7",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        forbidden_shape = client.post(
+            "/api/campaigns/resume-super-reduce-plan7",
+            headers={"X-API-Key": TOKEN},
+            json={**payload, "plan_id": 8, "retry": True})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["execution_boundary"]["platform_write"] is False
+        assert calls == [{
+            "workflow_key": "campaign:super-reduce:2026-09-01",
+            "expected_plan_id": 7,
+            "expected_status": "alarmed",
+            "expected_scope_sha256": campaign_resume_service.EXPECTED_SCOPE_SHA256,
+        }]
+        assert forbidden_shape.status_code == 422
+        with Session() as db:
+            audits = db.execute(select(AuditLog).where(
+                AuditLog.path == "/api/campaigns/resume-super-reduce-plan7"
+            ).order_by(AuditLog.id)).scalars().all()
+            assert [row.status_code for row in audits[-2:]] == [200, 422]
+            assert all(
+                row.username == "service:campaign-prepare"
+                for row in audits[-2:])
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_official_exemption_correction_endpoint_is_scoped_and_audited(

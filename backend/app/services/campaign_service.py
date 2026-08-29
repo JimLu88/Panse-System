@@ -1893,7 +1893,8 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
 
 
 def preflight(
-        db: Session, plan, *, no_sales_items: Optional[set[str]] = None
+        db: Session, plan, *, no_sales_items: Optional[set[str]] = None,
+        exact_item_scope: Optional[set[str]] = None,
 ) -> list[dict]:
     """R0~R21 read-only pre-submit checks; never uploads to QianNiu."""
     from app.services import no_sales_service
@@ -1906,7 +1907,24 @@ def preflight(
     _drows, dstats = build_discount_rows(
         db, plan, no_sales_items=no_sales_items)
     supplement_scope = authorized_supplement_items(plan)
-    if platform_scope_present(plan):
+    exact_scope = {
+        str(item_id).strip() for item_id in (exact_item_scope or set())
+        if str(item_id).strip()
+    }
+    if exact_scope:
+        # A plan-resume service can deliberately preflight one immutable,
+        # operator-approved scope.  It must not inherit an empty/stale platform
+        # qualification marker that would otherwise make R16/R17 check zero
+        # rows and create a false pass.
+        _srows = [row for row in _srows
+                  if str(row.get("taobao_item_id") or "") in exact_scope]
+        _drows = [row for row in _drows
+                  if str(row.get("taobao_item_id") or "") in exact_scope]
+        sstats["exact_preflight_scope_items"] = sorted(exact_scope)
+        sstats["exact_preflight_scope_rows"] = len(_srows)
+        dstats["exact_preflight_scope_items"] = sorted(exact_scope)
+        dstats["exact_preflight_scope_rows"] = len(_drows)
+    elif platform_scope_present(plan):
         qualified = platform_qualified_items(plan)
         no_sales = platform_no_sales_items(plan)
         signup_allowed = qualified | supplement_scope
@@ -3887,7 +3905,12 @@ def repair_super_reduce_early_activation(
     }
 
 
-def push_signup(db: Session, plan, *, execution_source: str | None = None) -> dict:
+def push_signup(
+        db: Session, plan, *, execution_source: str | None = None,
+        reuse_fresh_plan_evidence: bool = False,
+        exact_item_scope: Optional[set[str]] = None,
+        allow_terminal_no_sales_fallback: bool = True,
+) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     只允许活动自动化程序调用；失败记录事实并停在 alarmed，绝不自动改价或重试。"""
     from app.services import (
@@ -3901,7 +3924,11 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "step": "policy_guard",
             "error": str(exc),
         })
-    if execution_source != "campaign_automation":
+    allowed_source = execution_source in {
+        "campaign_automation", "campaign_super_reduce_plan7_resume",
+    }
+    resume_source = execution_source == "campaign_super_reduce_plan7_resume"
+    if not allowed_source:
         return {
             "ok": False,
             "step": "execution_policy_guard",
@@ -3910,6 +3937,22 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "automatic_retry": False,
             "ai_may_adjust_or_resubmit": False,
             "policy_version": policy.get("version"),
+        }
+    if resume_source and (
+            getattr(plan, "status", None) != "resume_executing"
+            or getattr(plan, "id", None) != 7
+            or getattr(plan, "workflow_key", None)
+            != "campaign:super-reduce:2026-09-01"
+            or getattr(plan, "campaign_type", None) != "super_reduce"
+            or not reuse_fresh_plan_evidence
+            or exact_item_scope != {"797294092429"}):
+        return {
+            "ok": False,
+            "step": "resume_execution_policy_guard",
+            "error": "计划7恢复执行上下文不完整，拒绝进入平台写入",
+            "requires_user_decision": True,
+            "automatic_retry": False,
+            "ai_may_adjust_or_resubmit": False,
         }
     if getattr(plan, "status", None) == "alarmed":
         return {
@@ -3921,14 +3964,28 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "ai_may_adjust_or_resubmit": False,
         }
 
-    # Read-only current-state export is performed before the final preflight.  Its
-    # H/I columns refresh floor evidence; it never changes platform state.
-    current = refresh_floor_evidence_from_current_activity(db, plan)
-    if not current.get("ok"):
-        return _stop_signup(db, plan, {
-            "step": "current_state_export",
-            "error": current.get("error") or "无法可靠取得当前活动生效集合",
-        })
+    # Ordinary automation performs a current-state export before final
+    # preflight.  The one approved plan-7 recovery instead reuses the already
+    # persisted, plan-scoped fresh evidence.  Its wrapper has an exact row hash,
+    # evidence-age and CAS guard; no second pre-submit platform read is allowed.
+    if resume_source:
+        current = {
+            "ok": True,
+            "rows": [],
+            "floor_refresh": {
+                "reused": True,
+                "scope": f"campaign_price_floor_evidence_v2_plan_{plan.id}",
+                "platform_read": False,
+            },
+            "export_evidence": None,
+        }
+    else:
+        current = refresh_floor_evidence_from_current_activity(db, plan)
+        if not current.get("ok"):
+            return _stop_signup(db, plan, {
+                "step": "current_state_export",
+                "error": current.get("error") or "无法可靠取得当前活动生效集合",
+            })
     live_rows = current["rows"]
     floor_refresh = current["floor_refresh"]
     from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
@@ -3943,7 +4000,7 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         db.commit()
 
     # Registered no-sales items are excluded before any platform upload.
-    checks = preflight(db, plan)
+    checks = preflight(db, plan, exact_item_scope=exact_item_scope)
     critical = [check for check in checks if check.get("level") == "error"]
     if critical:
         return _stop_signup(db, plan, {
@@ -3962,9 +4019,18 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "missing_items": missing_scope,
             "stats": stats,
         })
+    exact_scope = {
+        str(item_id).strip() for item_id in (exact_item_scope or set())
+        if str(item_id).strip()
+    }
+    if exact_scope:
+        rows = [row for row in rows
+                if str(row.get("taobao_item_id") or "") in exact_scope]
+        stats["exact_resume_scope_items"] = sorted(exact_scope)
+        stats["exact_resume_scope_rows"] = len(rows)
     qualified_scope = platform_qualified_items(plan)
     supplement_scope = authorized_supplement_items(plan)
-    if platform_scope_present(plan):
+    if platform_scope_present(plan) and not exact_scope:
         allowed = qualified_scope | supplement_scope
         rows = [
             row for row in rows
@@ -4153,6 +4219,16 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         return _stop_signup(db, plan, res)
 
     no_sales_ids = set(classification.get("no_sales_item_ids") or [])
+    if no_sales_ids and not allow_terminal_no_sales_fallback:
+        res.update({
+            "ok": False,
+            "step": "terminal_no_sales_requires_new_decision",
+            "error": (
+                "平台把计划7目标商品判定为无动销；本次恢复只允许一次报名写入，"
+                "未自动创建或修改单品立减"
+            ),
+        })
+        return _stop_signup(db, plan, res)
     if no_sales_ids:
         fallback = push_discount(
             db, plan, phase="commit",
