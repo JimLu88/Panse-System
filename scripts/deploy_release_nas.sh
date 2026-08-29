@@ -8,6 +8,7 @@ SSH_HOST="${SSH_HOST:-15068803006@DS923plus}"
 SSH_PORT="${SSH_PORT:-2222}"
 NAS_DOCKER="${NAS_DOCKER:-sudo /usr/local/bin/docker}"
 NAS_DIR="${NAS_DIR:-/volume1/docker/panse}"
+WEB_AGENT_PRIMARY_URL="${WEB_AGENT_PRIMARY_URL:-http://192.168.31.91:8500}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -p "$SSH_PORT" "$SSH_HOST")
 
 source scripts/lib/nas_deploy_guard.sh
@@ -25,6 +26,17 @@ git diff --quiet && git diff --cached --quiet || {
   echo "FATAL: 工作区有未提交的已跟踪修改。" >&2
   exit 1
 }
+
+[[ "$WEB_AGENT_PRIMARY_URL" =~ ^http://192\.168\.31\.[0-9]{1,3}:8500$ ]] || {
+  echo "FATAL: WEB_AGENT_PRIMARY_URL 必须是已核准的局域网 Web-Agent :8500 地址。" >&2
+  exit 1
+}
+
+# User-designated primary runtime is this workstation.  Keep this binding in
+# the only approved release path so a second workstation cannot silently keep
+# owning production automation after a handoff.
+"${SSH[@]}" "set -eu; cd '$NAS_DIR'; test -f .env; if grep -q '^WEB_AGENT_URL=' .env; then sed -i 's#^WEB_AGENT_URL=.*#WEB_AGENT_URL=$WEB_AGENT_PRIMARY_URL#' .env; else printf '\nWEB_AGENT_URL=%s\n' '$WEB_AGENT_PRIMARY_URL' >> .env; fi"
+echo "[config] production Web-Agent primary = $WEB_AGENT_PRIMARY_URL"
 
 echo "=== Panse ERP unified release @ ${head_full:0:7} ==="
 BUILD=1 bash scripts/deploy_api_nas.sh

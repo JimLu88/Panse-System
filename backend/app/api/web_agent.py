@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_role
 from app.services import agent_ingest_service as ingest
 from app.services import settings_service, web_agent_service, web_agent_wake_service
 
@@ -136,7 +137,7 @@ def status(db: Session = Depends(get_db)):
         "shipping_password": {
             "configured": bool(settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)),
             "received_at": settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False),
-            "hint": "把淘宝发来的口令以「发货密码 xxx」转发给飞书机器人；口令不按时间失效，收到后自动解密并续推下单图。",
+            "hint": "在本页输入淘宝本次发来的发货报表口令；口令不按时间失效，提交后自动解密并续推下单图。",
         },
         "on_demand": web_agent_wake_service.status(db),
     }
@@ -183,7 +184,7 @@ def wake_start(db: Session = Depends(get_db)):
 
 
 @router.post("/run")
-def run_now(db: Session = Depends(get_db)):
+def run_now(db: Session = Depends(get_db), _: object = Depends(require_role("admin", "operator"))):
     """立即取数: 全部类别强制触发 (忽略间隔)。后台执行, 进度看 status。"""
     hb = web_agent_service.ensure_online(db, reason="manual_full_pull")
     if not hb.get("online"):
@@ -192,6 +193,48 @@ def run_now(db: Session = Depends(get_db)):
     if not ingest.start_orchestrate_async(force=True):
         raise HTTPException(409, "已有一轮取数在进行中, 请稍候 (状态见本页)。")
     return {"started": True}
+
+
+@router.post("/resume-scans")
+def resume_scans(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin", "operator")),
+):
+    """Wake the Agent and continue the exact pending login/scan tasks."""
+    hb = web_agent_service.ensure_online(db, reason="manual_login_recovery")
+    if not hb.get("online"):
+        raise HTTPException(409, f"取数服务唤醒失败: {hb.get('error', '')}。请检查 Windows 唤醒桥。")
+    result = ingest.start_pending_scans(db)
+    if not result.get("started"):
+        raise HTTPException(409, result.get("reason", "没有可续跑的登录任务"))
+    return result
+
+
+class ShippingPassword(BaseModel):
+    password: str
+
+
+@router.post("/shipping-password")
+def submit_shipping_password(
+    payload: ShippingPassword,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin", "operator")),
+):
+    """Apply a shipping-report password without exposing it to Feishu."""
+    password = payload.password.strip()
+    if not password or len(password) > 128:
+        raise HTTPException(400, "请输入有效的发货报表口令")
+    from app.services import feishu_bot_service
+
+    result = feishu_bot_service.apply_shipping_password(db, password)
+    return {
+        "accepted": True,
+        "tried": int(result.get("tried") or 0),
+        "imported": int(result.get("imported") or 0),
+        "failed": int(result.get("failed") or 0),
+        "updated": int(result.get("updated") or 0),
+        "failure_reason": result.get("failure_reason"),
+    }
 
 
 @router.post("/ingest")
@@ -223,15 +266,12 @@ class AgentNotify(BaseModel):
 def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     """Web-Agent 卡点回调。
 
-    飞书硬边界（用户 2026-07-28）：
-    - 仅确认登录/下载授权失效时发一次文本，及用户主动回复“扫码”后的二维码；
-    - 扫码成功、超时、正常完成、文件预览均不发飞书；
-    - 所有允许外发的文本先经过金额脱敏。
+    企业微信是自动取数唯一操作提醒入口；飞书订单群不接收文本或二维码。
     """
     import base64
 
-    from app.services import feishu_client, notify_service
-    result: dict = {"feishu": None, "wechat": None}
+    from app.services import notify_service
+    result: dict = {"feishu": "disabled", "wechat": None}
     notice_text = _sanitize_auth_notice(payload.text)
 
     # 成功事件只清除“已提醒”标记，不外发；下次真的再次失效时才允许重新提醒。
@@ -239,62 +279,70 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
         opened = _auth_notice_open(db)
         opened.discard(_auth_notice_id(payload.text))
         _save_auth_notice_open(db, opened)
-        result["feishu"] = "登录已恢复，未外发"
+        notify_service.notify(
+            db, notice_text or "登录已恢复，系统正在继续取数。",
+            level="info", title="畔色 ERP | 登录已恢复", wechat_allowed=True,
+        )
+        result["wechat"] = "已发企业微信"
         return result
 
     # 超时不是新的登录失效事件，不重复打扰。
     if payload.kind == "scan_timeout":
-        result["feishu"] = "扫码超时，未外发"
+        ok, msg = notify_service.notify(
+            db,
+            (notice_text or "扫码已超时。") + "\n请打开 ERP → 自动取数 → 点击“开始扫码 / 重新登录”再次续跑。",
+            level="warn", title="畔色 ERP | 扫码超时", wechat_allowed=True,
+        )
+        result["wechat"] = "已发企业微信" if ok else msg
         return result
 
     if payload.kind == "scan_needed":
         notice_id = _auth_notice_id(payload.text)
         opened = _auth_notice_open(db)
         if notice_id in opened:
-            result["feishu"] = "同一登录失效已提醒，未重复外发"
+            result["wechat"] = "同一登录失效已提醒，未重复外发"
             return result
-        chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if chat_id and notice_text:
-            try:
-                feishu_client.send_text(db, chat_id, notice_text)
-                opened.add(notice_id)
-                _save_auth_notice_open(db, opened)
-                result["feishu"] = "已发飞书"
-            except Exception as e:  # noqa: BLE001
-                result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
-        else:
-            result["feishu"] = "无外发会话或无文本"
+        instruction = (
+            (notice_text or "自动取数登录状态已失效。")
+            + "\n请打开 ERP → 自动取数 → 点击“开始扫码 / 重新登录”。二维码会直接发到企业微信。"
+        )
+        ok, msg = notify_service.notify(
+            db, instruction, level="warn", title="畔色 ERP | 需要重新登录",
+            wechat_allowed=True,
+        )
+        if ok:
+            opened.add(notice_id)
+            _save_auth_notice_open(db, opened)
+        result["wechat"] = "已发企业微信" if ok else msg
         return result
 
     # 文件预览/普通图片不再进入飞书；只有扫码二维码允许。
     if payload.kind == "file":
-        result["feishu"] = "文件事件未外发"
+        result["wechat"] = "文件事件未外发"
         return result
 
     is_visual = payload.kind in ("qr", "scan_wait")
 
     if is_visual and payload.image_b64:
         try:
-            from app.services import feishu_client
-            chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if not chat_id:
-                result["feishu"] = "未知外发会话 — 请先在飞书给机器人发一条消息(它会记住会话)"
-            else:
-                png = base64.b64decode(payload.image_b64)
-                key = feishu_client.upload_image(db, png)
-                if notice_text:
-                    feishu_client.send_text(db, chat_id, notice_text)
-                feishu_client.send_image(db, chat_id, key)
-                result["feishu"] = "已发飞书"
+            png = base64.b64decode(payload.image_b64, validate=True)
+            if notice_text:
+                notify_service.notify(
+                    db, notice_text, level="warn", title="畔色 ERP | 请扫码",
+                    wechat_allowed=True,
+                )
+            ok, msg = notify_service.notify_image(db, png)
+            result["wechat"] = "二维码已发企业微信" if ok else msg
         except Exception as e:  # noqa: BLE001
-            result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
+            result["wechat"] = f"企业微信图片发送失败: {type(e).__name__}: {e}"
+        return result
 
     # 事件/提醒 → 企业微信 (扫码类也补一条文字叫醒)
     wx_text = notice_text or "Panse 取数有新事件"
     if payload.kind in ("qr", "scan_wait"):
-        wx_text = f"⚠️ 需要扫码: {notice_text or '支付宝/淘宝导出需验证身份'} — 二维码已发到飞书, 请去飞书扫。"
+        wx_text = f"需要扫码: {notice_text or '支付宝/淘宝导出需验证身份'}"
     ok, msg = notify_service.notify(db, wx_text, level="urgent" if is_visual else "info",
-                                    title="畔色 ERP [自动取数]")
+                                    title="畔色 ERP [自动取数]", wechat_allowed=True)
     result["wechat"] = "已发企业微信" if ok else msg
     return result
 

@@ -260,8 +260,8 @@ def _job_artifact_roles(job_result: dict) -> dict[str, str]:
 
 
 def start_pending_scans(db: Session) -> dict:
-    """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
-    发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
+    """用户在 ERP 自动取数页点击续跑后，后台依次跑待扫任务 (wait_scan=True) —
+    发大二维码到企业微信、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
     没有记录的待扫任务时, 默认跑全部余额截图任务 (主动刷新登录态)。"""
     tasks = get_pending_scans(db) or list(DEFAULT_SCAN_TASKS)
     # 企业号支付宝永远只走官方 API, 滤掉任何残留的企业号扫码任务, 杜绝误发二维码 (2026-06-12)。
@@ -590,7 +590,7 @@ def start_pending_scans(db: Session) -> dict:
                     )
                     notify_service.notify(
                         d,
-                        detail + "\n失败任务已保留；处理后请在飞书机器人回复『扫码』。",
+                        detail + "\n失败任务已保留；处理后请打开 ERP → 自动取数 → 点击“开始扫码 / 重新登录”。",
                         level="warn",
                         title="畔色 ERP | 扫码续跑未完成",
                         wechat_allowed=True,
@@ -645,6 +645,15 @@ def _hash_exists(db: Session, file_hash: str) -> Optional[ImportedFile]:
     return db.execute(
         select(ImportedFile).where(ImportedFile.file_hash == file_hash)
         .order_by(ImportedFile.id.desc())
+    ).scalars().first()
+
+
+def _hash_name_exists(db: Session, file_hash: str, original_filename: str) -> Optional[ImportedFile]:
+    return db.execute(
+        select(ImportedFile).where(
+            ImportedFile.file_hash == file_hash,
+            ImportedFile.original_filename == original_filename,
+        ).order_by(ImportedFile.id.desc())
     ).scalars().first()
 
 
@@ -890,7 +899,11 @@ def _ocr_balance_to_db(db: Session, path: Path, raw: bytes) -> tuple[str, str, d
         return ("account_balance", "pending_read",
                 {"account": erp_name, "ocr": r, "note": "读不准, 已报异常待人工"})
 
-    today = date.today()
+    match = re.search(r"(?<!\d)(20\d{2})[-_](\d{2})[-_](\d{2})(?!\d)", path.name)
+    try:
+        today = date(*(int(part) for part in match.groups())) if match else date.today()
+    except ValueError:
+        today = date.today()
     prev = db.execute(
         select(AccountBalance).where(AccountBalance.account_name == erp_name)
         .order_by(AccountBalance.period_year.desc(), AccountBalance.period_month.desc())
@@ -924,7 +937,7 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
             password = _latest_shipping_password(db)
             if not password:
                 return ("taobao", "pending_password",
-                        {"note": "加密发货报表 — 待飞书口令(转发『发货密码 xxx』到机器人)后自动解密"})
+                        {"note": "加密发货报表 — 请在 ERP 自动取数页输入本次口令，提交后自动解密"})
         rep = taobao_order_import.import_taobao_orders(db, path.name, raw, password=password)
         errs = getattr(rep, "errors", None)
         if errs:
@@ -1111,7 +1124,7 @@ def reingest_pending_shipping(db: Session) -> dict:
     (file_hash 记录), 等口令到了, 下次 run_ingest 又按"已知文件"跳过 → 永远不会解密
     (用户每次都得叫我手动导)。此函数绕过 hash 去重, 直接对所有加密淘宝报表用最新口令重试:
     import 是 upsert 幂等 (重复导无副作用); 一报一密, 口令不匹配的那份自然解密失败、保持
-    待解密, 不影响其它份。由飞书口令入站处理器调用, 实现"发口令→自动入库"。"""
+    待解密, 不影响其它份。由 ERP 口令入口调用，实现“提交口令→自动入库”。"""
     out: dict = {"tried": 0, "imported": 0, "failed": 0, "updated": 0, "files": []}
     pwd = _latest_shipping_password(db)
     if not pwd:
@@ -1219,7 +1232,7 @@ def run_ingest(
     """
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
-    _pending_pw_files: list[str] = []   # 本轮新下载、待飞书口令解密的加密发货报表
+    _pending_pw_files: list[str] = []   # 本轮新下载、待 ERP 口令解密的加密发货报表
     if not OUTPUT_DIR.exists():
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
         return report
@@ -1280,7 +1293,14 @@ def run_ingest(
             else None
         )
 
-        prior = _hash_exists(db, file_hash)
+        # Identical screenshots legitimately recur on a new day and a single
+        # page can feed more than one named balance account.  Balance evidence
+        # is therefore duplicate only when both bytes and evidence filename
+        # match; other report categories retain content-hash idempotency.
+        prior = (
+            _hash_name_exists(db, file_hash, path.name)
+            if category == "balance" else _hash_exists(db, file_hash)
+        )
         prior_summary = (
             prior.row_summary if prior is not None and isinstance(prior.row_summary, dict) else {}
         )
@@ -1356,7 +1376,7 @@ def run_ingest(
             report["errors"] += 1
         report["files"].append(entry)
     # 主动提醒: 取数下载到加密发货报表却无口令 → 微信 Push 提醒；
-    # 用户仍在飞书机器人发送『发货密码 xxx』，收到后 _capture_shipping_password→reingest_pending_shipping
+    # 用户在 ERP 自动取数页提交发货密码后，apply_shipping_password→reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
         current_password = _latest_shipping_password(db)
@@ -1398,12 +1418,12 @@ def run_ingest(
                 _msg = (
                     f"📦 新下载的 {n} 份加密发货报表与系统现有口令不匹配。"
                     "口令没有超时，但新报表需要其对应口令；请把淘宝本次发来的口令以"
-                    "『发货密码 xxxx』发送给飞书机器人，收到后自动解密、入库并续推下单图。"
+                    "在 ERP → 自动取数 → 发货报表口令中提交，收到后自动解密、入库并续推下单图。"
                 )
             else:
                 _msg = (
-                    f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                    "『发货密码 xxxx』发送给飞书机器人 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。"
+                    f"📦 取数下载到 {n} 份加密发货报表待解密。请打开 ERP → 自动取数，"
+                    "在“发货报表口令”中输入淘宝本次发来的口令 —— 口令不按时间失效，提交后自动解密、入库并续推下单图。"
                 )
             # 飞书订单群只保留下单图；运行状态和待口令提醒统一发微信 Push。
             try:
@@ -2315,7 +2335,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                     if any(marker in err for marker in (
                         "登录状态已失效", "需重新登录", "session_expired",
                     ))
-                    else "需扫码 — 方便时在飞书回复『扫码』启动"
+                    else "需扫码 — 请打开 ERP → 自动取数 → 点击“开始扫码 / 重新登录”"
                 )
                 out["pending_manual"].append(
                     {"task": task_id, "reason": reason})
@@ -2492,7 +2512,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     except Exception:  # noqa: BLE001
         _log.warning("编排完成后请求关闭Web-Agent失败", exc_info=True)
 
-    # 飞书汇总 (复用机器人通道; 测试环境 PANSE_DISABLE_NOTIFY 静默; quiet=续跑补取数不刷屏)
+    # 自动取数汇总统一发企业微信；飞书订单群只保留订单图片。
     if not quiet:
         try:
             from app.services import notify_service
@@ -2502,7 +2522,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             if out["pending_manual"]:
                 text += "\n待人工: " + "; ".join(
                     f"{p['task']}({p['reason'][:40]})" for p in out["pending_manual"][:5])
-            notify_service.notify(db, text, level="info", title="畔色 ERP [自动取数日报]")
+            notify_service.notify(
+                db, text, level="info", title="畔色 ERP [自动取数日报]",
+                wechat_allowed=True,
+            )
         except Exception:  # pragma: no cover
             pass
     return out

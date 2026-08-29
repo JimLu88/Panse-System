@@ -23,6 +23,8 @@
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import logging
 import urllib.error
 import urllib.request
@@ -83,7 +85,19 @@ def _post_json(url: str, body: dict, *, timeout_sec: float = 5.0) -> tuple[bool,
         )
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             body_bytes = resp.read(1024)
-            return True, body_bytes.decode("utf-8", errors="replace")
+            text = body_bytes.decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError):
+                parsed = None
+            # Enterprise WeChat robot webhooks may return HTTP 200 for a
+            # rejected payload.  Treat a non-zero platform code as failure so
+            # the retry queue and status page see the real outcome.
+            if isinstance(parsed, dict):
+                code = parsed.get("errcode", parsed.get("code"))
+                if code not in (None, 0, "0"):
+                    return False, text
+            return True, text
     except urllib.error.HTTPError as e:
         return False, f"HTTP {e.code}: {e.reason}"
     except urllib.error.URLError as e:
@@ -136,6 +150,30 @@ def notify(
         if enqueue_on_failure:
             _enqueue_retry(db, text, title=title, level=level)
     return ok, resp
+
+
+def notify_image(db: Session, image_bytes: bytes) -> tuple[bool, str]:
+    """Send a QR/image directly to the configured Enterprise WeChat robot.
+
+    The robot endpoint is outbound-only, so this is deliberately a delivery
+    helper rather than an inbound command channel.  It never logs image bytes.
+    """
+    cfg = get_config(db)
+    if cfg["provider"] != "wechat_work" or not cfg["webhook"]:
+        return False, "企业微信机器人图片通道未配置"
+    if not image_bytes:
+        return False, "图片内容为空"
+    payload = {
+        "msgtype": "image",
+        "image": {
+            "base64": base64.b64encode(image_bytes).decode("ascii"),
+            "md5": hashlib.md5(image_bytes).hexdigest(),  # noqa: S324 - webhook protocol field
+        },
+    }
+    ok, response = _post_json(cfg["webhook"], payload, timeout_sec=10.0)
+    if not ok:
+        _logger.warning("企业微信图片发送失败: %s", response)
+    return ok, response
 
 
 # ── 失败重试队列 (用户审核项 17): 失败入库, 调度每 30 分钟重发, 最多 5 次 ──

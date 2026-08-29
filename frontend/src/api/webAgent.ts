@@ -52,6 +52,17 @@ export async function runWebAgentNow(): Promise<{ started: boolean }> {
   return (await api.post('/api/web-agent/run')).data;
 }
 
+export async function resumeWebAgentScans(): Promise<{ started: boolean; tasks?: string[] }> {
+  return (await api.post('/api/web-agent/resume-scans')).data;
+}
+
+export async function submitShippingPassword(password: string): Promise<{
+  accepted: boolean; tried: number; imported: number; failed: number; updated: number;
+  failure_reason?: string | null;
+}> {
+  return (await api.post('/api/web-agent/shipping-password', { password })).data;
+}
+
 export async function ingestNow(): Promise<WebAgentStatus['last_ingest']> {
   return (await api.post('/api/web-agent/ingest')).data;
 }

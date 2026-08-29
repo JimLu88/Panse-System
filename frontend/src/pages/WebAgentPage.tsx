@@ -7,7 +7,8 @@ import { CloudDownloadOutlined, QrcodeOutlined, ReloadOutlined, SettingOutlined 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AgentFreshness, IngestFile, getWebAgentSettings, getWebAgentStatus,
-  ingestNow, putWebAgentSettings, runWebAgentNow,
+  ingestNow, putWebAgentSettings, resumeWebAgentScans, runWebAgentNow,
+  submitShippingPassword,
 } from '../api/webAgent';
 
 const { Title, Text } = Typography;
@@ -42,6 +43,7 @@ export default function WebAgentPage() {
   const [ivBalance, setIvBalance] = useState<number | null>(null);
   const [schedTime, setSchedTime] = useState<string | null>(null);  // 每日触发时刻 HH:MM
   const [token, setToken] = useState('');
+  const [shippingPassword, setShippingPassword] = useState('');
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['web-agent-status'],
@@ -68,6 +70,29 @@ export default function WebAgentPage() {
       qc.invalidateQueries();   // 扫描导入了新数据 → 失效全部缓存, 大盘/各列表即时刷新 (用户 2026-06-24)
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '扫描失败'),
+  });
+  const scanMut = useMutation({
+    mutationFn: resumeWebAgentScans,
+    onSuccess: () => {
+      message.success('登录恢复流程已开始，二维码会直接发到企业微信');
+      qc.invalidateQueries({ queryKey: ['web-agent-status'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '登录恢复启动失败'),
+  });
+  const passwordMut = useMutation({
+    mutationFn: submitShippingPassword,
+    onSuccess: (r) => {
+      setShippingPassword('');
+      if (r.imported > 0) {
+        message.success(`口令已生效：导入 ${r.imported} 份报表，更新 ${r.updated} 单`);
+      } else if (r.failure_reason) {
+        message.warning(`口令已收到，但未匹配报表：${r.failure_reason}`);
+      } else {
+        message.success('口令已保存，后续报表会自动尝试解密');
+      }
+      qc.invalidateQueries({ queryKey: ['web-agent-status'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '口令提交失败'),
   });
   const settingsMut = useMutation({
     mutationFn: putWebAgentSettings,
@@ -105,6 +130,10 @@ export default function WebAgentPage() {
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
           <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>更新间隔设置</Button>
+          <Button icon={<QrcodeOutlined />} loading={scanMut.isPending}
+            onClick={() => scanMut.mutate()}>
+            开始扫码 / 重新登录
+          </Button>
           <Tooltip title="只扫描共享目录里已下载的文件并导入, 不开浏览器">
             <Button loading={ingestMut.isPending} onClick={() => ingestMut.mutate()}>扫描导入</Button>
           </Tooltip>
@@ -147,8 +176,8 @@ export default function WebAgentPage() {
                 <li key={t.id}>
                   <b>{t.title}</b>：登录态缺失 —
                   <Button type="link" size="small" icon={<QrcodeOutlined />}
-                    href="http://127.0.0.1:8500" target="_blank">
-                    打开取数控制台重新扫码
+                    loading={scanMut.isPending} onClick={() => scanMut.mutate()}>
+                    开始扫码 / 重新登录
                   </Button>
                 </li>
               ))}
@@ -158,18 +187,28 @@ export default function WebAgentPage() {
         />
       )}
 
-      {/* 发货报表口令 (飞书转发「发货密码 xxx」→ 自动解密) */}
+      {/* 发货报表口令在 ERP 内提交，飞书订单群只保留订单图片。 */}
       {data?.shipping_password && (
-        <Alert
-          type={data.shipping_password.configured ? 'success' : 'info'}
-          showIcon style={{ marginBottom: 12 }}
-          message={
-            data.shipping_password.configured
-              ? `发货报表口令已就绪 (收到于 ${(data.shipping_password.received_at ?? '').replace('T', ' ').slice(0, 19)})`
-              : '发货报表加密 — 需飞书口令'
-          }
-          description={data.shipping_password.hint}
-        />
+        <Card size="small" title="发货报表口令" style={{ marginBottom: 12 }}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Text type={data.shipping_password.configured ? 'success' : 'secondary'}>
+              {data.shipping_password.configured
+                ? `最近一次口令收到于 ${(data.shipping_password.received_at ?? '').replace('T', ' ').slice(0, 19)}`
+                : '当前没有可用口令'}
+            </Text>
+            <Text type="secondary">{data.shipping_password.hint}</Text>
+            <Space.Compact style={{ maxWidth: 520, width: '100%' }}>
+              <Input.Password value={shippingPassword} placeholder="输入淘宝发来的发货报表口令"
+                onChange={(e) => setShippingPassword(e.target.value)}
+                onPressEnter={() => shippingPassword.trim() && passwordMut.mutate(shippingPassword)} />
+              <Button type="primary" loading={passwordMut.isPending}
+                disabled={!shippingPassword.trim()}
+                onClick={() => passwordMut.mutate(shippingPassword)}>
+                提交并自动解密
+              </Button>
+            </Space.Compact>
+          </Space>
+        </Card>
       )}
 
       {/* 未就绪项 (用户已知: 支付宝 API/个人号) */}
