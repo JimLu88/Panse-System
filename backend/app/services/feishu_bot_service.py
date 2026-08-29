@@ -199,6 +199,9 @@ _HELP_CONTENT = (
     "**🔎 工厂验货图**\n"
     "把图片和文字放在同一条消息里，例如：`验货 畔色321单` 或 `验货 订单号3314…`。"
     "系统会直接归到对应订单的检查图库，不再走单据识别。\n\n"
+    "**📱 登录二维码**\n"
+    "收到自动取数登录提醒后，在提醒群里 @我 回复 `扫码`（也支持 `发二维码`），"
+    "我会把活二维码发到提醒群并等待 10 分钟。\n\n"
     "> 群里记得 **@我** 再带上图片/文件；私聊我的话直接发就行。"
 )
 
@@ -1362,7 +1365,10 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         if pwd:
             return _capture_shipping_password(db, message_id, pwd)
         # 「扫码」关键词 → 启动待扫码任务 (发大二维码, 浏览器开等扫≤10分钟) (2026-06-12)
-        if text in ("扫码", "扫码登录", "开始扫码", "/扫码"):
+        if text in (
+            "扫码", "扫码登录", "开始扫码", "/扫码",
+            "二维码", "发二维码", "发送二维码", "我要扫码",
+        ):
             from app.services import agent_ingest_service
             res = agent_ingest_service.start_pending_scans(db)
             if res.get("started"):

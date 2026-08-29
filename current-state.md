@@ -1,6 +1,21 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-28 (Asia/Shanghai)
+Last updated: 2026-08-29 (Asia/Shanghai)
+
+## 2026-08-29 Feishu live QR handoff for finance login gates
+
+- ERP code commit `70fb4d2`; production API/Web release `d2378d2`. Finance/login alerts now direct the user to reply `@Panse System 扫码` in the Feishu alert group; `发二维码`, `发送二维码`, `二维码`, `扫码登录`, `开始扫码` and `我要扫码` are accepted aliases.
+- A reply starts the existing bounded pending-scan worker with `wait_scan=true`; the QR image is routed only to the configured Feishu alert group, never the order group, and remains live for at most 10 minutes. Scheduled runs still do not start unattended expiring QR sessions.
+- Unified NAS release passed health/ready, API/Web version parity at `d2378d2`, database migration `0142 (head)`, required routes and API/Web/DB/backup container checks. Rollback images: `panse-system-api:rollback-20260829-092325` and `panse-system-web:rollback-20260829-092956`.
+- ERP verification: 53 focused tests and 124 alert/order/finance regression tests passed (2 intentional skips). No live scan, login, bill pull, account action, finance replay or external test notification was performed.
+
+## 2026-08-29 unsubmitted campaign plan resume/correction repair
+
+- Code commit `6c09059d903b50290e7c2a0a638a2464d18fd3bf` repairs two bounded resume defects without weakening R16/R17 price-evidence gates or the one-shot submission boundary.
+- A read-only activity-evidence refresh no longer replaces an operator-owned `official_all_store=true; official_exempt_items=...` scope with derived `official_active_items`. Formal `prepare` compares only request-owned scope/free text and ignores runtime evidence markers while preserving them on the plan; a real official-scope change still conflicts.
+- The audited plan-scoped exemption correction accepts `alarmed` only when the plan has no submitted receipt, reconciliation report, or platform-write marker. Malformed receipt state fails closed. It can repair the exact legacy empty-active-scope drift with compare-and-swap semantics, including when the intended exemption list remains empty.
+- This repair restores the safe correction path for workflows `campaign:super-reduce:2026-09-01` (plan 7) and `campaign:super88:49462:49469` (plan 8). It does not itself run correction, prepare, evidence refresh, signup, upload, price change, submission, account action, notification, or automatic retry.
+- All campaign-named backend suites passed: 185 tests, 0 failures/errors, 2 intentional skips. Python compilation and diff checks also passed. No database migration is required; the schema head remains `0142`.
 
 ## 2026-08-28 campaign programmatic read-only path unavailable gate
 

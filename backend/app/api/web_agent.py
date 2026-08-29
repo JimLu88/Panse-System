@@ -54,7 +54,7 @@ _AUTH_NOTICE_KEY = "web_agent_auth_notice_open"
 
 
 def _sanitize_auth_notice(text: str) -> str:
-    """企业微信扫码通知的最后一道脱敏闸：任何货币金额都不允许外发。"""
+    """扫码通知的最后一道脱敏闸：任何货币金额都不允许外发。"""
     import re
 
     cleaned = _friendly_agent_text(text)
@@ -67,6 +67,30 @@ def _sanitize_auth_notice(text: str) -> str:
         cleaned,
     )
     return cleaned
+
+
+_FEISHU_SCAN_REPLY_HINT = (
+    "请在本飞书提醒群 @Panse System 回复“扫码”，"
+    "二维码会立即发到本群并保持 10 分钟；无需打开 ERP 页面。"
+)
+
+
+def _with_feishu_scan_hint(text: str) -> str:
+    cleaned = (text or "取数登录已失效").strip()
+    if "回复“扫码”" in cleaned or "回复\"扫码\"" in cleaned:
+        return cleaned
+    return f"{cleaned}\n{_FEISHU_SCAN_REPLY_HINT}"
+
+
+def _agent_notice_channel(db: Session) -> str:
+    """Return the effective image/text alert channel without exposing targets."""
+    from app.services import notify_service
+
+    cfg = notify_service.get_config(db)
+    if (cfg["route_mode"] == notify_service.ROUTE_MODE_FEISHU_SPLIT
+            and cfg["alert_chat_id"]):
+        return "feishu"
+    return "wechat"
 
 
 def _auth_notice_id(text: str) -> str:
@@ -223,9 +247,10 @@ class AgentNotify(BaseModel):
 def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     """Web-Agent 卡点回调。
 
-    企业微信硬边界（用户 2026-08-25）：
-    - 登录/下载授权失效只提醒一次，扫码二维码也直接发企业微信；
-    - 飞书订单群只保留工厂下单图片，卡点文字和二维码均不得写入飞书；
+    飞书双群边界（用户 2026-08-29）：
+    - 登录/下载授权失效只提醒一次，并明确允许在提醒群回复“扫码”；
+    - 二维码发到飞书提醒群，飞书订单群仍只保留工厂下单图片；
+    - 未配置飞书双群时才沿用企业微信兼容路径；
     - 扫码成功、超时、正常完成、文件预览不重复外发；
     - 所有允许外发的文本先经过金额脱敏。
     """
@@ -234,29 +259,32 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     from app.services import notify_service
     result: dict = {"feishu": None, "wechat": None}
     notice_text = _sanitize_auth_notice(payload.text)
+    channel = _agent_notice_channel(db)
 
     # 成功事件只清除“已提醒”标记，不外发；下次真的再次失效时才允许重新提醒。
     if payload.kind == "scan_ok":
         opened = _auth_notice_open(db)
         opened.discard(_auth_notice_id(payload.text))
         _save_auth_notice_open(db, opened)
-        result["wechat"] = "登录已恢复，未外发"
+        result[channel] = "登录已恢复，未外发"
         return result
 
     # 超时不是新的登录失效事件，不重复打扰。
     if payload.kind == "scan_timeout":
-        result["wechat"] = "扫码超时，未外发"
+        result[channel] = "扫码超时，未外发"
         return result
 
     if payload.kind == "scan_needed":
         notice_id = _auth_notice_id(payload.text)
         opened = _auth_notice_open(db)
         if notice_id in opened:
-            result["wechat"] = "同一登录失效已提醒，未重复外发"
+            result[channel] = "同一登录失效已提醒，未重复外发"
             return result
         ok, msg = notify_service.notify(
             db,
-            notice_text or "取数登录已失效，请到 ERP 重新登录",
+            _with_feishu_scan_hint(notice_text)
+            if channel == "feishu"
+            else (notice_text or "取数登录已失效，请到 ERP 重新登录"),
             level="warn",
             title="畔色 ERP | 自动取数需登录",
             wechat_allowed=True,
@@ -264,14 +292,14 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
         if ok:
             opened.add(notice_id)
             _save_auth_notice_open(db, opened)
-            result["wechat"] = "已发企业微信"
+            result[channel] = msg
         else:
-            result["wechat"] = msg
+            result[channel] = msg
         return result
 
-    # 文件预览不外发；扫码二维码只允许进入企业微信。
+    # 文件预览不外发；扫码二维码按当前提醒路由发送。
     if payload.kind == "file":
-        result["wechat"] = "文件事件未外发"
+        result[channel] = "文件事件未外发"
         return result
 
     is_visual = payload.kind in ("qr", "scan_wait")
@@ -287,16 +315,25 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
                 title="畔色 ERP | 自动取数需扫码",
                 wechat_allowed=True,
             )
-            result["wechat"] = (
-                "文字和二维码已发企业微信"
-                if sent.get("text") and sent.get("image")
-                else f"企业微信发送未完成: {sent.get('detail') or 'unknown'}"
-            )
+            if sent.get("text") and sent.get("image"):
+                result[channel] = (
+                    "文字和二维码已发飞书提醒群"
+                    if channel == "feishu"
+                    else "文字和二维码已发企业微信"
+                )
+            else:
+                route_name = "飞书提醒群" if channel == "feishu" else "企业微信"
+                result[channel] = (
+                    f"{route_name}发送未完成: {sent.get('detail') or 'unknown'}"
+                )
         except Exception as e:  # noqa: BLE001
-            result["wechat"] = f"企业微信发送失败: {type(e).__name__}: {e}"
+            result[channel] = (
+                f"{('飞书提醒群' if channel == 'feishu' else '企业微信')}发送失败: "
+                f"{type(e).__name__}: {e}"
+            )
         return result
 
-    # 普通事件提醒也统一进企业微信，并显式越过“仅经营日报”的治噪默认门。
+    # 普通事件提醒进入当前提醒路由，并保留企微兼容路径的治噪放行参数。
     wx_text = notice_text or "Panse 取数有新事件"
     ok, msg = notify_service.notify(
         db,
@@ -305,7 +342,7 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
         title="畔色 ERP | 自动取数",
         wechat_allowed=True,
     )
-    result["wechat"] = "已发企业微信" if ok else msg
+    result[channel] = msg
     return result
 
 

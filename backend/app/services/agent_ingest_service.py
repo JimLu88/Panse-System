@@ -334,8 +334,9 @@ def _job_shipping_password_delivery(job_result: dict) -> dict[str, object]:
 
 
 def start_pending_scans(db: Session) -> dict:
-    """用户在 ERP 点击“开始扫码/重新登录”后调用: 后台依次跑待扫任务 (wait_scan=True) —
-    发大二维码到企业微信、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
+    """用户在飞书提醒群回复“扫码”或从 ERP 启动后调用: 后台依次跑待扫任务。
+
+    大二维码发到飞书提醒群并保持浏览器开等扫 ≤10分钟；扫成功的从待扫清单移除并扫描导入。
     没有记录的待扫任务时, 默认跑全部余额截图任务 (主动刷新登录态)。"""
     tasks = get_pending_scans(db) or list(DEFAULT_SCAN_TASKS)
     # 企业号支付宝永远只走官方 API, 滤掉任何残留的企业号扫码任务, 杜绝误发二维码 (2026-06-12)。
@@ -664,7 +665,7 @@ def start_pending_scans(db: Session) -> dict:
                     )
                     notify_service.notify(
                         d,
-                        detail + "\n失败任务已保留；处理后请在 ERP 自动取数页点击“开始扫码 / 重新登录”。",
+                        detail + "\n失败任务已保留；请在本飞书提醒群 @Panse System 回复“扫码”重试。",
                         level="warn",
                         title="畔色 ERP | 扫码续跑未完成",
                         wechat_allowed=True,
@@ -2421,11 +2422,13 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                 # 继续盲跑。万师傅不是支付宝二维码，提示应准确要求重新登录。
                 _add_pending_scan(db, task_id)
                 reason = (
-                    "登录状态已失效 — 请到取数控制台重新登录，成功后自动续跑"
+                    "登录状态已失效 — 请在本飞书提醒群 @Panse System 回复“扫码”；"
+                    "二维码会发到本群，扫码成功后自动续跑"
                     if any(marker in err for marker in (
                         "登录状态已失效", "需重新登录", "session_expired",
                     ))
-                    else "需扫码 — 请到 ERP 自动取数页点击“开始扫码 / 重新登录”"
+                    else "需扫码 — 请在本飞书提醒群 @Panse System 回复“扫码”；"
+                         "二维码会发到本群并保持 10 分钟"
                 )
                 out["pending_manual"].append(
                     {"task": task_id, "reason": reason})
