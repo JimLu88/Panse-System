@@ -11,6 +11,7 @@
 ⑧ 推送编排 (mock WA, 绝不真调 :8500): channel/phase/档期传参 + 状态机推进
 """
 import io
+import uuid
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -60,6 +61,7 @@ def _seed_platform_floors(db, rows):
 
 def _plan(db, ctype="big88"):
     plan = CampaignPlan(name=f"测试{ctype}", campaign_type=ctype,
+                        workflow_key=f"pytest:{ctype}:{uuid.uuid4().hex}",
                         tier=cs.CAMPAIGN_TYPES[ctype][1],
                         start_at=datetime(2026, 7, 17, 20, 0, 0),
                         end_at=datetime(2026, 7, 19, 23, 59, 59), status="draft",
@@ -229,6 +231,13 @@ def test_final_signup_is_one_write_then_exact_no_sales_fallback_and_receipt(
         }
 
     monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", refresh)
+    monkeypatch.setattr(
+        cs, "_refresh_official_product_sku_identity",
+        lambda _db, rows: {
+            "ok": True, "checked_items": 2, "checked_skus": len(rows),
+            "artifact": {"filename": "product.xlsx", "size": 1,
+                         "sha256": "f" * 64},
+        })
     writes = []
 
     def upload(_db, channel, phase, *_args, **_kwargs):
@@ -1350,6 +1359,16 @@ def _mock_wa(monkeypatch, calls):
         lambda expected, live: {
             "ok": True, "checked_real_skus": len(expected),
             "failed_real_skus": 0, "failures": [],
+        },
+    )
+    monkeypatch.setattr(
+        cs, "_refresh_official_product_sku_identity",
+        lambda _db, rows: {
+            "ok": True, "checked_items": len({
+                str(row.get("taobao_item_id")) for row in rows}),
+            "checked_skus": len(rows),
+            "artifact": {"filename": "pytest-product.xlsx",
+                         "size": 1, "sha256": "f" * 64},
         },
     )
 

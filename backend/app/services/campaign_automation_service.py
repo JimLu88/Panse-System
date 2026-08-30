@@ -167,6 +167,10 @@ def sync_upcoming_plans(db: Session, calendars: list[CampaignCalendar]) -> dict:
         tier = campaign_service.CAMPAIGN_TYPES[ctype][1]
         plan = CampaignPlan(
             name=calendar.title,
+            workflow_key=(
+                f"campaign:auto:{cid.group(1)}:{uid.group(1)}:"
+                f"{start.strftime('%Y%m%d%H%M%S')}"
+            ),
             campaign_type=ctype,
             tier=tier,
             start_at=start,
@@ -185,7 +189,7 @@ def sync_upcoming_plans(db: Session, calendars: list[CampaignCalendar]) -> dict:
 
 def run_auto_execute(db: Session) -> dict:
     """执行未来 14 天内的自动计划；与计划发现窗口保持一致。"""
-    from app.services import campaign_service
+    from app.services import campaign_execution_service, campaign_service
 
     if not enabled(db):
         return {"skipped": "campaign_auto_disabled"}
@@ -207,13 +211,26 @@ def run_auto_execute(db: Session) -> dict:
     details: list[dict] = []
     for plan in plans:
         processed += 1
-        # 每次执行前刷新 60 天动销登记；登记只作历史提示，随后仍由平台
-        # 对本场全部 ERP 在售商品重新判定，不能据此预先排除报名候选。
+        # 每次执行前刷新 60 天动销登记。已确认无动销的商品必须从活动
+        # 报名范围排除；平台终态只能补充新事实，不能把它们重新塞回报名表。
         grouping = campaign_service.group_by_sales(db)
         if plan.status == "draft":
             floor_refresh = campaign_service.refresh_floor_evidence_from_current_activity(db, plan)
             if not floor_refresh.get("ok"):
+                retryable = campaign_execution_service.failure_is_retryable_prewrite(
+                    floor_refresh)
                 failed += 1
+                if retryable:
+                    details.append({
+                        "plan_id": plan.id, "ok": False,
+                        "step": "floor_evidence_refresh",
+                        "automatic_retry": True,
+                        "retry_boundary": "read_only_before_platform_write",
+                        "error": floor_refresh.get("error"),
+                    })
+                    # Keep draft. The next hourly window may retry because this
+                    # step is read-only and no platform-write claim exists.
+                    continue
                 plan.status = "alarmed"
                 db.commit()
                 text = (

@@ -30,9 +30,31 @@ from sqlalchemy.orm import Session
 ACTIVITY_PUBLISHED_STATUS = "已发布设定"   # 兼容旧引用; 判定用下面的元组
 # ✅2026-07-17 20:17 live实证: 活动开场后平台状态从「已发布设定」变「活动中」——两个都是"在活动内"
 ACTIVITY_IN_CAMPAIGN_STATUSES = ("已发布设定", "活动中")
+ACTIVITY_ENROLLED_PAUSED_STATUS = "暂停"
 ALARM_THRESHOLD_YUAN = 2.0                # 到手 vs 目标差异 > 2 元 → 报警 (spec §四.6a)
 LINE_LET_MAX_YUAN = 1.0                   # 贴线让幅 0~1 元记录在案; >1 元报警 (spec §四.6e)
 _EPS = 0.01                               # 一分钱容差
+
+
+def classify_activity_record_status(status: object) -> str:
+    """Map an official enrolled-export status without guessing draft state.
+
+    Rows in ``导出已报商品`` already have an enrollment record.  In that
+    export ``暂停`` therefore means enrolled-but-paused, never a draft waiting
+    for the global one-click publish action.
+    """
+    value = str(status or "").strip()
+    if value == "活动中":
+        return "enrolled_active"
+    if value == "已发布设定":
+        return "enrolled_scheduled"
+    if value == ACTIVITY_ENROLLED_PAUSED_STATUS:
+        return "enrolled_paused"
+    if value in {"撤销报名", "已撤销", "已退出"}:
+        return "withdrawn"
+    if value in {"失败", "异常"}:
+        return "failed"
+    return "unknown"
 
 
 def _f(x) -> Optional[float]:
@@ -153,7 +175,8 @@ def parse_activity_items_export(xlsx_bytes: bytes, *,
         return _parse_activity_export(xlsx_bytes, active_only=True)
     return [
         row for row in _parse_activity_export(xlsx_bytes, active_only=False)
-        if row.get("status") in (*ACTIVITY_IN_CAMPAIGN_STATUSES, "暂停")
+        if row.get("status") in (
+            *ACTIVITY_IN_CAMPAIGN_STATUSES, ACTIVITY_ENROLLED_PAUSED_STATUS)
     ]
 
 
@@ -197,11 +220,20 @@ def parse_product_batch_export(xlsx_bytes: bytes) -> list[dict]:
     col0商品Id / col4一口价(商品) / col9销售属性 / col11 skuId / col12价格 / col15商家编码。"""
     wb, ws = _load_ws(xlsx_bytes, sheet_hint="发布")
     records: list[dict] = []
+    last_item_id = ""
     for row in ws.iter_rows(min_row=4, values_only=True):
-        if not row or len(row) < 13 or row[0] is None:
+        if not row or len(row) < 13:
+            continue
+        current_item_id = str(row[0] or "").strip()
+        if current_item_id:
+            last_item_id = current_item_id
+        # Official exports use merged/blank continuation rows for additional
+        # SKUs.  Dropping those rows made the pre-write full-SKU guard believe
+        # the platform had fewer SKUs than it actually did.
+        if not last_item_id:
             continue
         records.append({
-            "item_id": str(row[0]).strip(),
+            "item_id": last_item_id,
             "item_list_price": _f(row[4]),
             "sale_attr": str(row[9] or "").strip() if len(row) > 9 else "",
             "sku_id": str(row[11] or "").strip() if len(row) > 11 else "",

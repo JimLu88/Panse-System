@@ -26,6 +26,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 import hashlib
 import json
 import re
+import secrets
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -3531,6 +3532,86 @@ def _stop_signup(db: Session, plan, result: dict) -> dict:
     return result
 
 
+def _halt_prewrite(db: Session, plan, result: dict) -> dict:
+    """Retry only a proven transient read failure before any platform claim."""
+    from app.services import campaign_execution_service
+
+    if not campaign_execution_service.failure_is_retryable_prewrite(result):
+        return _stop_signup(db, plan, result)
+    result.setdefault("ok", False)
+    result.update({
+        "requires_user_decision": False,
+        "automatic_retry": True,
+        "retry_boundary": "read_only_before_platform_write_claim",
+        "ai_may_adjust_or_resubmit": False,
+        "notification": {"skipped": "transient_prewrite_retry_next_scheduler_window"},
+    })
+    # Keep draft/precheck/discount_pushed unchanged.  The scheduler may safely
+    # retry the read-only phase next hour because no write claim exists.
+    result["execution_receipt"] = _record_signup_execution_receipt(
+        db, plan, result)
+    return result
+
+
+def _refresh_official_product_sku_identity(
+        db: Session, pending_rows: list[dict]) -> dict:
+    """Read the official current product export and require exact SKU sets.
+
+    This is the last read-only guard before the one-shot write claim.  It
+    prevents an ERP mapping that omits a newly added live SKU from creating a
+    partial whole-item upload.
+    """
+    from app.services import campaign_recon_service, web_agent_service
+
+    exported = web_agent_service.export_product_prices(db, timeout_s=420)
+    if not exported.get("ok"):
+        return {
+            "ok": False,
+            "step": "official_product_sku_export",
+            "error": exported.get("error") or exported.get("message")
+                     or "official_product_export_failed",
+            "need_scan": bool(exported.get("need_scan")),
+        }
+    content = exported.get("xlsx_bytes") or b""
+    records = campaign_recon_service.parse_product_batch_export(content)
+    actual_by_item: dict[str, set[str]] = defaultdict(set)
+    for record in records:
+        item_id = str(record.get("item_id") or "").strip()
+        sku_id = str(record.get("sku_id") or "").strip()
+        if item_id.isdigit() and sku_id.isdigit():
+            actual_by_item[item_id].add(sku_id)
+    expected_by_item: dict[str, set[str]] = defaultdict(set)
+    for row in pending_rows:
+        item_id = str(row.get("taobao_item_id") or "").strip()
+        sku_id = str(row.get("taobao_sku_id") or "").strip()
+        if item_id.isdigit() and sku_id.isdigit():
+            expected_by_item[item_id].add(sku_id)
+    mismatches = []
+    for item_id, expected in sorted(expected_by_item.items()):
+        actual = actual_by_item.get(item_id, set())
+        if actual != expected:
+            mismatches.append({
+                "item_id": item_id,
+                "expected_sku_ids": sorted(expected),
+                "official_current_sku_ids": sorted(actual),
+                "missing_in_erp_manifest": sorted(actual - expected),
+                "missing_on_platform": sorted(expected - actual),
+            })
+    return {
+        "ok": not mismatches,
+        "step": "official_product_sku_identity",
+        "error": "official_product_sku_scope_mismatch" if mismatches else None,
+        "mismatches": mismatches,
+        "artifact": {
+            "filename": exported.get("filename"),
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+        "checked_items": len(expected_by_item),
+        "checked_skus": sum(len(value) for value in expected_by_item.values()),
+    }
+
+
 def refresh_floor_evidence_from_current_activity(
         db: Session, plan, *, allow_placeholder_safe_lowering: bool = False,
 ) -> dict:
@@ -3846,21 +3927,26 @@ def _classify_final_signup(
     if not result.get("submitted"):
         return {
             "ok": False,
-            "error": "signup_partial_draft_import_not_published",
+            "error": "signup_partial_enrollment_import_paused",
             "platform_write_observed": bool(
                 result.get("platform_write_observed") or result.get("attached")),
-            "published": False,
-            "stopped_before": result.get("stopped_before") or "一键发布",
+            "enrollment_record_created": True,
+            "active": False,
+            "published": None,
+            "stopped_before": None,
             "terminal_counts": {
                 "total": total, "ok": ok_count, "failed": failed_count,
             },
-            "draft_imported_item_ids": sorted(accepted_items),
+            "accepted_item_ids": sorted(accepted_items),
+            "enrolled_paused_item_ids": sorted(accepted_items),
+            "draft_imported_item_ids": [],
             "failed_item_ids": sorted(failed_ids),
             "no_sales_item_ids": sorted(no_sales_ids),
             "hard_failed_item_ids": sorted(hard_failed_ids),
             "failed_items": failed_rows,
             "feedback_artifact": validation.get("feedback_artifact"),
             "feedback_refresh": feedback_refresh,
+            "state_interpretation_version": 2,
         }
     qualified_items = set(correct_items) | accepted_items
 
@@ -4119,9 +4205,10 @@ def push_signup(
     else:
         current = refresh_floor_evidence_from_current_activity(db, plan)
         if not current.get("ok"):
-            return _stop_signup(db, plan, {
+            return _halt_prewrite(db, plan, {
                 "step": "current_state_export",
                 "error": current.get("error") or "无法可靠取得当前活动生效集合",
+                "detail": current.get("detail"),
             })
     live_rows = current["rows"]
     floor_refresh = current["floor_refresh"]
@@ -4329,6 +4416,63 @@ def push_signup(
             db, plan, result)
         return result
 
+    identity = _campaign_identity(plan)
+    from app.services import campaign_execution_service
+    manifest_sha256 = campaign_execution_service.scope_sha256(
+        identity=identity,
+        rows=pending,
+        policy_sha256=str(policy.get("_sha256") or ""),
+    )
+    attempt, _created = campaign_execution_service.ensure_attempt(
+        db,
+        plan=plan,
+        scope_sha256_value=manifest_sha256,
+        result_summary={
+            "item_ids": sorted(pending_items),
+            "row_count": len(pending),
+            "policy_sha256": policy.get("_sha256"),
+            "execution_boundary": {
+                "platform_write": False,
+                "account_action": False,
+                "automatic_retry": False,
+            },
+        },
+    )
+    stats["execution_attempt_id"] = attempt.id
+    stats["immutable_manifest_sha256"] = manifest_sha256
+    if attempt.write_claimed or attempt.state in (
+            "write_claimed", "platform_terminal", "completed",
+            "failed_no_retry", "unknown_no_retry"):
+        return _stop_signup(db, plan, {
+            "step": "durable_one_shot_guard",
+            "error": "campaign_execution_already_claimed_no_retry",
+            "execution_attempt_id": attempt.id,
+            "execution_attempt_state": attempt.state,
+            "stats": stats,
+        })
+
+    official_identity = _refresh_official_product_sku_identity(db, pending)
+    stats["official_product_sku_identity"] = official_identity
+    if not official_identity.get("ok"):
+        retryable = campaign_execution_service.failure_is_retryable_prewrite(
+            official_identity)
+        campaign_execution_service.record_prewrite_failure(
+            db, attempt,
+            step=str(official_identity.get("step") or "official_product_sku_identity"),
+            error_code=str(official_identity.get("error") or "official_product_sku_guard"),
+            retryable=retryable,
+            detail=official_identity,
+        )
+        result = {
+            "step": official_identity.get("step"),
+            "error": official_identity.get("error"),
+            "official_product_sku_identity": official_identity,
+            "execution_attempt_id": attempt.id,
+            "stats": stats,
+        }
+        return _halt_prewrite(db, plan, result) if retryable else _stop_signup(
+            db, plan, result)
+
     channel = "super_reduce" if super_reduce else "promo_signup"
     # Uploading the promo workbook itself is a real platform write. There is no
     # safe stage phase; both campaign channels therefore use one commit only.
@@ -4336,10 +4480,60 @@ def push_signup(
     upload_xlsx = (_build_super_signup_xlsx(pending) if super_reduce
                    else _build_signup_xlsx(
                        pending, signup_shipping_days(plan, pending)))
+    request_id = f"campaign-signup-{secrets.token_hex(12)}"
+    try:
+        attempt = campaign_execution_service.claim_platform_write(
+            db, attempt.id, request_id=request_id)
+    except ValueError as exc:
+        return _stop_signup(db, plan, {
+            "step": "durable_one_shot_claim",
+            "error": str(exc),
+            "execution_attempt_id": attempt.id,
+            "stats": stats,
+        })
     res = _upload_and_wait(
         db, channel, phase, upload_xlsx,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
         expected_rows=len(pending), expected_items=len(pending_items))
+    res["request_id"] = request_id
+    res["execution_attempt_id"] = attempt.id
+    observed_write = (
+        True if any(bool(res.get(key)) for key in (
+            "submitted", "platform_write_observed", "attached"))
+        else None
+    )
+    terminal_state = (
+        "platform_terminal"
+        if isinstance(res.get("validation"), dict)
+        else "unknown_no_retry"
+    )
+    campaign_execution_service.record_platform_terminal(
+        db, attempt,
+        state=terminal_state,
+        platform_write_observed=observed_write,
+        step=str(res.get("step") or "platform_terminal"),
+        error_code=str(res.get("error") or "") or None,
+        job_id=str(res.get("job") or res.get("job_id") or "") or None,
+        result_summary={
+            "submitted": res.get("submitted"),
+            "validation": res.get("validation"),
+            "execution_boundary": {
+                "platform_write": observed_write,
+                "automatic_retry": False,
+            },
+        },
+    )
+
+    def fail_claimed_attempt(step: str, error_code: str,
+                             summary: dict | None = None) -> None:
+        campaign_execution_service.record_platform_terminal(
+            db, attempt, state="failed_no_retry",
+            platform_write_observed=observed_write,
+            step=step, error_code=error_code,
+            job_id=str(res.get("job") or res.get("job_id") or "") or None,
+            result_summary=summary or {},
+        )
+
     res["stats"] = stats
     res["recorded_platform_facts"] = _learn_from_validation(
         db, plan, res.get("validation"))
@@ -4347,6 +4541,14 @@ def push_signup(
         db, plan, res, pending, correct_items)
     res["terminal_classification"] = classification
     if not classification.get("ok"):
+        campaign_execution_service.record_platform_terminal(
+            db, attempt, state="failed_no_retry",
+            platform_write_observed=observed_write,
+            step="signup_terminal_classification",
+            error_code=str(classification.get("error") or "signup_terminal_failed"),
+            job_id=str(res.get("job") or res.get("job_id") or "") or None,
+            result_summary={"classification": classification},
+        )
         res.update({
             "ok": False,
             "step": "signup_terminal_classification",
@@ -4357,6 +4559,11 @@ def push_signup(
 
     no_sales_ids = set(classification.get("no_sales_item_ids") or [])
     if no_sales_ids and not allow_terminal_no_sales_fallback:
+        fail_claimed_attempt(
+            "terminal_no_sales_requires_new_decision",
+            "terminal_no_sales_requires_new_decision",
+            {"no_sales_item_ids": sorted(no_sales_ids)},
+        )
         res.update({
             "ok": False,
             "step": "terminal_no_sales_requires_new_decision",
@@ -4376,6 +4583,11 @@ def push_signup(
         )
         res["no_sales_fallback"] = fallback
         if not fallback.get("ok"):
+            fail_claimed_attempt(
+                "terminal_no_sales_fallback",
+                str(fallback.get("error") or "terminal_no_sales_fallback_failed"),
+                {"fallback": fallback},
+            )
             res.update({
                 "ok": False,
                 "step": "terminal_no_sales_fallback",
@@ -4388,6 +4600,11 @@ def push_signup(
     # prove which SKU prices are actually present in this campaign.
     post_submit = refresh_floor_evidence_from_current_activity(db, plan)
     if not post_submit.get("ok"):
+        fail_claimed_attempt(
+            "post_submit_export",
+            str(post_submit.get("error") or "post_submit_export_failed"),
+            {"post_submit": post_submit},
+        )
         res.update({
             "ok": False,
             "step": "post_submit_export",
@@ -4405,6 +4622,14 @@ def push_signup(
         accepted_rows, post_submit.get("rows") or [])
     res["post_submit_verification"] = verification
     if not verification.get("ok"):
+        campaign_execution_service.record_platform_terminal(
+            db, attempt, state="failed_no_retry",
+            platform_write_observed=True,
+            step="post_submit_sku_verification",
+            error_code="post_submit_sku_verification_failed",
+            job_id=str(res.get("job") or res.get("job_id") or "") or None,
+            result_summary={"verification": verification},
+        )
         res.update({
             "ok": False,
             "step": "post_submit_sku_verification",
@@ -4417,6 +4642,11 @@ def push_signup(
 
     hard_failed = classification.get("hard_failed_item_ids") or []
     if hard_failed:
+        fail_claimed_attempt(
+            "signup_hard_failures_isolated",
+            "signup_hard_failures_isolated",
+            {"hard_failed_item_ids": hard_failed},
+        )
         res.update({
             "ok": False,
             "step": "signup_hard_failures_isolated",
@@ -4433,6 +4663,16 @@ def push_signup(
     db.commit()
     _clear_signup_failure_dedupe(db, plan)
     res["execution_receipt"] = _record_signup_execution_receipt(db, plan, res)
+    campaign_execution_service.record_platform_terminal(
+        db, attempt, state="completed", platform_write_observed=True,
+        step="completed",
+        job_id=str(res.get("job") or res.get("job_id") or "") or None,
+        result_summary={
+            "classification": classification,
+            "verification": verification,
+            "execution_receipt": res.get("execution_receipt"),
+        },
+    )
     return res
 
 

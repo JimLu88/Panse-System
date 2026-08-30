@@ -785,7 +785,7 @@ def publish_super_reduce_plan7_existing_drafts(
         body: CampaignPlan7DraftPublishIn,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
-    """Publish exactly two audited drafts once; never upload or change price."""
+    """Retired unsafe route kept only for a structured fail-closed result."""
     from app.services import campaign_plan7_remaining_signup_service
 
     result = (
@@ -807,6 +807,7 @@ def publish_super_reduce_plan7_existing_drafts(
                 "draft_publish_snapshot_identity_mismatch",
                 "draft_publish_snapshot_scope_mismatch",
                 "draft_publish_price_fingerprint_mismatch",
+                "draft_publish_removed_paused_is_enrolled_state",
                 "draft_publish_global_paused_scope_mismatch",
                 "draft_publish_pre_read_price_or_sku_mismatch"}:
             code = 422

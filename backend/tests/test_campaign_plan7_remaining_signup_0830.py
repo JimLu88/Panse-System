@@ -387,7 +387,7 @@ def test_partial_import_semantics_are_preserved_as_platform_draft_write(
     assert result["validation"] == {"total_items": 5, "ok": 2, "failed": 3}
 
 
-def test_partial_draft_classifier_downloads_super_reduce_feedback_without_markers(
+def test_partial_enrollment_classifier_downloads_feedback_without_markers(
         db_session, monkeypatch):
     plan = _plan()
     original_remark = plan.remark
@@ -425,9 +425,11 @@ def test_partial_draft_classifier_downloads_super_reduce_feedback_without_marker
         }, pending, set())
 
     assert result["ok"] is False
-    assert result["error"] == "signup_partial_draft_import_not_published"
+    assert result["error"] == "signup_partial_enrollment_import_paused"
     assert result["platform_write_observed"] is True
-    assert result["draft_imported_item_ids"] == ["1", "2"]
+    assert result["accepted_item_ids"] == ["1", "2"]
+    assert result["enrolled_paused_item_ids"] == ["1", "2"]
+    assert result["draft_imported_item_ids"] == []
     assert result["failed_item_ids"] == ["3", "4", "5"]
     assert plan.remark == original_remark
 
@@ -506,9 +508,11 @@ def test_partial_signup_audit_persists_official_failure_artifact_once(
     replay = service.audit_plan7_partial_signup(db_session, **request)
 
     assert first["ok"] is True
-    assert first["published"] is False
-    assert first["platform_write_kind"] == "partial_draft_import"
-    assert len(first["draft_imported_item_ids"]) == 2
+    assert first["published"] is None
+    assert first["platform_write_kind"] == "partial_enrollment_import"
+    assert len(first["accepted_item_ids"]) == 2
+    assert first["enrolled_paused_item_ids"] == []
+    assert first["draft_imported_item_ids"] == []
     assert first["failed_item_ids"] == failed_ids
     assert first["official_active_item_ids"] == []
     assert first["safe_failed_only_recovery_available"] is False
@@ -580,7 +584,7 @@ def _draft_live_rows(rows, status):
     } for row in rows]
 
 
-def test_draft_publish_is_exact_once_without_upload(db_session, monkeypatch):
+def test_draft_publish_is_retired_for_enrolled_paused_rows(db_session, monkeypatch):
     snapshot, rows = _draft_publish_snapshot(db_session, monkeypatch)
     refreshes = [
         {"ok": True, "rows": _draft_live_rows(rows, "暂停"),
@@ -611,12 +615,11 @@ def test_draft_publish_is_exact_once_without_upload(db_session, monkeypatch):
     first = service.publish_plan7_existing_drafts(db_session, **request)
     replay = service.publish_plan7_existing_drafts(db_session, **request)
 
-    assert first["ok"] is True
-    assert first["receipt"]["status"] == "completed"
-    assert first["receipt"]["upload"] is False
-    assert first["receipt"]["post_read_verification"]["verified_skus"] == 4
-    assert replay["ok"] is True and replay["idempotent_replay"] is True
-    assert len(calls) == 1
+    assert first["ok"] is False
+    assert first["error"] == "draft_publish_removed_paused_is_enrolled_state"
+    assert first["execution_boundary"]["platform_write"] is False
+    assert replay == first
+    assert calls == []
 
 
 def test_draft_publish_blocks_if_any_other_paused_item_exists(
@@ -641,7 +644,7 @@ def test_draft_publish_blocks_if_any_other_paused_item_exists(
         expected_scope_sha256=service.DRAFT_PUBLISH_SCOPE_SHA256)
 
     assert result["ok"] is False
-    assert result["error"] == "draft_publish_global_paused_scope_mismatch"
+    assert result["error"] == "draft_publish_removed_paused_is_enrolled_state"
     assert called == []
     assert service._load_draft_publish_receipt(db_session) is None
 
@@ -672,6 +675,6 @@ def test_draft_publish_unknown_terminal_is_claimed_and_never_retried(
     second = service.publish_plan7_existing_drafts(db_session, **request)
 
     assert first["ok"] is False
-    assert first["receipt"]["status"] == "failed_unknown_no_retry"
-    assert second["error"] == "draft_publish_already_claimed_no_retry"
-    assert len(calls) == 1
+    assert first["error"] == "draft_publish_removed_paused_is_enrolled_state"
+    assert second == first
+    assert calls == []

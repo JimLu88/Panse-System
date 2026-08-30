@@ -136,6 +136,35 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     ]
 
 
+def test_auto_execute_keeps_draft_for_safe_read_only_connectivity_retry(
+        db_session, monkeypatch):
+    from app.services import campaign_automation_service as automation
+    from app.services import campaign_service, settings_service
+
+    now = datetime.now()
+    plan = CampaignPlan(
+        name="只读刷新断线", campaign_type="big_other", tier="big",
+        start_at=now + timedelta(days=2), end_at=now + timedelta(days=5),
+        status="draft", workflow_key="campaign:test:transient-read",
+    )
+    db_session.add(plan)
+    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
+    db_session.commit()
+    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_a, **_k: {
+            "ok": False, "step": "web_agent",
+            "error": "Web-Agent 未在线 8500 connection refused",
+        })
+
+    result = automation.run_auto_execute(db_session)
+
+    assert result["processed"] == 1
+    assert result["details"][0]["automatic_retry"] is True
+    assert plan.status == "draft"
+
+
 def test_auto_execute_does_not_infer_super_reduce_delay_from_plan_start(
         db_session, monkeypatch):
     from app.services import campaign_automation_service as automation

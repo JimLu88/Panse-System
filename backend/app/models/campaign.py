@@ -107,6 +107,41 @@ class CampaignEvidenceSnapshot(Base, TimestampMixin):
     failure_artifact_blob: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
 
 
+class CampaignExecutionAttempt(Base, TimestampMixin):
+    """Durable one-shot boundary for one exact campaign signup manifest.
+
+    A row is created before the final platform write.  Once ``write_claimed``
+    is true, the same workflow/scope can never be automatically submitted
+    again, including after a process restart or an unknown browser outcome.
+    """
+
+    __tablename__ = "campaign_execution_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    plan_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workflow_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, default="signup")
+    scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    write_claimed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    write_claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    platform_write_observed: Mapped[Optional[bool]] = mapped_column(Boolean)
+    automatic_retry_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    web_agent_job_id: Mapped[Optional[str]] = mapped_column(String(64))
+    last_step: Mapped[Optional[str]] = mapped_column(String(64))
+    error_code: Mapped[Optional[str]] = mapped_column(String(128))
+    result_summary: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_key", "operation", "scope_sha256",
+            name="uq_campaign_execution_workflow_operation_scope",
+        ),
+    )
+
+
 class CampaignCalendar(Base, TimestampMixin):
     __tablename__ = "campaign_calendar"
 

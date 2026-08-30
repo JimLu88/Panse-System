@@ -180,6 +180,13 @@ def test_resume_push_skips_pre_submit_refresh_and_disables_no_sales_fallback(
     monkeypatch.setattr(
         campaign_service, "_build_super_signup_xlsx", lambda _rows: b"xlsx")
     monkeypatch.setattr(
+        campaign_service, "_refresh_official_product_sku_identity",
+        lambda _db, rows: {
+            "ok": True, "checked_items": 1, "checked_skus": len(rows),
+            "artifact": {"filename": "product.xlsx", "size": 1,
+                         "sha256": "f" * 64},
+        })
+    monkeypatch.setattr(
         campaign_service, "_upload_and_wait",
         lambda *_a, **_k: {
             "ok": True, "submitted": True, "job": "job1",

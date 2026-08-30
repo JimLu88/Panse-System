@@ -2,6 +2,39 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 campaign automation failure-history closeout
+
+- The former plan-7 "existing draft publish" interpretation is retired.  A row
+  in the official enrolled-item export with status `暂停` is an enrolled but
+  paused record, not a platform draft.  The ERP and Web-Agent publish routes now
+  fail before browser work; the historical snapshot is corrected by migration
+  `0145`.  All older sections below remain incident history only and must not be
+  used as current operating instructions.
+- Every final campaign upload now has a database-backed immutable attempt keyed
+  by workflow, operation and exact manifest hash.  A write claim is committed
+  before the browser upload.  After that claim, success, failure and unknown
+  outcomes are all no-retry, including after container/process restart.
+- Immediately before the claim, ERP downloads the official current-product
+  workbook and requires the full exact SKU set for every pending product.  A
+  missing/new/extra SKU, stale mapping, nonnumeric identity or workbook parsing
+  gap stops before platform write.  Merged blank continuation rows are
+  forward-filled so additional official SKUs cannot disappear from the guard.
+- Read-only connectivity/startup failures before any write claim retain the
+  current plan state and may retry in the next scheduler window.  Login, QR,
+  CAPTCHA, campaign identity, SKU, price, no-sales and policy failures remain
+  hard stops.  Automatic discovery now persists a stable workflow key for every
+  exact campaign/phase/window so scheduler restarts cannot create a second
+  identity.
+- Price rules are unchanged: real-SKU signup price equals ERP daily price; final
+  price must equal the ERP mid/big target; no price reduction, SKU rotation,
+  withdrawal, pause or removal is introduced.  Known no-sales items are kept
+  out of campaign signup.
+- Historical review covered 76 campaign API audit rows, all 48 failed scheduled
+  campaign runs, 15 reconciliation reports, 9 evidence snapshots and the NAS
+  campaign artifact series since July.  The durable failure taxonomy and the
+  prevention mapped to each class are recorded in
+  `docs/活动报名全量失败复盘与自动化闭环_20260830.md`.
+
 ## 2026-08-30 plan 7 exact existing-draft publication entry
 
 - The only permitted scope is the two platform drafts created by attempt
