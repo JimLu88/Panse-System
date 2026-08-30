@@ -226,6 +226,36 @@ def test_remaining_signup_failed_batch_is_not_retried(db_session, monkeypatch):
     assert plan.status == "alarmed"
 
 
+def test_preclaim_read_failure_is_safe_to_recover(db_session, monkeypatch):
+    plan = _plan()
+    db_session.add(plan)
+    db_session.commit()
+    monkeypatch.setattr(
+        campaign_service, "official_scope_for_plan",
+        lambda _plan: {"configured": True, "all_store": True,
+                       "exempt_items": set(service.OFFICIAL_EXEMPT_ITEM_IDS)})
+    monkeypatch.setattr(
+        campaign_service, "platform_qualified_items",
+        lambda _plan: set(service.ACCEPTED_ITEM_IDS))
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error": "订单取数正在运行，本次淘宝营销/评价任务已让路；请稍后自动重试。",
+            "step": "web_agent_job_terminal",
+            "job_id": "job2",
+            "detail": {"job_status": "error"},
+        })
+
+    failed = service.execute_plan7_remaining_signup(db_session, **_request())
+
+    assert failed["ok"] is False
+    assert failed["step"] == "web_agent_job_terminal"
+    assert failed["execution_boundary"]["platform_write"] is False
+    assert service._load_attempt(db_session) is None
+    assert plan.status == "alarmed"
+
+
 def test_batch_builder_keeps_each_item_whole_and_splits_at_item_limit():
     rows = [{
         "taobao_item_id": f"8{index:011d}",

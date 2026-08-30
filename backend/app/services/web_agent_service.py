@@ -290,11 +290,29 @@ def campaign_export_items(
         return {"ok": False, "need_scan": True, "message": res.get("message"),
                 "job_id": job_id}
     if not res.get("ok") or not res.get("xlsx_b64"):
-        return {"ok": False, "step": res.get("step"),
-                "error": res.get("error") or res.get("message") or "活动导出/下载失败",
+        terminal_error = (
+            res.get("error") or res.get("message")
+            or final.get("error") or final.get("message")
+            or "活动导出/下载失败"
+        )
+        terminal_step = res.get("step") or (
+            "web_agent_job_terminal"
+            if str(final.get("status") or "").lower() in ("error", "failed")
+            else None
+        )
+        detail = {
+            key: value for key, value in res.items()
+            if key not in ("xlsx_b64", "screenshot_base64")
+        }
+        detail.update({
+            "job_status": final.get("status"),
+            "job_error": final.get("error"),
+            "job_target": final.get("target"),
+        })
+        return {"ok": False, "step": terminal_step,
+                "error": terminal_error,
                 "job_id": job_id,
-                "detail": {key: value for key, value in res.items()
-                           if key not in ("xlsx_b64", "screenshot_base64")},
+                "detail": detail,
                 "screenshot_base64": res.get("screenshot_base64")}
     return {"ok": True, "xlsx_bytes": base64.b64decode(res["xlsx_b64"]),
             "filename": res.get("filename"),

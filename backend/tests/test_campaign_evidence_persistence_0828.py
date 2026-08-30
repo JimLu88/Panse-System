@@ -157,6 +157,38 @@ def test_web_agent_failure_preserves_job_and_read_only_step(
     assert result["detail"]["page"]["title"] == "超级88现货"
 
 
+def test_web_agent_terminal_job_error_is_not_lost(db_session, monkeypatch):
+    monkeypatch.setattr(
+        web_agent_service, "_post",
+        lambda *_args, **_kwargs: {"ok": True, "job": "job2"})
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_args, **_kwargs: {
+            "id": "job2",
+            "kind": "export",
+            "target": "campaign:export:long-running:超级立减",
+            "status": "error",
+            "result": None,
+            "error": "订单取数正在运行，本次淘宝营销/评价任务已让路；请稍后自动重试。",
+            "ok": True,
+        })
+
+    result = web_agent_service.campaign_export_items(
+        db_session, "超级立减", campaign_id="", united_activity_id="",
+        platform_activity_mode="long_running_update",
+        platform_active_until="2028-07-31 23:59:59")
+
+    assert result["ok"] is False
+    assert result["job_id"] == "job2"
+    assert result["step"] == "web_agent_job_terminal"
+    assert result["error"].startswith("订单取数正在运行")
+    assert result["detail"] == {
+        "job_status": "error",
+        "job_error": "订单取数正在运行，本次淘宝营销/评价任务已让路；请稍后自动重试。",
+        "job_target": "campaign:export:long-running:超级立减",
+    }
+
+
 def test_web_agent_sign_record_payload_keeps_exact_guard_identity(
         db_session, monkeypatch):
     captured = {}
