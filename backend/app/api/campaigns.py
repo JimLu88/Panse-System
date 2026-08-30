@@ -128,6 +128,19 @@ class CampaignPlan7DiscountCorrectionIn(BaseModel):
     expected_missing_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
+    """Exact official-export-bound SKU identity repair and one recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_old_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    official_product_export_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    official_product_export_b64: str = Field(min_length=1, max_length=3_000_000)
+    expected_new_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -548,6 +561,56 @@ def correct_super_reduce_plan7_discount(
                 "discount_correction_plan_identity_not_allowed",
                 "discount_correction_erp_price_scope_drift",
                 "discount_correction_final_price_math_mismatch"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super-reduce-plan7-discount-sku-identity")
+def recover_super_reduce_plan7_discount_sku_identity(
+        body: CampaignPlan7DiscountIdentityRecoveryIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Repair four stale Taobao SKU identities, then permit one new import.
+
+    The immutable official product export must prove a one-to-one merchant-code
+    match.  This route cannot change any price, rotate specifications, touch
+    plan 8 or retry an attempted platform write.
+    """
+    from app.services import campaign_discount_identity_recovery_service
+
+    result = (
+        campaign_discount_identity_recovery_service
+        .recover_plan7_single_discount_identity(
+            db,
+            workflow_key=_validate_workflow_key(body.workflow_key),
+            expected_plan_id=body.plan_id,
+            expected_old_attempt_id=body.expected_old_attempt_id,
+            official_product_export_sha256=(
+                body.official_product_export_sha256),
+            official_product_export_b64=body.official_product_export_b64,
+            expected_new_scope_sha256=body.expected_new_scope_sha256,
+        )
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "sku_identity_recovery_request_not_allowed",
+            "official_product_export_base64_invalid",
+            "official_product_export_size_not_allowed",
+            "official_product_export_sha256_mismatch",
+            "official_product_export_scope_mismatch",
+            "official_product_export_old_identity_mismatch",
+            "official_product_export_current_identity_mismatch",
+            "official_product_export_placeholder_mismatch",
+            "official_product_export_merchant_scope_mismatch",
+            "sku_identity_recovery_plan_identity_not_allowed",
+            "sku_identity_recovery_prior_evidence_mismatch",
+            "sku_identity_recovery_full_scope_drift",
+            "sku_identity_recovery_price_scope_drift",
+            "sku_identity_recovery_final_price_math_mismatch",
+        }:
             code = 422
         raise HTTPException(code, detail=result)
     return result

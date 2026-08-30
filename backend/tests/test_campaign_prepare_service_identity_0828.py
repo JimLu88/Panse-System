@@ -19,6 +19,9 @@ from app.cli import campaign_audit_plan7_single_discount as audit_plan7_cli
 from app.cli import (
     campaign_correct_plan7_single_discount as discount_correction_cli,
 )
+from app.cli import (
+    campaign_recover_plan7_discount_sku_identity as identity_recovery_cli,
+)
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -27,9 +30,85 @@ from app.models.campaign import CampaignPlan
 from app.models.settings import SystemSetting
 from app.services import settings_service
 from app.services import campaign_discount_correction_service
+from app.services import campaign_discount_identity_recovery_service
 
 
 TOKEN = "campaign-prepare-only-test-token"
+
+
+def test_plan7_identity_recovery_endpoint_uses_narrow_service_identity(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_recover(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "workflow_key": kwargs["workflow_key"],
+                "plan_id": kwargs["expected_plan_id"],
+                "execution_boundary": {"platform_write": False}}
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        campaign_discount_identity_recovery_service,
+        "recover_plan7_single_discount_identity", fake_recover)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    payload = {
+        "workflow_key": campaign_discount_identity_recovery_service.WORKFLOW_KEY,
+        "plan_id": 7,
+        "expected_old_attempt_id": (
+            campaign_discount_identity_recovery_service.EXPECTED_OLD_ATTEMPT_ID),
+        "official_product_export_sha256": (
+            campaign_discount_identity_recovery_service
+            .EXPECTED_OFFICIAL_EXPORT_SHA256),
+        "official_product_export_b64": "eA==",
+        "expected_new_scope_sha256": (
+            campaign_discount_identity_recovery_service
+            .EXPECTED_NEW_MISSING_SCOPE_SHA256),
+    }
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/recover-super-reduce-plan7-discount-sku-identity",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [{
+            "workflow_key": payload["workflow_key"],
+            "expected_plan_id": 7,
+            "expected_old_attempt_id": payload["expected_old_attempt_id"],
+            "official_product_export_sha256": payload[
+                "official_product_export_sha256"],
+            "official_product_export_b64": "eA==",
+            "expected_new_scope_sha256": payload[
+                "expected_new_scope_sha256"],
+        }]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
+def test_plan7_identity_recovery_cli_preserves_http_error_body(
+        monkeypatch, capsys):
+    monkeypatch.setattr(identity_recovery_cli, "_read_payload", lambda: b"{}")
+    monkeypatch.setattr(identity_recovery_cli, "_service_token", lambda: TOKEN)
+    body = b'{"detail":{"error":"identity_cas_mismatch"}}'
+    monkeypatch.setattr(identity_recovery_cli, "call_api",
+                        lambda *_args, **_kwargs: (409, body))
+
+    assert identity_recovery_cli.main() == 1
+    assert "identity_cas_mismatch" in capsys.readouterr().out
 
 
 def test_plan7_discount_correction_cli_preserves_http_error_body(monkeypatch, capsys):
@@ -159,6 +238,12 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/correct-super-reduce-plan7-discount"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path=(
+            "/api/campaigns/"
+            "recover-super-reduce-plan7-discount-sku-identity")
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"

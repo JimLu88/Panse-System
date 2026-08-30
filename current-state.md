@@ -2,6 +2,36 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 stale Taobao SKU identity recovery
+
+- The first exact four-row correction stopped safely with platform terminal
+  `参数错误:skuId不是商品的有效sku` for all four rows.  No row was accepted,
+  `submitted=false`, and the existing 384 exact rows were untouched.
+- A fresh official one-item QianNiu product export proves that merchant SKU
+  codes `PFG2521002122211` through `PFG2521002122214` still represent the same
+  four table sizes, but their current Taobao SKU IDs are `6127845548093`
+  through `6127845548096`; ERP still held obsolete IDs `6279984722445`
+  through `6279984722448`.  This is a one-to-one external identity repair, not
+  SKU rotation.  The official artifact SHA-256 is
+  `cdf6502bbf4c048824a0ad5f1545d6335faa117a854f3c624773c1e610a9a72b`.
+- `POST /api/campaigns/recover-super-reduce-plan7-discount-sku-identity` and
+  its controlled container CLI are fixed to workflow plan 7, item
+  `1047741902625`, the failed attempt, immutable snapshot 1, the exact nine-row
+  official export and four fixed merchant-code mappings.  They CAS-repair only
+  those four external IDs, preserve every price/specification, verify the new
+  388-row digest, perform one exact read-before-write and allow at most one new
+  four-row import.  Every terminal is claimed, automatic retry is forbidden,
+  and a successful terminal still requires a fresh exact post-readback.
+- The route cannot change price, rotate SKU, touch plan 8 or the existing 384
+  rows, call campaign signup, withdraw/pause/remove anything, notify, or accept
+  a different export.  The identity evidence and official workbook are stored
+  immutably before the platform phase.
+- Verification passed: 28 focused identity/correction/service tests, all
+  campaign tests (223 passed, 2 intentional fixture skips), Python compilation,
+  PowerShell parsing and diff checks.  Maintenance did not execute the recovery
+  command or any platform write.
+
+
 ## 2026-08-30 plan 7 exact four-row single-discount correction
 
 - Immutable snapshot `1` (`plan7-discount-audit-464fc409dce0`) proves that the

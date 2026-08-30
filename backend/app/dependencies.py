@@ -34,6 +34,9 @@ CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH = (
 CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH = (
     "/api/campaigns/correct-super-reduce-plan7-discount"
 )
+CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH = (
+    "/api/campaigns/recover-super-reduce-plan7-discount-sku-identity"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
@@ -42,6 +45,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH,
+    CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH,
 })
 
 
@@ -273,7 +277,11 @@ def require_campaign_prepare_principal(
                             else (
                                 "campaign.super_reduce.plan7.discount_correct"
                                 if path == CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH
-                                else "campaign.prepare"
+                                else (
+                                    "campaign.super_reduce.plan7.discount_identity_recover"
+                                    if path == CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH
+                                    else "campaign.prepare"
+                                )
                             )
                         )
                     )
