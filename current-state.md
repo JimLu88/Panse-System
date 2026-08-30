@@ -2,6 +2,58 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 exact four-row single-discount correction
+
+- Immutable snapshot `1` (`plan7-discount-audit-464fc409dce0`) proves that the
+  388-row target was not wholly missing: 384 rows are present in activity
+  `143780562424`, all at the exact ERP deduction, and all have platform status
+  `未开始`.  Because their fixed window begins at `2026-09-01 00:00:00`, these
+  384 rows are correctly configured and waiting for the window; they must not
+  be resubmitted or called effective before the start time.
+- The only missing scope is item `1047741902625`, four physical SKUs:
+  `6279984722445` (daily 3390.00, deduct 612.63, final 2438.37),
+  `6279984722446` (3465.00, 627.08, 2490.92), `6279984722447`
+  (3577.50, 644.50, 2575.00), and `6279984722448` (3667.50, 662.44,
+  2638.06).  All are non-placeholder no-sales fallback rows, have zero price
+  concession, keep ERP daily price as the calculation base, and satisfy
+  `daily - official 10% - deduct = ERP final` exactly.
+- Root cause is a real platform partial import, not readback parsing: the exact
+  window activity is visibly marked `部分导入失败`, its canonical readback has no
+  row for this item, and all other 384 rows are visible and exact.  The stale
+  Taobao listing export still contains older SKU IDs, while the authoritative
+  campaign mapping has used the current four IDs since 2026-08-07; the fixed
+  correction binds only the current mapping and forbids SKU rotation.
+- `POST /api/campaigns/correct-super-reduce-plan7-discount` and the controlled
+  container CLI are fixed to workflow plan 7, snapshot 1, its raw artifact
+  SHA-256 and the four-row canonical digest.  They first read the exact four
+  rows.  If already exact, the call finishes without a write; if still missing,
+  exactly one four-row single-item-discount workbook is submitted.  Any failed
+  or unknown terminal is permanently claimed with no retry.  A successful
+  terminal must be followed by a fresh exact four-row readback and an immutable
+  evidence snapshot.  The route cannot call official campaign signup, change
+  prices, rotate SKUs, touch the existing 384 rows, touch plan 8, withdraw,
+  pause, delete, notify or automatically retry.
+- Code/GitHub/production commit is
+  `19e79784f6aea6e54ef5c96879621137a8623f96`.  Focused correction/audit/service
+  identity tests passed 26/26; all 217 campaign tests passed except two
+  intentional skips (215 passed, 2 skipped).  Python compilation, PowerShell
+  parsing and diff checks passed.  The broader backend suite still has 27
+  pre-existing failures in unrelated cost, inventory, supplier matching and
+  order-detail tests; campaign tests have no failure.
+- Unified NAS release passed health, ready, API/Web commit parity, migration
+  `0144 (head)`, deployed route/CLI import and all API/Web/DB/backup containers.
+  Rollback images are `panse-system-api:rollback-20260830-150408` and
+  `panse-system-web:rollback-20260830-150721`.  The authoritative wrapper matches
+  the released source (SHA-256
+  `8A4D4B640B4776BDA796AE24F7A98F186D4E1E4AA24FB722628A8EE4DD3D625D`), and the
+  production one-shot attempt is still absent: maintenance did not execute a
+  readback or platform write.
+- Task 01 may execute the single formal command once:
+  `& 'D:\AI\畔色ERP系统\ERP程序\scripts\campaign_correct_plan7_single_discount_nas.ps1'`.
+  Its structured terminal plus post-submit readback is the only completion
+  authority; a nonzero result must be returned to maintenance and must not be
+  rerun.
+
 ## 2026-08-30 plan 7 single-discount evidence and terminal receipts
 
 - The earlier one-item Super Reduce submission did not prove that the separate
