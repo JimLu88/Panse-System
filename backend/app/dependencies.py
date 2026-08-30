@@ -40,6 +40,9 @@ CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH = (
 CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-discount-sku-identity-readback"
 )
+CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH = (
+    "/api/campaigns/execute-super-reduce-plan7-remaining"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
@@ -50,6 +53,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH,
+    CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH,
 })
 
 
@@ -263,38 +267,27 @@ def require_campaign_prepare_principal(
     path = request.url.path
     identity = machine_identity_for_key(x_api_key, db, path=path)
     if identity == "service:campaign-prepare":
+        path_scopes = {
+            CAMPAIGN_EVIDENCE_REFRESH_PATH: "campaign.evidence.refresh",
+            CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH: (
+                "campaign.official_exemptions.correct"),
+            CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH: (
+                "campaign.super_reduce.plan7.resume_execute"),
+            CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH: (
+                "campaign.super_reduce.plan7.discount_audit"),
+            CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH: (
+                "campaign.super_reduce.plan7.discount_correct"),
+            CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH: (
+                "campaign.super_reduce.plan7.discount_identity_recover"),
+            CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH: (
+                "campaign.super_reduce.plan7.discount_identity_readback"),
+            CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH: (
+                "campaign.super_reduce.plan7.remaining_signup"),
+        }
         return ServicePrincipal(
             username=identity,
             role="campaign_prepare_service",
-            scope=(
-                "campaign.evidence.refresh"
-                if path == CAMPAIGN_EVIDENCE_REFRESH_PATH
-                else (
-                    "campaign.official_exemptions.correct"
-                    if path == CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH
-                    else (
-                        "campaign.super_reduce.plan7.resume_execute"
-                        if path == CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH
-                        else (
-                        "campaign.super_reduce.plan7.discount_audit"
-                        if path == CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH
-                            else (
-                                "campaign.super_reduce.plan7.discount_correct"
-                                if path == CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH
-                                else (
-                                    "campaign.super_reduce.plan7.discount_identity_recover"
-                                    if path == CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH
-                                    else (
-                                        "campaign.super_reduce.plan7.discount_identity_readback"
-                                        if path == CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH
-                                        else "campaign.prepare"
-                                    )
-                                )
-                            )
-                        )
-                    )
-                )
-            ),
+            scope=path_scopes.get(path, "campaign.prepare"),
         )
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "需要登录或活动准备服务身份")
 

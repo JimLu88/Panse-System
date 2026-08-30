@@ -153,6 +153,17 @@ class CampaignPlan7DiscountIdentityReadbackIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7RemainingSignupIn(BaseModel):
+    """Exact one-shot input for the approved remaining plan-7 item scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    expected_item_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -663,6 +674,55 @@ def verify_super_reduce_plan7_discount_sku_identity_readback(
             "sku_identity_recovery_price_scope_drift",
             "sku_identity_recovery_final_price_math_mismatch",
         } else 409
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/execute-super-reduce-plan7-remaining")
+def execute_super_reduce_plan7_remaining(
+        body: CampaignPlan7RemainingSignupIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Submit only the reviewed remaining plan-7 manifest, once.
+
+    This path cannot touch single-item discounts, plan 8, real-SKU prices,
+    daily prices, SKU identities, withdrawals, pauses or removals.  It claims
+    every platform batch before upload and requires a terminal plus exact
+    per-SKU export readback before advancing to another batch.
+    """
+    from app.services import campaign_plan7_remaining_signup_service
+
+    result = (
+        campaign_plan7_remaining_signup_service
+        .execute_plan7_remaining_signup(
+            db,
+            workflow_key=_validate_workflow_key(body.workflow_key),
+            expected_plan_id=body.plan_id,
+            expected_status=body.expected_status,
+            expected_item_scope_sha256=(
+                body.expected_item_scope_sha256),
+        )
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "remaining_signup_request_not_allowed",
+            "remaining_signup_authorized_scope_constant_invalid",
+            "remaining_signup_plan_identity_not_allowed",
+            "remaining_signup_official_scope_drift",
+            "remaining_signup_placeholder_scope_drift",
+            "remaining_signup_official_exclusion_missing",
+            "remaining_signup_real_price_hold_scope_drift",
+            "remaining_signup_safe_scope_incomplete",
+            "remaining_signup_forbidden_item_in_manifest",
+            "remaining_signup_no_sales_scope_drift",
+            "remaining_signup_whole_item_exclusion_missing",
+            "remaining_signup_price_source_guard_failed",
+            "remaining_signup_manifest_count_drift",
+            "remaining_signup_preflight_blocked",
+        }:
+            code = 422
         raise HTTPException(code, detail=result)
     return result
 

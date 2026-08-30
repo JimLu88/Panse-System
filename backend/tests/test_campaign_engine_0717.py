@@ -1156,7 +1156,7 @@ def test_placeholder_signup_without_live_price_is_blocked(db_session):
     assert checks["R16"]["items"][0]["taobao_sku_id"] == "73091"
 
 
-def test_placeholder_missing_live_price_uses_safe_cap_after_user_authorization(db_session):
+def test_placeholder_missing_live_price_stays_blocked_after_user_authorization(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
@@ -1173,7 +1173,33 @@ def test_placeholder_missing_live_price_uses_safe_cap_after_user_authorization(d
 
     placeholder = next(row for row in rows if row["taobao_sku_id"] == "73092")
     assert placeholder["price"] == 284.0
+    assert placeholder["remark"] is None
+    assert stats["placeholder_price_lowered"] == []
+    assert stats["placeholder_missing_live_price"][0]["taobao_sku_id"] == "73092"
+    assert checks["R16"]["level"] == "error"
+
+
+def test_placeholder_known_high_live_price_uses_safe_cap_after_user_authorization(
+        db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = (
+        "official_active_items=9300; placeholder_live_prices=73094:397; "
+        "placeholder_price_lowering_authorized=true"
+    )
+    _mk(db_session, "PPSPH007", "PPSPH00799", "9316", "73094",
+        daily=500, placeholder=True, line=250)
+    _mk(db_session, "PPSPH007", "PPSPH00701", "9316", "73095",
+        daily=1200, big=800)
+    db_session.commit()
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+    checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
+
+    placeholder = next(row for row in rows if row["taobao_sku_id"] == "73094")
+    real = next(row for row in rows if row["taobao_sku_id"] == "73095")
+    assert placeholder["price"] == 284.0
     assert placeholder["remark"] == "用户已授权定制咨询规格使用保护报名价"
+    assert real["price"] == 1200.0
     assert stats["placeholder_price_lowered"][0]["authorization"] == "current_plan_user_decision"
     assert checks["R16"]["level"] == "pass"
 

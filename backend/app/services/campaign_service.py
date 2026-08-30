@@ -1130,7 +1130,8 @@ def _erp_listed_product_codes(db: Session) -> set[str] | None:
 
 
 def build_signup_rows(
-        db: Session, plan, *, enforce_price_holds: bool = True
+        db: Session, plan, *, enforce_price_holds: bool = True,
+        allow_placeholder_safe_lowering: bool = False,
 ) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
@@ -1145,7 +1146,10 @@ def build_signup_rows(
     lev = TIER_LEVERAGE[plan_tier(plan)]
     placeholder_live_prices = placeholder_live_prices_for_plan(db, plan)
     placeholder_expired = placeholder_price_protection_expired(plan)
-    placeholder_lowering = placeholder_price_lowering_authorized(plan)
+    placeholder_lowering = bool(
+        allow_placeholder_safe_lowering
+        or placeholder_price_lowering_authorized(plan)
+    )
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
@@ -1227,12 +1231,10 @@ def build_signup_rows(
                     "safe_cap": row["price"],
                     "current_live_price": None,
                 }
-                if placeholder_lowering:
-                    row["remark"] = "用户已授权定制咨询规格使用保护报名价"
-                    stats["placeholder_price_lowered"].append({
-                        **detail, "authorization": "current_plan_user_decision"})
-                else:
-                    stats["placeholder_missing_live_price"].append(detail)
+                # The current-plan authorization covers only a *known* live
+                # price that is above the already-computed safe cap.  It must
+                # never turn missing platform evidence into an inferred price.
+                stats["placeholder_missing_live_price"].append(detail)
                 continue
             generated = _d(row["price"]) or Decimal("0")
             if live_price > generated:
@@ -1243,9 +1245,20 @@ def build_signup_rows(
                     "safe_cap": float(generated),
                     "current_live_price": float(live_price),
                 }
-                if placeholder_expired:
-                    row["remark"] = "价保已确认到期，按最低普惠券后价安全上限报名"
-                    stats["placeholder_price_lowered"].append(detail)
+                if placeholder_expired or placeholder_lowering:
+                    row["remark"] = (
+                        "用户已授权定制咨询规格使用保护报名价"
+                        if placeholder_lowering else
+                        "价保已确认到期，按最低普惠券后价安全上限报名"
+                    )
+                    stats["placeholder_price_lowered"].append({
+                        **detail,
+                        "authorization": (
+                            "current_plan_user_decision"
+                            if placeholder_lowering else
+                            "price_protection_expired"
+                        ),
+                    })
                 else:
                     blocked_placeholders.append(detail)
         if blocked_placeholders:
@@ -1905,6 +1918,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
 def preflight(
         db: Session, plan, *, no_sales_items: Optional[set[str]] = None,
         exact_item_scope: Optional[set[str]] = None,
+        allow_placeholder_safe_lowering: bool = False,
 ) -> list[dict]:
     """R0~R21 read-only pre-submit checks; never uploads to QianNiu."""
     from app.services import no_sales_service
@@ -1913,7 +1927,10 @@ def preflight(
     policy_check = _check_campaign_policy()
     if policy_check["level"] == "error":
         return [policy_check]
-    _srows, sstats = build_signup_rows(db, plan)
+    _srows, sstats = build_signup_rows(
+        db, plan,
+        allow_placeholder_safe_lowering=allow_placeholder_safe_lowering,
+    )
     _drows, dstats = build_discount_rows(
         db, plan, no_sales_items=no_sales_items)
     supplement_scope = authorized_supplement_items(plan)
@@ -3504,7 +3521,9 @@ def _stop_signup(db: Session, plan, result: dict) -> dict:
     return result
 
 
-def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
+def refresh_floor_evidence_from_current_activity(
+        db: Session, plan, *, allow_placeholder_safe_lowering: bool = False,
+) -> dict:
     """Refresh enrolled H/I plus exact not-yet-enrolled candidate price ceilings."""
     from app.services import (
         campaign_price_floor_service,
@@ -3520,7 +3539,8 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
             "missing": identity["missing"],
         }
     evidence_scope_rows, evidence_scope_stats = build_signup_rows(
-        db, plan, enforce_price_holds=False)
+        db, plan, enforce_price_holds=False,
+        allow_placeholder_safe_lowering=allow_placeholder_safe_lowering)
     exported = web_agent_service.campaign_export_items(
         db,
         identity["campaign_title"],

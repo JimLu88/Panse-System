@@ -318,6 +318,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
             "recover-super-reduce-plan7-discount-sku-identity")
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/execute-super-reduce-plan7-remaining"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"
     ) is None
     assert dependencies.machine_identity_for_key(

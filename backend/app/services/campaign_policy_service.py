@@ -64,6 +64,23 @@ def require_policy() -> dict[str, Any]:
     if (execution.get("platform_write_probe_enabled") is not False
             or execution.get("maximum_platform_signup_submissions_per_run") != 1):
         raise RuntimeError("活动报名规则未锁定为只允许一次平台报名写入，已停止")
+    bounded = execution.get("bounded_plan7_remaining_manifest_batches") or {}
+    if bounded != {
+        "enabled": True,
+        "workflow_key": "campaign:super-reduce:2026-09-01",
+        "authorized_item_scope_sha256": (
+            "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8"
+        ),
+        "max_items_per_batch": 50,
+        "max_rows_per_batch": 500,
+        "split_only_when_limit_requires_it": True,
+    }:
+        raise RuntimeError("活动报名规则未锁定计划7剩余清单的精确批次边界，已停止")
+    if (execution.get("each_signup_batch_requires_terminal_and_exact_per_sku_readback")
+            is not True
+            or execution.get("claimed_failed_or_unknown_batch_may_auto_retry")
+            is not False):
+        raise RuntimeError("活动报名规则未锁定逐批终态回查或失败禁止重试，已停止")
     if execution.get("on_failure") != "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision":
         raise RuntimeError("活动报名失败处理未锁定为停止、告警并等待用户决定，已停止")
     if (execution.get("automatic_campaign_withdrawal_enabled") is not False
@@ -93,6 +110,9 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定显式整链排除或禁止 SKU 轮换，已停止")
     if scope.get("no_sales_only_failure_action") != "keep_out_of_campaign_and_use_single_item_discount":
         raise RuntimeError("活动报名规则未锁定无动销仅失败的单品立减兜底，已停止")
+    if (scope.get("custom_placeholder_safe_cap_without_live_price")
+            != "block_and_report; current_plan_authorization_never_replaces_missing_platform_evidence"):
+        raise RuntimeError("活动报名规则未锁定占位SKU缺平台现价时停止，已停止")
     if scope.get("accepted_item_action") != "single_item_discount_first_then_final_campaign_signup":
         raise RuntimeError("活动报名规则未锁定先单品立减、后正式活动报名，已停止")
     if scope.get("existing_single_discount_edit_mode") != "one_item_per_job_with_sku_readback":
