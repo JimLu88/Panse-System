@@ -246,3 +246,51 @@ def test_resume_push_internal_guard_rejects_plan8(db_session, monkeypatch):
     assert result["ok"] is False
     assert result["step"] == "resume_execution_policy_guard"
     assert plan.status == "resume_executing"
+
+
+def test_exact_preflight_scope_drops_unrelated_r16_diagnostics(
+        db_session, monkeypatch):
+    plan = _plan()
+    db_session.add(plan)
+    db_session.commit()
+    unrelated = {
+        "taobao_item_id": "OTHER_ITEM",
+        "taobao_sku_id": "OTHER_SKU",
+        "current_live_price": None,
+    }
+    stats = {
+        "incomplete_items": [unrelated],
+        "placeholder_missing_live_price": [unrelated],
+        "placeholder_price_blocked_items": [unrelated],
+        "placeholder_price_lowered": [unrelated],
+        "excluded_no_sales_items": [],
+        "line_concessions": [],
+        "skipped_delisted": 0,
+        "official_ceil": False,
+    }
+    monkeypatch.setattr(
+        campaign_service, "build_signup_rows",
+        lambda *_a, **_k: (_signup_rows(), dict(stats)))
+    monkeypatch.setattr(
+        campaign_service, "build_discount_rows",
+        lambda *_a, **_k: (_discount_rows(), {
+            "line_concessions": [], "skipped_delisted": 0,
+            "official_ceil": False,
+        }))
+    monkeypatch.setattr(
+        campaign_service, "_check_campaign_policy",
+        lambda: {"rule": "R0", "level": "pass", "items": []})
+    monkeypatch.setattr(
+        campaign_service, "_check_price_floor_evidence",
+        lambda *_a, **_k: {"rule": "R17", "level": "pass", "checked": 2})
+    monkeypatch.setattr(
+        campaign_service, "price_hold_items", lambda *_a, **_k: [])
+
+    checks = campaign_service.preflight(
+        db_session, plan, exact_item_scope={"797294092429"})
+    by_rule = {row["rule"]: row for row in checks}
+
+    assert by_rule["R3"]["level"] == "pass"
+    assert by_rule["R16"]["level"] == "pass"
+    assert by_rule["R16"]["items"] == []
+    assert by_rule["R16"]["blocked_items"] == []

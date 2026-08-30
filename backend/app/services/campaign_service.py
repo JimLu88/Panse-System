@@ -1920,6 +1920,20 @@ def preflight(
                   if str(row.get("taobao_item_id") or "") in exact_scope]
         _drows = [row for row in _drows
                   if str(row.get("taobao_item_id") or "") in exact_scope]
+        # Builders intentionally collect diagnostics for the whole plan.  A
+        # one-shot resume must scope the item-level R3/R16 diagnostics too;
+        # otherwise unrelated held products can block an immutable reviewed
+        # item even though they cannot be uploaded by this execution.
+        for key in (
+            "incomplete_items",
+            "placeholder_missing_live_price",
+            "placeholder_price_blocked_items",
+            "placeholder_price_lowered",
+        ):
+            sstats[key] = [
+                row for row in (sstats.get(key) or [])
+                if str(row.get("taobao_item_id") or "") in exact_scope
+            ]
         sstats["exact_preflight_scope_items"] = sorted(exact_scope)
         sstats["exact_preflight_scope_rows"] = len(_srows)
         dstats["exact_preflight_scope_items"] = sorted(exact_scope)
