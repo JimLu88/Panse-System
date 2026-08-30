@@ -229,15 +229,7 @@ def sync_live_activity_evidence(db: Session, plan,
         if item_id in accepted_items and sku_id and price is not None and price > 0:
             live_prices[sku_id] = price.quantize(_CENT)
 
-    # A read-only export may refine which products are already active, but it
-    # must never rewrite an operator-owned all-store scope or erase its explicit
-    # exemption list.  Explicit active-item plans retain the historical
-    # refresh behaviour; all-store plans keep their request-owned R15 scope.
-    official_scope = official_scope_for_plan(plan)
-    if not (official_scope.get("configured") and official_scope.get("all_store")):
-        _remove_plan_marker(plan, "official_all_store")
-        _remove_plan_marker(plan, "official_exempt_items")
-        _set_plan_item_marker(plan, "official_active_items", accepted_items)
+    _sync_official_scope_after_platform_result(plan, accepted_items)
     _set_plan_item_marker(
         plan, "platform_qualified_items", prior_qualified | accepted_items)
     _set_plan_item_marker(
@@ -668,6 +660,24 @@ def _remove_plan_marker(plan, key: str) -> None:
     text = str(getattr(plan, "remark", None) or "")
     pattern = rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*[^;\n；]*"
     plan.remark = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+
+
+def _sync_official_scope_after_platform_result(
+        plan, accepted_items: set[str]) -> None:
+    """Record observed items without destroying the plan's requested scope.
+
+    ``official_all_store`` and its explicit exemption list are operator-owned
+    plan inputs.  Platform qualification and terminal submission receipts may
+    refine runtime evidence, but they must not turn an all-store plan into an
+    active-item plan.  Explicit active-item plans keep the historical behavior.
+    """
+    scope = official_scope_for_plan(plan)
+    if scope.get("configured") and scope.get("all_store"):
+        _remove_plan_marker(plan, "official_active_items")
+        return
+    _remove_plan_marker(plan, "official_all_store")
+    _remove_plan_marker(plan, "official_exempt_items")
+    _set_plan_item_marker(plan, "official_active_items", accepted_items)
 
 
 def _apply_authorized_supplement_scope(plan, rows: list[dict], stats: dict) -> tuple[
@@ -2692,9 +2702,7 @@ def _legacy_write_probe_qualify_signup_scope(db: Session, plan) -> dict:
             plan, "platform_hard_failed_items",
             (prior_hard_failed - supplement_scope) if supplement_scope else set())
         _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
-        _remove_plan_marker(plan, "official_all_store")
-        _remove_plan_marker(plan, "official_exempt_items")
-        _set_plan_item_marker(plan, "official_active_items", qualified)
+        _sync_official_scope_after_platform_result(plan, qualified)
         _record_terminal_platform_acceptance(plan, rows, already_correct)
         _record_terminal_coupon_floor_qualification(plan, rows, set())
         if not supplement_scope:
@@ -2829,9 +2837,7 @@ def _legacy_write_probe_qualify_signup_scope(db: Session, plan) -> dict:
     _set_plan_item_marker(plan, "platform_no_sales_items", marker_no_sales)
     _set_plan_item_marker(plan, "platform_hard_failed_items", marker_hard_failed)
     _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
-    _remove_plan_marker(plan, "official_all_store")
-    _remove_plan_marker(plan, "official_exempt_items")
-    _set_plan_item_marker(plan, "official_active_items", marker_qualified)
+    _sync_official_scope_after_platform_result(plan, marker_qualified)
     # Coupon-floor-only items are provisional until final signup succeeds.
     _record_terminal_platform_acceptance(plan, rows, terminal_accepted_ids)
     _record_terminal_coupon_floor_qualification(
@@ -3767,9 +3773,7 @@ def _classify_final_signup(
     _set_plan_item_marker(plan, "platform_qualified_items", qualified_items)
     _set_plan_item_marker(plan, "platform_no_sales_items", no_sales_ids)
     _set_plan_item_marker(plan, "platform_hard_failed_items", hard_failed_ids)
-    _remove_plan_marker(plan, "official_all_store")
-    _remove_plan_marker(plan, "official_exempt_items")
-    _set_plan_item_marker(plan, "official_active_items", qualified_items)
+    _sync_official_scope_after_platform_result(plan, qualified_items)
     _record_terminal_platform_acceptance(
         plan, pending_rows, accepted_items)
     db.commit()

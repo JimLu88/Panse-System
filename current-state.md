@@ -2,6 +2,28 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## 2026-08-30 campaign plan-scope persistence incident
+
+- The plan-7 platform submission was a one-item delta for item `797294092429`
+  (two SKUs), not proof that every ERP product or every planned single-item
+  discount had completed.  The latest read-only activity export contains 56
+  item IDs and 496 SKU evidence rows, while the generated discount plan contains
+  54 items and 388 rows; those are separate scopes and must not be collapsed
+  into a single "all products completed" statement.
+- Root cause: terminal platform classification replaced request-owned
+  `official_all_store=true; official_exempt_items=805268708396` with a derived
+  `official_active_items` marker.  That made later read-only rebuilds put the
+  plan-scoped exempt bookcase back into signup and discount candidates.
+- Terminal classification and qualification now preserve an operator-owned
+  all-store scope and its explicit exemptions.  Explicit active-item plans keep
+  their existing behavior.  Migration `0143` restores only workflow
+  `campaign:super-reduce:2026-09-01`, removes its stale derived active marker,
+  and restores item `805268708396` as a plan-only exemption.
+- This repair performs no signup, upload, discount push, price change, retry,
+  withdrawal, account action or notification.  Plan 7 remains incomplete until
+  an audited coverage reconciliation separately proves existing official scope,
+  the current one-item delta, and all required single-item-discount rows.
+
 ## 2026-08-30 plan 7 submitted-price / paused-state verification
 
 - The one approved plan-7 upload was submitted once and must never be replayed. Its terminal platform batch receipt was 1 item successful / 0 failed.

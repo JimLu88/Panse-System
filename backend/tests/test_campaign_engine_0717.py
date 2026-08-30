@@ -962,6 +962,55 @@ def test_live_activity_evidence_preserves_all_store_exemption_scope(db_session):
         "80526870839701": Decimal("1200.00")}
 
 
+def test_terminal_signup_preserves_all_store_exemption_scope(db_session):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "official_all_store=true; "
+        "official_exempt_items=805268708396; "
+        "platform_qualified_items="
+    )
+    db_session.commit()
+
+    result = cs._classify_final_signup(
+        db_session,
+        plan,
+        {
+            "submitted": True,
+            "validation": {"total_items": 1, "ok": 1, "failed": 0},
+        },
+        [{"taobao_item_id": "797294092429", "taobao_sku_id": "6292834839399"}],
+        set(),
+    )
+    scope = cs.official_scope_for_plan(plan)
+
+    assert result["ok"] is True
+    assert scope["configured"] is True
+    assert scope["all_store"] is True
+    assert scope["exempt_items"] == {"805268708396"}
+    assert "official_active_items=" not in plan.remark
+    assert cs.platform_qualified_items(plan) == {"797294092429"}
+
+
+def test_terminal_signup_updates_explicit_active_item_scope(db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = "official_active_items=700000000001"
+    db_session.commit()
+
+    result = cs._classify_final_signup(
+        db_session,
+        plan,
+        {
+            "submitted": True,
+            "validation": {"total_items": 1, "ok": 1, "failed": 0},
+        },
+        [{"taobao_item_id": "700000000002", "taobao_sku_id": "70000000000201"}],
+        set(),
+    )
+
+    assert result["ok"] is True
+    assert cs.official_scope_for_plan(plan)["active_items"] == {"700000000002"}
+
+
 def test_preflight_blocks_nosales_without_official_scope(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDD004", "PPSDD00401", "9309", "73071", daily=3000, big=2500)
