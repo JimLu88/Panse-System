@@ -165,6 +165,17 @@ class CampaignPlan7RemainingSignupIn(BaseModel):
     recovery_incident_id: str = Field(min_length=1)
 
 
+class CampaignPlan7PartialSignupAuditIn(BaseModel):
+    """Exact read-only closeout for the one partial draft import."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -724,6 +735,34 @@ def execute_super_reduce_plan7_remaining(
             "remaining_signup_manifest_count_drift",
             "remaining_signup_preflight_blocked",
         }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/audit-super-reduce-plan7-partial-signup")
+def audit_super_reduce_plan7_partial_signup(
+        body: CampaignPlan7PartialSignupAuditIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Download official failure proof and enrolled rows; never upload/publish."""
+    from app.services import campaign_plan7_remaining_signup_service
+
+    result = campaign_plan7_remaining_signup_service.audit_plan7_partial_signup(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_attempt_id=body.expected_attempt_id,
+        expected_manifest_sha256=body.expected_manifest_sha256,
+    )
+    if not result.get("ok"):
+        code = 404 if result.get("error") == "workflow_not_found" else 409
+        if result.get("error") in {
+                "partial_signup_audit_request_not_allowed",
+                "partial_signup_attempt_receipt_mismatch",
+                "partial_signup_manifest_drift",
+                "partial_signup_feedback_scope_mismatch",
+                "partial_signup_final_price_math_blocked"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result

@@ -10,6 +10,7 @@ readback.  A claimed, failed or unknown batch is never retried by this entry.
 from __future__ import annotations
 
 from collections import defaultdict
+import base64
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -82,6 +83,12 @@ EXPECTED_ITEM_COUNT = 5
 EXPECTED_ROW_COUNT = 70
 EXPECTED_REAL_SKU_ROWS = 52
 EXPECTED_PLACEHOLDER_SKU_ROWS = 18
+PARTIAL_ATTEMPT_ID = "782299846f10d86ef4742c20"
+PARTIAL_MANIFEST_SHA256 = (
+    "2fa747d77823ed63baee82c5dbcc0d0fff6e248f77583dd4c9b074fa57d5c30d"
+)
+PARTIAL_TERMINAL_COUNTS = {"total_items": 5, "ok": 2, "failed": 3}
+PARTIAL_AUDIT_EVIDENCE_TYPE = "plan7_remaining_partial_import_audit"
 
 
 def _utcnow() -> str:
@@ -761,6 +768,7 @@ def execute_plan7_remaining_signup(
         db.commit()
 
         submitted = None
+        platform_write_observed = None
         result = None
         classification = None
         post_submit = None
@@ -776,6 +784,8 @@ def execute_plan7_remaining_signup(
                 expected_items=len(batch["item_ids"]),
             )
             submitted = bool(result.get("submitted"))
+            platform_write_observed = bool(
+                result.get("platform_write_observed") or submitted)
             classification = campaign_service._classify_final_signup(
                 db, plan, result, batch["rows"], completed_items)
             if submitted:
@@ -806,6 +816,7 @@ def execute_plan7_remaining_signup(
             result = result or {}
             result["error"] = f"{type(exc).__name__}: {exc}"
             result["unknown_outcome"] = True
+            platform_write_observed = True
 
         attempt = _load_attempt(db) or attempt
         status = "completed" if batch_ok else (
@@ -816,6 +827,10 @@ def execute_plan7_remaining_signup(
             "status": status,
             "finished_at": _utcnow(),
             "submitted": submitted,
+            "platform_write_observed": platform_write_observed,
+            "published": bool((result or {}).get("published")),
+            "operation_semantics": (result or {}).get("operation_semantics"),
+            "stopped_before": (result or {}).get("stopped_before"),
             "job_id": (result or {}).get("job"),
             "terminal_validation": (result or {}).get("validation"),
             "terminal_classification": classification,
@@ -848,6 +863,7 @@ def execute_plan7_remaining_signup(
                 "batch_index": batch_index,
                 "job_id": (result or {}).get("job"),
                 "submitted": submitted,
+                "platform_write_observed": platform_write_observed,
                 "terminal_validation": (result or {}).get("validation"),
                 "terminal_classification": classification,
                 "post_submit_verification": verification,
@@ -855,13 +871,14 @@ def execute_plan7_remaining_signup(
             },
             export_evidence=export_evidence,
             failure_rows=(verification or {}).get("failures") or [],
-            platform_write=bool(submitted),
+            platform_write=bool(platform_write_observed),
         )
         db.commit()
 
         receipt_result = {
             "ok": batch_ok,
             "submitted": bool(submitted),
+            "platform_write_observed": bool(platform_write_observed),
             "job": (result or {}).get("job"),
             "validation": (result or {}).get("validation"),
             "terminal_classification": classification or {},
@@ -884,7 +901,7 @@ def execute_plan7_remaining_signup(
                 "attempt": _attempt_for_response(attempt),
                 "failed_batch": batch_index,
                 "execution_boundary": _execution_boundary(
-                    platform_write=bool(submitted)),
+                    platform_write=bool(platform_write_observed)),
             }
         completed_items.update(batch["item_ids"])
 
@@ -933,4 +950,229 @@ def execute_plan7_remaining_signup(
         "real_sku_rows": price_sources["real_sku_rows"],
         "placeholder_sku_rows": price_sources["placeholder_sku_rows"],
         "execution_boundary": _execution_boundary(platform_write=True),
+    }
+
+
+def audit_plan7_partial_signup(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_attempt_id: str, expected_manifest_sha256: str,
+) -> dict:
+    """Download the official failure workbook and re-export enrolled rows.
+
+    This is a read-only closeout for the single already-claimed attempt.  It
+    cannot upload, publish, retry, change prices or mutate campaign markers.
+    """
+    if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
+            or expected_attempt_id != PARTIAL_ATTEMPT_ID
+            or expected_manifest_sha256 != PARTIAL_MANIFEST_SHA256):
+        return _fail("partial_signup_audit_request_not_allowed")
+    plan = db.get(CampaignPlan, PLAN_ID)
+    if (plan is None or plan.workflow_key != WORKFLOW_KEY):
+        return _fail("workflow_not_found")
+    attempt = _load_attempt(db) or {}
+    batches = attempt.get("batches") or []
+    batch = batches[0] if len(batches) == 1 else {}
+    validation = batch.get("terminal_validation") or {}
+    actual_counts = {
+        "total_items": validation.get("total_items"),
+        "ok": validation.get("ok"),
+        "failed": validation.get("failed"),
+    }
+    if (attempt.get("attempt_id") != PARTIAL_ATTEMPT_ID
+            or attempt.get("manifest_sha256") != PARTIAL_MANIFEST_SHA256
+            or attempt.get("status") not in (
+                "failed_no_retry", "failed_unknown_outcome")
+            or batch.get("status") not in (
+                "failed_no_retry", "failed_unknown_outcome")
+            or actual_counts != PARTIAL_TERMINAL_COUNTS):
+        return _fail(
+            "partial_signup_attempt_receipt_mismatch",
+            actual_attempt_id=attempt.get("attempt_id"),
+            actual_status=attempt.get("status"),
+            actual_terminal_counts=actual_counts,
+        )
+
+    existing = db.execute(select(CampaignEvidenceSnapshot).where(
+        CampaignEvidenceSnapshot.plan_id == PLAN_ID,
+        CampaignEvidenceSnapshot.evidence_type == PARTIAL_AUDIT_EVIDENCE_TYPE,
+    ).order_by(CampaignEvidenceSnapshot.id.desc())).scalars().first()
+    if (existing is not None
+            and (existing.platform_summary or {}).get("attempt_id")
+            == PARTIAL_ATTEMPT_ID):
+        summary = dict(existing.platform_summary or {})
+        summary.update({
+            "ok": True,
+            "idempotent_replay": True,
+            "snapshot_id": existing.id,
+            "feedback_xlsx_b64": base64.b64encode(
+                existing.failure_artifact_blob or b"").decode("ascii"),
+            "execution_boundary": _execution_boundary(),
+        })
+        return summary
+
+    manifest = attempt.get("manifest_rows") or []
+    expected_rows = [{
+        "taobao_item_id": str(row.get("item_id") or ""),
+        "taobao_sku_id": str(row.get("sku_id") or ""),
+        "sku_code": str(row.get("sku_code") or ""),
+        "price": row.get("signup_price"),
+        "is_placeholder": bool(row.get("is_custom_placeholder")),
+    } for row in manifest]
+    manifest_items = {
+        str(row.get("taobao_item_id") or "") for row in expected_rows
+    } - {""}
+    if (manifest_items != AUTHORIZED_MISSING_ITEM_IDS
+            or len(expected_rows) != EXPECTED_ROW_COUNT
+            or _manifest_digest(expected_rows) != PARTIAL_MANIFEST_SHA256):
+        return _fail("partial_signup_manifest_drift")
+
+    from app.services import web_agent_service
+    feedback_result = web_agent_service.super_reduce_feedback(db, timeout_s=600)
+    if not feedback_result.get("ok"):
+        return _fail(
+            feedback_result.get("error") or "partial_signup_feedback_failed",
+            step="official_failure_feedback",
+            job_id=feedback_result.get("job_id"),
+        )
+    feedback_bytes = feedback_result.get("xlsx_bytes") or b""
+    feedback = feedback_result.get("feedback") or {}
+    failure_rows = feedback.get("failed") or []
+    failed_item_ids = {
+        str((row or {}).get("item_id") or "").strip()
+        for row in failure_rows
+        if str((row or {}).get("item_id") or "").strip()
+    }
+    bad_failure_pairs = [{
+        "item_id": str((row or {}).get("item_id") or "").strip(),
+        "sku_id": str((row or {}).get("sku_id") or "").strip(),
+    } for row in failure_rows if (
+        str((row or {}).get("item_id") or "").strip() not in manifest_items
+        or str((row or {}).get("sku_id") or "").strip() not in {
+            str(manifest_row.get("taobao_sku_id") or "")
+            for manifest_row in expected_rows
+            if str(manifest_row.get("taobao_item_id") or "")
+            == str((row or {}).get("item_id") or "").strip()
+        }
+    )]
+    if (len(feedback_bytes) < 100
+            or len(failed_item_ids) != PARTIAL_TERMINAL_COUNTS["failed"]
+            or not failed_item_ids <= manifest_items or bad_failure_pairs):
+        return _fail(
+            "partial_signup_feedback_scope_mismatch",
+            failed_item_ids=sorted(failed_item_ids),
+            bad_failure_pairs=bad_failure_pairs,
+            feedback_sha256=hashlib.sha256(feedback_bytes).hexdigest(),
+        )
+    draft_imported_item_ids = manifest_items - failed_item_ids
+
+    refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
+        db, plan, allow_placeholder_safe_lowering=True)
+    if not refreshed.get("ok"):
+        return _fail(
+            refreshed.get("error") or "partial_signup_readback_failed",
+            step=refreshed.get("step") or "official_enrolled_export",
+            job_id=refreshed.get("job_id"),
+            feedback_filename=feedback_result.get("filename"),
+            feedback_sha256=hashlib.sha256(feedback_bytes).hexdigest(),
+            feedback_xlsx_b64=base64.b64encode(feedback_bytes).decode("ascii"),
+        )
+    live_rows = refreshed.get("rows") or []
+    verification: dict[str, dict] = {}
+    official_exact: set[str] = set()
+    official_active: set[str] = set()
+    official_paused: set[str] = set()
+    for item_id in sorted(manifest_items):
+        item_rows = [
+            row for row in expected_rows
+            if str(row.get("taobao_item_id") or "") == item_id
+        ]
+        checked = _verify_all_skus(item_rows, live_rows)
+        verification[item_id] = checked
+        if not checked.get("ok"):
+            continue
+        official_exact.add(item_id)
+        statuses = {
+            status for row in checked.get("verified") or []
+            for status in row.get("statuses") or []
+        }
+        if statuses and statuses <= {"活动中", "已发布设定"}:
+            official_active.add(item_id)
+        else:
+            official_paused.add(item_id)
+
+    discount_rows, _discount_stats = campaign_service.build_discount_rows(db, plan)
+    exact_discount_rows = [
+        row for row in discount_rows
+        if str(row.get("taobao_item_id") or "") in manifest_items
+    ]
+    price_math = campaign_service._check_price_math(
+        db, plan, expected_rows, exact_discount_rows)
+    if price_math.get("level") != "pass":
+        return _fail(
+            "partial_signup_final_price_math_blocked",
+            price_math=price_math,
+            failed_item_ids=sorted(failed_item_ids),
+        )
+
+    feedback_sha = hashlib.sha256(feedback_bytes).hexdigest()
+    summary = {
+        "attempt_id": PARTIAL_ATTEMPT_ID,
+        "manifest_sha256": PARTIAL_MANIFEST_SHA256,
+        "terminal_counts": PARTIAL_TERMINAL_COUNTS,
+        "platform_write_observed": True,
+        "platform_write_kind": "partial_draft_import",
+        "published": False,
+        "stopped_before": "一键发布",
+        "draft_imported_item_ids": sorted(draft_imported_item_ids),
+        "failed_item_ids": sorted(failed_item_ids),
+        "failure_groups": feedback.get("by_reason") or [],
+        "failure_rows": failure_rows,
+        "official_exact_item_ids": sorted(official_exact),
+        "official_active_item_ids": sorted(official_active),
+        "official_paused_or_pending_item_ids": sorted(official_paused),
+        "official_not_exact_item_ids": sorted(manifest_items - official_exact),
+        "per_item_sku_verification": verification,
+        "final_price_math": price_math,
+        "feedback_filename": feedback_result.get("filename"),
+        "feedback_sha256": feedback_sha,
+        "feedback_size": len(feedback_bytes),
+        "feedback_job_id": feedback_result.get("job_id"),
+        "enrolled_export": refreshed.get("export_evidence"),
+        "safe_failed_only_recovery_available": False,
+        "recovery_blocker": (
+            "two items were accepted into platform draft while three failed; "
+            "do not upload or publish until exact draft/enrolled state and "
+            "official failure reasons receive a new bounded decision"
+        ),
+    }
+    snapshot = CampaignEvidenceSnapshot(
+        plan_id=PLAN_ID,
+        workflow_key=WORKFLOW_KEY,
+        evidence_type=PARTIAL_AUDIT_EVIDENCE_TYPE,
+        request_id=f"plan7-partial-audit-{PARTIAL_ATTEMPT_ID}",
+        web_agent_job_id=str(feedback_result.get("job_id") or "") or None,
+        scope_sha256=PARTIAL_MANIFEST_SHA256,
+        result_status="partial_draft_import_audited",
+        platform_summary=summary,
+        rows=expected_rows,
+        failure_rows=failure_rows,
+        execution_boundary=_execution_boundary(),
+        artifact_kind="campaign_enrolled_export",
+        artifact_filename=(refreshed.get("export_evidence") or {}).get("filename"),
+        artifact_sha256=(refreshed.get("export_evidence") or {}).get("sha256"),
+        artifact_size=(refreshed.get("export_evidence") or {}).get("size"),
+        failure_artifact_filename=feedback_result.get("filename"),
+        failure_artifact_sha256=feedback_sha,
+        failure_artifact_size=len(feedback_bytes),
+        failure_artifact_blob=feedback_bytes,
+    )
+    db.add(snapshot)
+    db.commit()
+    db.refresh(snapshot)
+    return {
+        "ok": True,
+        **summary,
+        "snapshot_id": snapshot.id,
+        "feedback_xlsx_b64": base64.b64encode(feedback_bytes).decode("ascii"),
+        "execution_boundary": _execution_boundary(),
     }

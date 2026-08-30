@@ -399,7 +399,7 @@ def super_reduce_feedback(db: Session, *, timeout_s: int = 200) -> dict:
     if not res.get("ok") or not isinstance(feedback, dict):
         return {"ok": False,
                 "error": res.get("error") or res.get("message") or "超级立减反馈下载失败"}
-    out = {"ok": True, "feedback": feedback,
+    out = {"ok": True, "feedback": feedback, "job_id": j["job"],
            "screenshot_base64": res.get("screenshot_base64")}
     if res.get("xlsx_b64"):
         import base64

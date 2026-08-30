@@ -2,6 +2,23 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 partial draft-import audit
+
+- The one claimed five-item job returned the official terminal `5 total / 2
+  import-success / 3 failed`. Super Reduce stops before `一键发布` whenever
+  import failures exist, so this is a partial platform draft write, not zero
+  platform activity and not proof that the two items are enrolled.
+- Attempt `782299846f10d86ef4742c20` and manifest
+  `2fa747d77823ed63baee82c5dbcc0d0fff6e248f77583dd4c9b074fa57d5c30d`
+  are permanently no-retry. The fixed audit entry downloads the original
+  failure workbook, re-exports enrolled items, verifies all five per SKU and
+  recomputes final-price math. Evidence is append-only and every execution
+  boundary remains false.
+- No failed-only recovery is exposed by this release. Exact draft/enrolled
+  status and all three official failure reasons must be known first; the two
+  draft-import successes, any already-enrolled item and every price conflict
+  are forbidden from another upload.
+
 ## 2026-08-30 plan 7 fresh official-scope partition
 
 - Fresh official export SHA-256

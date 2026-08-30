@@ -7,6 +7,7 @@ from app.models.campaign import CampaignEvidenceSnapshot, CampaignPlan
 from app.services import (
     campaign_plan7_remaining_signup_service as service,
     campaign_service,
+    web_agent_service,
 )
 
 
@@ -348,3 +349,172 @@ def test_batch_builder_keeps_each_item_whole_and_splits_at_item_limit():
 
     assert [len(batch["item_ids"]) for batch in batches] == [50, 1]
     assert sum(batch["row_count"] for batch in batches) == 51
+
+
+def test_partial_import_semantics_are_preserved_as_platform_draft_write(
+        db_session, monkeypatch):
+    plan = _plan()
+    monkeypatch.setattr(
+        web_agent_service, "upload_file",
+        lambda *_args, **_kwargs: {"ok": True, "job": "job4"})
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_args, **_kwargs: {
+            "result": {
+                "ok": False,
+                "attached": True,
+                "platform_write_observed": True,
+                "published": False,
+                "stopped_before": "一键发布",
+                "operation_semantics": "file_import_writes_platform_draft",
+                "mode": "batch_import",
+                "validation": {
+                    "total_items": 5, "ok": 2, "failed": 3,
+                },
+                "error": "super_reduce_import_failed_items",
+            },
+        })
+
+    result = campaign_service._upload_and_wait(
+        db_session, "super_reduce", "commit", b"xlsx", None, None,
+        plan=plan, expected_rows=70, expected_items=5)
+
+    assert result["ok"] is False
+    assert result["submitted"] is None
+    assert result["platform_write_observed"] is True
+    assert result["published"] is False
+    assert result["stopped_before"] == "一键发布"
+    assert result["validation"] == {"total_items": 5, "ok": 2, "failed": 3}
+
+
+def test_partial_draft_classifier_downloads_super_reduce_feedback_without_markers(
+        db_session, monkeypatch):
+    plan = _plan()
+    original_remark = plan.remark
+    pending = [{
+        "taobao_item_id": str(index),
+        "taobao_sku_id": f"9{index}",
+        "price": 100.0,
+        "is_placeholder": False,
+    } for index in range(1, 6)]
+    failed = [{
+        "item_id": str(index),
+        "sku_id": f"9{index}",
+        "reason": "其他规则",
+        "raw": "官方失败",
+    } for index in range(3, 6)]
+    monkeypatch.setattr(
+        web_agent_service, "super_reduce_feedback",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "feedback": {"failed": failed, "by_reason": []},
+            "filename": "官方失败表.xlsx",
+            "xlsx_bytes": b"PK-feedback",
+        })
+
+    result = campaign_service._classify_final_signup(
+        db_session, plan, {
+            "submitted": False,
+            "attached": True,
+            "platform_write_observed": True,
+            "stopped_before": "一键发布",
+            "validation": {
+                "total_items": 5, "ok": 2, "failed": 3,
+                "failed_items": [], "failed_reasons": [],
+            },
+        }, pending, set())
+
+    assert result["ok"] is False
+    assert result["error"] == "signup_partial_draft_import_not_published"
+    assert result["platform_write_observed"] is True
+    assert result["draft_imported_item_ids"] == ["1", "2"]
+    assert result["failed_item_ids"] == ["3", "4", "5"]
+    assert plan.remark == original_remark
+
+
+def test_partial_signup_audit_persists_official_failure_artifact_once(
+        db_session, monkeypatch):
+    plan = _plan()
+    db_session.add(plan)
+    db_session.commit()
+    source_rows = [
+        row for row in _rows()
+        if row["taobao_item_id"] in service.AUTHORIZED_MISSING_ITEM_IDS
+    ]
+    digest = service._manifest_digest(source_rows)
+    monkeypatch.setattr(service, "PARTIAL_MANIFEST_SHA256", digest)
+    manifest = service._manifest_rows(source_rows)
+    service._save_attempt(db_session, {
+        "attempt_id": service.PARTIAL_ATTEMPT_ID,
+        "manifest_sha256": digest,
+        "status": "failed_no_retry",
+        "manifest_rows": manifest,
+        "batches": [{
+            "status": "failed_no_retry",
+            "terminal_validation": {
+                "total_items": 5, "ok": 2, "failed": 3,
+            },
+        }],
+    })
+    db_session.commit()
+    failed_ids = sorted(service.AUTHORIZED_MISSING_ITEM_IDS)[-3:]
+    failed_rows = []
+    for item_id in failed_ids:
+        item_row = next(
+            row for row in source_rows if row["taobao_item_id"] == item_id)
+        failed_rows.append({
+            "item_id": item_id,
+            "sku_id": item_row["taobao_sku_id"],
+            "reason": "整品规则不通过",
+            "raw": "官方失败原因",
+        })
+    calls = []
+    feedback_bytes = b"PK" + b"x" * 200
+    monkeypatch.setattr(
+        web_agent_service, "super_reduce_feedback",
+        lambda *_args, **_kwargs: calls.append("feedback") or {
+            "ok": True, "job_id": "job-audit",
+            "filename": "官方失败表.xlsx", "xlsx_bytes": feedback_bytes,
+            "feedback": {
+                "failed": failed_rows,
+                "by_reason": [{"reason": "整品规则不通过", "items": 3}],
+            },
+        })
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_args, **_kwargs: calls.append("export") or {
+            "ok": True, "rows": [],
+            "export_evidence": {
+                "filename": "超级立减已报商品列表.xlsx",
+                "sha256": "a" * 64, "size": 123, "job_id": "job-export",
+            },
+        })
+    monkeypatch.setattr(
+        campaign_service, "build_discount_rows",
+        lambda *_args, **_kwargs: ([], {}))
+    monkeypatch.setattr(
+        campaign_service, "_check_price_math",
+        lambda *_args, **_kwargs: {"rule": "R13", "level": "pass"})
+    request = {
+        "workflow_key": service.WORKFLOW_KEY,
+        "expected_plan_id": 7,
+        "expected_attempt_id": service.PARTIAL_ATTEMPT_ID,
+        "expected_manifest_sha256": digest,
+    }
+
+    first = service.audit_plan7_partial_signup(db_session, **request)
+    replay = service.audit_plan7_partial_signup(db_session, **request)
+
+    assert first["ok"] is True
+    assert first["published"] is False
+    assert first["platform_write_kind"] == "partial_draft_import"
+    assert len(first["draft_imported_item_ids"]) == 2
+    assert first["failed_item_ids"] == failed_ids
+    assert first["official_active_item_ids"] == []
+    assert first["safe_failed_only_recovery_available"] is False
+    assert replay["ok"] is True and replay["idempotent_replay"] is True
+    assert calls == ["feedback", "export"]
+    snapshot = db_session.query(CampaignEvidenceSnapshot).filter_by(
+        evidence_type=service.PARTIAL_AUDIT_EVIDENCE_TYPE).one()
+    assert snapshot.failure_artifact_blob == feedback_bytes
+    assert snapshot.execution_boundary["platform_write"] is False

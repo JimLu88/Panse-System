@@ -2590,6 +2590,16 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
     out = {"ok": success, "error": error,
            "job": j["job"], "validation": validation,
            "submitted": res.get("submitted"),
+           "attached": bool(res.get("attached")),
+           "published": bool(res.get("published")),
+           "platform_write_observed": bool(
+               res.get("platform_write_observed") or res.get("attached")
+               or res.get("submitted")),
+           "operation_semantics": res.get("operation_semantics"),
+           "mode": res.get("mode"),
+           "stopped_before": res.get("stopped_before"),
+           "draft_import_success_count": res.get("draft_import_success_count"),
+           "draft_import_failed_count": res.get("draft_import_failed_count"),
            "final_import": res.get("final_import"),
            "final_step_error": res.get("final_step_error"),
            "screenshot_base64": res.get("screenshot_base64")}
@@ -3758,8 +3768,6 @@ def _classify_final_signup(
     """Classify the one real signup's terminal result without retrying it."""
     from app.services import no_sales_service, web_agent_service
 
-    if not result.get("submitted"):
-        return {"ok": False, "error": "signup_platform_write_receipt_missing"}
     validation = result.get("validation")
     if not isinstance(validation, dict):
         return {"ok": False, "error": "signup_terminal_validation_missing"}
@@ -3792,12 +3800,16 @@ def _classify_final_signup(
     feedback_refresh = None
     if failed_count and not failed_rows:
         campaign_id, united_activity_id = _plan_campaign_ids(plan)
-        feedback_refresh = web_agent_service.campaign_feedback(
-            db,
-            str(getattr(plan, "qn_campaign_title", None) or plan.name or ""),
-            campaign_id=campaign_id or "",
-            united_activity_id=united_activity_id or "",
-        )
+        if (str(getattr(plan, "campaign_type", "")) == "super_reduce"
+                and not (campaign_id and united_activity_id)):
+            feedback_refresh = web_agent_service.super_reduce_feedback(db)
+        else:
+            feedback_refresh = web_agent_service.campaign_feedback(
+                db,
+                str(getattr(plan, "qn_campaign_title", None) or plan.name or ""),
+                campaign_id=campaign_id or "",
+                united_activity_id=united_activity_id or "",
+            )
         if feedback_refresh.get("ok"):
             feedback = feedback_refresh.get("feedback") or {}
             failed_rows = feedback.get("failed") or []
@@ -3831,6 +3843,25 @@ def _classify_final_signup(
     no_sales_ids = no_sales_service.extract_no_sales_only_from_feedback(failed_rows)
     hard_failed_ids = failed_ids - no_sales_ids
     accepted_items = expected_items - failed_ids
+    if not result.get("submitted"):
+        return {
+            "ok": False,
+            "error": "signup_partial_draft_import_not_published",
+            "platform_write_observed": bool(
+                result.get("platform_write_observed") or result.get("attached")),
+            "published": False,
+            "stopped_before": result.get("stopped_before") or "一键发布",
+            "terminal_counts": {
+                "total": total, "ok": ok_count, "failed": failed_count,
+            },
+            "draft_imported_item_ids": sorted(accepted_items),
+            "failed_item_ids": sorted(failed_ids),
+            "no_sales_item_ids": sorted(no_sales_ids),
+            "hard_failed_item_ids": sorted(hard_failed_ids),
+            "failed_items": failed_rows,
+            "feedback_artifact": validation.get("feedback_artifact"),
+            "feedback_refresh": feedback_refresh,
+        }
     qualified_items = set(correct_items) | accepted_items
 
     no_sales_service.remove_no_sales(db, qualified_items)

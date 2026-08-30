@@ -43,6 +43,9 @@ CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH = (
 CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH = (
     "/api/campaigns/execute-super-reduce-plan7-remaining"
 )
+CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH = (
+    "/api/campaigns/audit-super-reduce-plan7-partial-signup"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
@@ -54,6 +57,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH,
     CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH,
+    CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH,
 })
 
 
@@ -283,6 +287,8 @@ def require_campaign_prepare_principal(
                 "campaign.super_reduce.plan7.discount_identity_readback"),
             CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH: (
                 "campaign.super_reduce.plan7.remaining_signup"),
+            CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH: (
+                "campaign.super_reduce.plan7.partial_signup_audit"),
         }
         return ServicePrincipal(
             username=identity,

@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 
 from app.cli import campaign_execute_plan7_remaining as cli
+from app.cli import campaign_audit_plan7_partial_signup as audit_cli
+from app import dependencies
 
 
 def test_long_server_call_emits_heartbeat(monkeypatch, capsys):
@@ -28,3 +30,16 @@ def test_recovery_payload_is_bound_to_the_observed_preclaim_incident():
         "plan7-scope-review-08a753484e03")
     assert cli._FIXED_PAYLOAD["expected_item_scope_sha256"] == (
         "1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86")
+
+
+def test_partial_audit_payload_is_bound_to_the_single_failed_attempt():
+    assert audit_cli._FIXED_PAYLOAD == {
+        "workflow_key": "campaign:super-reduce:2026-09-01",
+        "plan_id": 7,
+        "expected_attempt_id": "782299846f10d86ef4742c20",
+        "expected_manifest_sha256": (
+            "2fa747d77823ed63baee82c5dbcc0d0fff6e248f77583dd4c9b074fa57d5c30d"
+        ),
+    }
+    assert dependencies.CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
