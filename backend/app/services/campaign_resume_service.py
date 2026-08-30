@@ -35,6 +35,8 @@ EXPECTED_SCOPE_SHA256 = (
     "73d73f5e78d5f7149b4425f6c7e9909e9892f037d4859498e6dea26f0163b7a4"
 )
 ATTEMPT_KEY = "campaign_plan7_resume_execute_v1"
+POST_SUBMIT_ATTEMPT_ID = "dd0215218c70f952bb0865f8"
+POST_SUBMIT_VERIFY_KEY = "campaign_plan7_post_submit_verify_v1"
 
 
 def _load_json_setting(db: Session, key: str):
@@ -128,6 +130,21 @@ def _execution_boundary(*, submitted: bool = False) -> dict:
         "touches_plan8": False,
         "automatic_retry": False,
         "post_submit_readback_required": True,
+    }
+
+
+def _readonly_verification_boundary() -> dict:
+    return {
+        "plan_scoped_only": True,
+        "platform_read": True,
+        "platform_write": False,
+        "account_action": False,
+        "price_change": False,
+        "sku_rotation": False,
+        "withdraw_pause_remove": False,
+        "touches_plan8": False,
+        "notification": False,
+        "automatic_retry": False,
     }
 
 
@@ -360,3 +377,152 @@ def resume_super_reduce_plan7(
     if not completed:
         response["error"] = result.get("error") or "resume_execution_failed_no_retry"
     return response
+
+
+def verify_super_reduce_plan7_post_submit(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_attempt_id: str, expected_scope_sha256: str) -> dict:
+    """Fresh read-only verification after the single submitted plan-7 attempt.
+
+    This path can never call ``push_signup``.  It reconciles ERP state only if
+    a fresh exact export proves both reviewed SKUs are active at the exact
+    submitted prices.  A paused row remains alarmed and is reported explicitly.
+    """
+    boundary = _readonly_verification_boundary()
+    if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
+            or expected_attempt_id != POST_SUBMIT_ATTEMPT_ID
+            or expected_scope_sha256 != EXPECTED_SCOPE_SHA256):
+        return {"ok": False, "error": "post_submit_verify_request_not_allowed",
+                "execution_boundary": boundary}
+    plan = db.execute(
+        select(CampaignPlan).where(
+            CampaignPlan.id == PLAN_ID,
+            CampaignPlan.workflow_key == WORKFLOW_KEY,
+        ).with_for_update()
+    ).scalar_one_or_none()
+    if plan is None:
+        return {"ok": False, "error": "workflow_not_found",
+                "execution_boundary": boundary}
+    attempt = _load_json_setting(db, ATTEMPT_KEY)
+    if (not attempt or attempt.get("attempt_id") != expected_attempt_id
+            or attempt.get("scope_sha256") != EXPECTED_SCOPE_SHA256
+            or attempt.get("submitted") is not True):
+        return {"ok": False, "error": "post_submit_attempt_not_eligible",
+                "attempt_status": (attempt or {}).get("status"),
+                "execution_boundary": boundary}
+    if plan.status == "signup_pushed" and attempt.get("status") == "completed":
+        return {
+            "ok": True,
+            "idempotent_replay": True,
+            "workflow_key": WORKFLOW_KEY,
+            "plan_id": PLAN_ID,
+            "plan_status": plan.status,
+            "attempt_id": expected_attempt_id,
+            "execution_boundary": boundary,
+        }
+    if plan.status != "alarmed" or attempt.get("status") != "failed" \
+            or attempt.get("result_step") != "post_submit_sku_verification":
+        return {"ok": False, "error": "post_submit_verify_state_not_allowed",
+                "plan_status": plan.status,
+                "attempt_status": attempt.get("status"),
+                "execution_boundary": boundary}
+
+    snapshot, signup_rows, discount_rows = _scope_snapshot(db, plan)
+    digest = _snapshot_digest(snapshot)
+    if (digest != EXPECTED_SCOPE_SHA256 or len(signup_rows) != 2
+            or len(discount_rows) != 2):
+        return {"ok": False, "error": "post_submit_verify_scope_drift",
+                "actual_scope_sha256": digest,
+                "execution_boundary": boundary}
+
+    refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
+        db, plan)
+    if not refreshed.get("ok"):
+        return {
+            "ok": False,
+            "error": refreshed.get("error") or "post_submit_readonly_export_failed",
+            "step": refreshed.get("step") or "post_submit_readonly_export",
+            "job_id": refreshed.get("job_id"),
+            "detail": refreshed.get("detail"),
+            "execution_boundary": boundary,
+        }
+    verification = campaign_service._verify_signup_rows(
+        signup_rows, refreshed.get("rows") or [])
+    export_evidence = refreshed.get("export_evidence") or {}
+    paused_only = bool(verification.get("failures")) and all(
+        row.get("error") == "活动价已导入但商品仍为暂停"
+        for row in verification.get("failures") or []
+    )
+    observed = {
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "attempt_id": expected_attempt_id,
+        "scope_sha256": EXPECTED_SCOPE_SHA256,
+        "verification": verification,
+        "export_evidence": export_evidence,
+        "classification": (
+            "active_exact" if verification.get("ok")
+            else "platform_imported_but_paused" if paused_only
+            else "platform_state_not_verified"
+        ),
+        "execution_boundary": boundary,
+    }
+    settings_service.set_value(
+        db,
+        POST_SUBMIT_VERIFY_KEY,
+        json.dumps(observed, ensure_ascii=False, sort_keys=True, default=str),
+        description="超级立减计划7提交后只读延迟核验回执（不含凭据）",
+    )
+    if not verification.get("ok"):
+        db.commit()
+        return {
+            "ok": False,
+            "error": (
+                "platform_imported_but_paused" if paused_only
+                else "post_submit_platform_state_not_verified"
+            ),
+            "workflow_key": WORKFLOW_KEY,
+            "plan_id": PLAN_ID,
+            "plan_status": plan.status,
+            "attempt_id": expected_attempt_id,
+            "verification": verification,
+            "export_evidence": export_evidence,
+            "execution_boundary": boundary,
+        }
+
+    plan.status = "signup_pushed"
+    completed_attempt = {
+        **attempt,
+        "status": "completed",
+        "verified_at": observed["observed_at"],
+        "completed_by": "delayed_readonly_post_submit_verification",
+        "post_submit_export_sha256": export_evidence.get("sha256"),
+    }
+    _save_attempt(db, completed_attempt)
+    db.commit()
+    receipt_result = {
+        "ok": True,
+        "submitted": True,
+        "job": export_evidence.get("job_id"),
+        "terminal_counts": {"total": 1, "ok": 1, "failed": 0},
+        "terminal_classification": {
+            "accepted_item_ids": [EXPECTED_ITEM_ID],
+            "no_sales_item_ids": [],
+            "hard_failed_item_ids": [],
+        },
+        "post_submit_export_evidence": export_evidence,
+        "post_submit_verification": verification,
+    }
+    campaign_service._record_signup_execution_receipt(db, plan, receipt_result)
+    return {
+        "ok": True,
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "plan_status": plan.status,
+        "attempt_id": expected_attempt_id,
+        "classification": "active_exact",
+        "verification": verification,
+        "export_evidence": export_evidence,
+        "execution_boundary": boundary,
+    }

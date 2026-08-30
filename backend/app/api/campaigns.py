@@ -95,6 +95,17 @@ class CampaignPlan7ResumeExecuteIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7PostSubmitVerifyIn(BaseModel):
+    """Exact read-only delayed verification for the submitted plan-7 attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -431,6 +442,34 @@ def resume_super_reduce_plan7(
         if error in {
                 "resume_identity_not_allowed", "resume_request_not_allowed",
                 "resume_scope_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/verify-super-reduce-plan7-post-submit")
+def verify_super_reduce_plan7_post_submit(
+        body: CampaignPlan7PostSubmitVerifyIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Fresh export-only verification after the one submitted plan-7 attempt."""
+    from app.services import campaign_resume_service
+
+    result = campaign_resume_service.verify_super_reduce_plan7_post_submit(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_attempt_id=body.expected_attempt_id,
+        expected_scope_sha256=body.expected_scope_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "post_submit_verify_request_not_allowed",
+                "post_submit_attempt_not_eligible",
+                "post_submit_verify_state_not_allowed",
+                "post_submit_verify_scope_drift"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result

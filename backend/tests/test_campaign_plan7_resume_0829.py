@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 from app.models.campaign import CampaignPlan
 from app.services import (
     campaign_price_floor_service,
     campaign_resume_service,
     campaign_service,
+    settings_service,
 )
 
 
@@ -294,3 +296,95 @@ def test_exact_preflight_scope_drops_unrelated_r16_diagnostics(
     assert by_rule["R16"]["level"] == "pass"
     assert by_rule["R16"]["items"] == []
     assert by_rule["R16"]["blocked_items"] == []
+
+
+def _seed_failed_submitted_attempt(db_session):
+    settings_service.set_value(
+        db_session,
+        campaign_resume_service.ATTEMPT_KEY,
+        json.dumps({
+            "attempt_id": campaign_resume_service.POST_SUBMIT_ATTEMPT_ID,
+            "workflow_key": campaign_resume_service.WORKFLOW_KEY,
+            "plan_id": 7,
+            "scope_sha256": campaign_resume_service.EXPECTED_SCOPE_SHA256,
+            "status": "failed",
+            "submitted": True,
+            "result_step": "post_submit_sku_verification",
+        }),
+    )
+    db_session.commit()
+
+
+def _post_submit_verify_request():
+    return {
+        "workflow_key": campaign_resume_service.WORKFLOW_KEY,
+        "expected_plan_id": 7,
+        "expected_attempt_id": campaign_resume_service.POST_SUBMIT_ATTEMPT_ID,
+        "expected_scope_sha256": campaign_resume_service.EXPECTED_SCOPE_SHA256,
+    }
+
+
+def test_plan7_post_submit_verify_reports_exact_prices_still_paused(
+        db_session, monkeypatch):
+    plan = _plan()
+    db_session.add(plan)
+    db_session.commit()
+    _seed_failed_submitted_attempt(db_session)
+    _patch_safe_package(monkeypatch)
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_a, **_k: {
+            "ok": True,
+            "rows": [{
+                "item_id": row["taobao_item_id"],
+                "sku_id": row["taobao_sku_id"],
+                "status": "暂停",
+                "activity_price": row["price"],
+            } for row in _signup_rows()],
+            "export_evidence": {"sha256": "fresh-paused", "job_id": "job4"},
+        })
+
+    result = campaign_resume_service.verify_super_reduce_plan7_post_submit(
+        db_session, **_post_submit_verify_request())
+
+    assert result["ok"] is False
+    assert result["error"] == "platform_imported_but_paused"
+    assert result["execution_boundary"]["platform_write"] is False
+    assert plan.status == "alarmed"
+    assert all(
+        row["error"] == "活动价已导入但商品仍为暂停"
+        for row in result["verification"]["failures"])
+
+
+def test_plan7_post_submit_verify_closes_only_from_fresh_active_exact_export(
+        db_session, monkeypatch):
+    plan = _plan()
+    db_session.add(plan)
+    db_session.commit()
+    _seed_failed_submitted_attempt(db_session)
+    _patch_safe_package(monkeypatch)
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_a, **_k: {
+            "ok": True,
+            "rows": [{
+                "item_id": row["taobao_item_id"],
+                "sku_id": row["taobao_sku_id"],
+                "status": "活动中",
+                "activity_price": row["price"],
+            } for row in _signup_rows()],
+            "export_evidence": {"sha256": "fresh-active", "job_id": "job5"},
+        })
+
+    result = campaign_resume_service.verify_super_reduce_plan7_post_submit(
+        db_session, **_post_submit_verify_request())
+
+    assert result["ok"] is True
+    assert result["classification"] == "active_exact"
+    assert result["execution_boundary"]["platform_write"] is False
+    assert plan.status == "signup_pushed"
+    attempt = json.loads(settings_service.get(
+        db_session, campaign_resume_service.ATTEMPT_KEY,
+        env_fallback=False))
+    assert attempt["status"] == "completed"
+    assert attempt["completed_by"] == "delayed_readonly_post_submit_verification"

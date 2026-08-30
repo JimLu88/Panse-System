@@ -2144,3 +2144,30 @@ def test_super_signup_row_verification_accepts_any_exact_active_marketing_record
 
     assert result["ok"] is True
     assert result["failed_real_skus"] == 0
+
+
+def test_super_signup_row_verification_reports_exact_price_as_paused_not_missing():
+    expected = [{
+        "taobao_item_id": "797294092429",
+        "taobao_sku_id": "6292834839399",
+        "price": 1582.5,
+        "is_placeholder": False,
+    }]
+    live = [{
+        "item_id": "797294092429",
+        "sku_id": "6292834839399",
+        "status": "暂停",
+        "activity_price": 1582.5,
+    }]
+
+    result = cs._verify_signup_rows(expected, live)
+
+    assert result["ok"] is False
+    assert result["failures"] == [{
+        "item_id": "797294092429",
+        "sku_id": "6292834839399",
+        "expected_activity_price": 1582.5,
+        "actual_activity_prices": [1582.5],
+        "actual_statuses": ["暂停"],
+        "error": "活动价已导入但商品仍为暂停",
+    }]

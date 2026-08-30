@@ -12,6 +12,9 @@ from app.cli import campaign_prepare as prepare_cli
 from app.cli import campaign_refresh_evidence as refresh_cli
 from app.cli import campaign_correct_official_exemptions as correction_cli
 from app.cli import campaign_resume_super_reduce_plan7 as resume_plan7_cli
+from app.cli import (
+    campaign_verify_super_reduce_plan7_post_submit as verify_plan7_cli,
+)
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -72,6 +75,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/resume-super-reduce-plan7"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/verify-super-reduce-plan7-post-submit"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"
@@ -240,6 +247,45 @@ def test_plan7_resume_cli_has_fixed_direct_endpoint(monkeypatch):
         "url": (
             "http://127.0.0.1:8000/api/campaigns/"
             "resume-super-reduce-plan7"
+        ),
+        "token": TOKEN,
+        "timeout": 1200,
+    }
+
+
+def test_plan7_post_submit_verify_cli_has_fixed_direct_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["token"] = req.get_header("X-api-key")
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        verify_plan7_cli.request, "build_opener", lambda *_: Opener())
+    status, body = verify_plan7_cli.call_verify(b'{}', token=TOKEN)
+
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured == {
+        "url": (
+            "http://127.0.0.1:8000/api/campaigns/"
+            "verify-super-reduce-plan7-post-submit"
         ),
         "token": TOKEN,
         "timeout": 1200,

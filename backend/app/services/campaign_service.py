@@ -3641,6 +3641,29 @@ def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dic
             for row in candidates
         ):
             continue
+        paused_candidates = [
+            row for row in live_rows
+            if row.get("status") == "暂停"
+            and str(row.get("item_id") or "") == item_id
+            and str(row.get("sku_id") or "") == sku_id
+        ]
+        paused_exact = [
+            row for row in paused_candidates
+            if row.get("activity_price") is not None
+            and abs(float(row["activity_price"]) - price) <= 0.005
+        ]
+        if paused_exact:
+            failures.append({
+                "item_id": item_id,
+                "sku_id": sku_id,
+                "expected_activity_price": price,
+                "actual_activity_prices": [
+                    row.get("activity_price") for row in paused_exact
+                ],
+                "actual_statuses": ["暂停"],
+                "error": "活动价已导入但商品仍为暂停",
+            })
+            continue
         failures.append({
             "item_id": item_id,
             "sku_id": sku_id,

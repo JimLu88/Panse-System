@@ -2,6 +2,13 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 submitted-price / paused-state verification
+
+- The one approved plan-7 upload was submitted once and must never be replayed. Its terminal platform batch receipt was 1 item successful / 0 failed.
+- Fresh export SHA256 `c2400fe896bc5f6da1e544faef099b7074a0d79e941aba9a7e9e58fbcd8ee88f` contains both reviewed SKU IDs with exact activity prices `1582.50` and `1410.00`, but the platform status is `暂停`. The old verifier discarded paused rows and incorrectly reported them as missing.
+- `POST /api/campaigns/verify-super-reduce-plan7-post-submit` and `scripts/campaign_verify_super_reduce_plan7_post_submit_nas.ps1` are fixed to workflow `campaign:super-reduce:2026-09-01`, plan 7, attempt `dd0215218c70f952bb0865f8`, and the reviewed scope digest. They perform a fresh export and comparison only: no signup, upload, submit, price change, activation, notification, or retry.
+- Exact-price paused rows now report `platform_imported_but_paused` and leave the plan alarmed. Only a later fresh export proving both exact SKU prices in `已发布设定`/`活动中` may reconcile ERP to `signup_pushed`; no platform action is performed by that reconciliation.
+
 ## 2026-08-29 Super Reduce plan 7 one-shot resume gate
 
 - A dedicated audited route and container CLI now resume only
