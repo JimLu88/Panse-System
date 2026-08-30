@@ -162,6 +162,7 @@ class CampaignPlan7RemainingSignupIn(BaseModel):
     plan_id: int = Field(ge=1)
     expected_status: str
     expected_item_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    recovery_incident_id: str = Field(min_length=1)
 
 
 class CampaignPlanUpdate(BaseModel):
@@ -701,6 +702,7 @@ def execute_super_reduce_plan7_remaining(
             expected_status=body.expected_status,
             expected_item_scope_sha256=(
                 body.expected_item_scope_sha256),
+            recovery_incident_id=body.recovery_incident_id,
         )
     )
     if not result.get("ok"):

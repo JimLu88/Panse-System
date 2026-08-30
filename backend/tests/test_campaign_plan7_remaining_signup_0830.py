@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from app.models.campaign import CampaignPlan
+from app.models.campaign import CampaignEvidenceSnapshot, CampaignPlan
 from app.services import (
     campaign_plan7_remaining_signup_service as service,
     campaign_service,
@@ -59,6 +59,7 @@ def _request():
         "expected_plan_id": 7,
         "expected_status": "alarmed",
         "expected_item_scope_sha256": service.AUTHORIZED_ITEM_SCOPE_SHA256,
+        "recovery_incident_id": service.RECOVERY_INCIDENT_ID,
     }
 
 
@@ -254,6 +255,12 @@ def test_preclaim_read_failure_is_safe_to_recover(db_session, monkeypatch):
     assert failed["execution_boundary"]["platform_write"] is False
     assert service._load_attempt(db_session) is None
     assert plan.status == "alarmed"
+    snapshots = db_session.query(CampaignEvidenceSnapshot).filter_by(
+        plan_id=7, evidence_type="plan7_remaining_preclaim").all()
+    assert len(snapshots) == 1
+    assert snapshots[0].result_status == "preclaim_failed"
+    assert snapshots[0].platform_summary["attempt_claimed"] is False
+    assert snapshots[0].execution_boundary["platform_write"] is False
 
 
 def test_batch_builder_keeps_each_item_whole_and_splits_at_item_limit():

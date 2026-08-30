@@ -2,6 +2,22 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 pre-claim export recovery hardening
+
+- The second plan-7 remaining-signup request reached ERP and returned HTTP 409
+  after about 394.6 seconds, but the caller session disappeared before showing
+  its JSON. Live state proved the one-shot setting was absent and no execution
+  receipt was added, so no batch was claimed and no platform write occurred.
+- The fixed payload is now bound to recovery incident
+  `plan7-preclaim-export-e222849772c5`; stale copies of the old command fail
+  schema/request guards. While the server is working, the container CLI emits a
+  heartbeat every 20 seconds so SSH/Codex does not appear silently stalled.
+- Any future pre-claim evidence failure is persisted as
+  `plan7_remaining_preclaim` evidence with `attempt_claimed=false` and
+  `platform_write=false`, while the one-shot attempt key remains untouched.
+  Focused route/service/CLI regressions passed 25. No campaign execution was
+  used for verification.
+
 ## 2026-08-30 plan 7 submitted identity-recovery readback closeout
 
 - Recovery attempt `ab51f002ac5570c9bb407d00` has an authoritative platform

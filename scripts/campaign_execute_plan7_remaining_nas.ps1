@@ -17,6 +17,7 @@ $payload = [ordered]@{
     plan_id = 7
     expected_status = 'alarmed'
     expected_item_scope_sha256 = 'd2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8'
+    recovery_incident_id = 'plan7-preclaim-export-e222849772c5'
 }
 $raw = $payload | ConvertTo-Json -Compress
 $remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_execute_plan7_remaining'

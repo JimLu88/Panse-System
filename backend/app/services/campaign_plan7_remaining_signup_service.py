@@ -56,6 +56,7 @@ AUTHORIZED_ITEM_SCOPE_SHA256 = (
     "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8"
 )
 ATTEMPT_KEY = "campaign_plan7_remaining_signup_v1"
+RECOVERY_INCIDENT_ID = "plan7-preclaim-export-e222849772c5"
 MAX_ITEMS_PER_BATCH = 50
 MAX_ROWS_PER_BATCH = 500
 EXPECTED_ITEM_COUNT = 30
@@ -305,12 +306,13 @@ def _persist_snapshot(
         export_evidence: dict | None = None,
         failure_rows: list[dict] | None = None,
         platform_write: bool = False,
+        evidence_type: str = "plan7_remaining_signup_batch",
 ) -> None:
     export = export_evidence or {}
     db.add(CampaignEvidenceSnapshot(
         plan_id=PLAN_ID,
         workflow_key=WORKFLOW_KEY,
-        evidence_type="plan7_remaining_signup_batch",
+        evidence_type=evidence_type,
         request_id=request_id,
         web_agent_job_id=str(summary.get("job_id") or "") or None,
         scope_sha256=scope_sha256,
@@ -336,11 +338,13 @@ def _attempt_for_response(attempt: dict) -> dict:
 def execute_plan7_remaining_signup(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_status: str, expected_item_scope_sha256: str,
+        recovery_incident_id: str,
 ) -> dict:
     """Read current evidence, claim once, submit bounded batches and read back."""
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
-            or expected_item_scope_sha256 != AUTHORIZED_ITEM_SCOPE_SHA256):
+            or expected_item_scope_sha256 != AUTHORIZED_ITEM_SCOPE_SHA256
+            or recovery_incident_id != RECOVERY_INCIDENT_ID):
         return _fail("remaining_signup_request_not_allowed")
     if _canonical_scope_digest(AUTHORIZED_PLACEHOLDER_ITEM_IDS) \
             != AUTHORIZED_ITEM_SCOPE_SHA256:
@@ -392,12 +396,38 @@ def execute_plan7_remaining_signup(
     refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
         db, plan, allow_placeholder_safe_lowering=True)
     if not refreshed.get("ok"):
-        return _fail(
+        failed = _fail(
             refreshed.get("error") or "remaining_signup_evidence_refresh_failed",
             step=refreshed.get("step"),
             job_id=refreshed.get("job_id"),
             detail=refreshed.get("detail"),
         )
+        # A pre-claim failure is safe to recover, but it must not disappear when
+        # the caller disconnects or the on-demand Web-Agent exits.  Persist only
+        # the read-only terminal facts; never create ATTEMPT_KEY here.
+        _persist_snapshot(
+            db,
+            request_id=(
+                str(refreshed.get("request_id") or "").strip()
+                or f"plan7-remaining-preclaim-{secrets.token_hex(8)}"
+            ),
+            scope_sha256=AUTHORIZED_ITEM_SCOPE_SHA256,
+            result_status="preclaim_failed",
+            rows=[],
+            summary={
+                "recovery_incident_id": recovery_incident_id,
+                "error": failed.get("error"),
+                "step": failed.get("step"),
+                "job_id": failed.get("job_id"),
+                "detail": failed.get("detail"),
+                "attempt_claimed": False,
+                "platform_write": False,
+            },
+            platform_write=False,
+            evidence_type="plan7_remaining_preclaim",
+        )
+        db.commit()
+        return failed
     live_rows = refreshed.get("rows") or []
     already_present = _active_or_pending_items(
         live_rows, AUTHORIZED_PLACEHOLDER_ITEM_IDS)

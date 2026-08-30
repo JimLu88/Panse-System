@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from urllib import error, request
 
 from app.database import SessionLocal
@@ -21,6 +22,8 @@ _FIXED_PAYLOAD = {
     "expected_status": campaign_plan7_remaining_signup_service.EXPECTED_STATUS,
     "expected_item_scope_sha256": (
         campaign_plan7_remaining_signup_service.AUTHORIZED_ITEM_SCOPE_SHA256),
+    "recovery_incident_id": (
+        campaign_plan7_remaining_signup_service.RECOVERY_INCIDENT_ID),
 }
 
 
@@ -57,7 +60,7 @@ def call_execute(payload: bytes, *, token: str) -> tuple[int, bytes]:
         headers={
             "Content-Type": "application/json; charset=utf-8",
             "X-API-Key": token,
-            "User-Agent": "panse-campaign-plan7-remaining-cli/1",
+            "User-Agent": "panse-campaign-plan7-remaining-cli/2",
         },
     )
     opener = request.build_opener(request.ProxyHandler({}))
@@ -68,10 +71,27 @@ def call_execute(payload: bytes, *, token: str) -> tuple[int, bytes]:
         return int(exc.code), exc.read()
 
 
+def _call_with_heartbeat(
+        payload: bytes, *, token: str, heartbeat_s: float = 20.0,
+) -> tuple[int, bytes]:
+    """Keep SSH/caller sessions visibly alive while the server owns the work."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(call_execute, payload, token=token)
+        while True:
+            try:
+                return pending.result(timeout=heartbeat_s)
+            except FutureTimeout:
+                print(
+                    "[plan7] 服务器仍在执行只读导出/安全校验，请勿关闭或重跑…",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+
 def main() -> int:
     try:
         payload = _read_payload()
-        status, body = call_execute(payload, token=_service_token())
+        status, body = _call_with_heartbeat(payload, token=_service_token())
     except (ValueError, RuntimeError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
               file=sys.stderr)
