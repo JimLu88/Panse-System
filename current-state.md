@@ -1,6 +1,40 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-29 (Asia/Shanghai)
+Last updated: 2026-08-30 (Asia/Shanghai)
+
+## 2026-08-30 plan 7 single-discount evidence and terminal receipts
+
+- The earlier one-item Super Reduce submission did not prove that the separate
+  388-row SKU-level single-discount workbook was applied.  Plan 7 now has a
+  fixed, service-authenticated read-only audit route and NAS wrapper.  It locks
+  workflow `campaign:super-reduce:2026-09-01`, plan `7`, the canonical 388-row / 54-item
+  scope digest, the exact update window, and the plan-only exclusion
+  `805268708396`.
+- The Web-Agent may only search the SKU-level single-discount list, open an exact
+  activity's `修改优惠` readback and read visible SKU amounts/status.  It cannot
+  select, fill, upload, submit, activate, pause, delete, notify or automatically
+  retry.  Ambiguous activity IDs, missing rows and unknown states remain explicit
+  differences instead of being called success.
+- Migration `0144` adds append-only `campaign_evidence_snapshots`.  The audit
+  stores the complete per-SKU classification plus the canonical raw readback
+  artifact.  Future single-discount commits also persist the submitted target
+  workbook, final platform counters, every failed row and the complete platform
+  failure workbook in an independent transaction, so a later rollback cannot
+  erase a partial-write receipt.
+- A single-discount commit is now complete only when the platform terminal says
+  `complete`, failed rows are zero and the successful row count exactly equals
+  the requested row count.  Partial platform success fails closed and is never
+  treated as full completion or an automatic retry signal.
+- Code/production commit `0252a40276f6800f87a1099ea81b5c22d70154f0` passed
+  94 focused ERP tests, campaign regression and Python compilation.  The unified
+  NAS release passed `/api/health`, `/api/ready`, API/Web version parity,
+  migration `0144 (head)` and all API/Web/DB/backup container checks.  No audit,
+  signup, discount upload, submit, price change or platform account action was
+  run during maintenance.
+- Task 01 may run the only formal read-only audit command:
+  `& 'D:\AI\畔色ERP系统\ERP程序\scripts\campaign_audit_plan7_single_discount_nas.ps1'`.
+  Its structured result, not the historical workbook alone, is the authority for
+  deciding which of the 388 rows are correct, missing, mismatched or not effective.
 
 ## 2026-08-30 campaign plan-scope persistence incident
 
