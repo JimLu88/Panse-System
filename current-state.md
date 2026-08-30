@@ -23,6 +23,16 @@ Last updated: 2026-08-29 (Asia/Shanghai)
   withdrawal, account action or notification.  Plan 7 remains incomplete until
   an audited coverage reconciliation separately proves existing official scope,
   the current one-item delta, and all required single-item-discount rows.
+- Code/production commit `01ae63a84fd539659a070becce536e2b3e061708` passed
+  203 campaign tests (201 passed, 2 intentional skips), Python compilation and
+  diff checks.  The unified NAS release passed health/ready, API/Web version
+  parity, migration `0143 (head)` and API/Web/DB/backup container checks.
+  Rollback images: `panse-system-api:rollback-20260830-122920` and
+  `panse-system-web:rollback-20260830-123341`.
+- Production read-only rebuild after migration keeps plan 7 `alarmed`, produces
+  exactly two signup rows for item `797294092429` and 388 discount rows across
+  54 items, and excludes `805268708396` from both scopes.  This is scope-safety
+  evidence only; it does not prove those 388 discount rows were applied.
 
 ## 2026-08-30 plan 7 submitted-price / paused-state verification
 
