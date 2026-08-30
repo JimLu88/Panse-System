@@ -16,6 +16,9 @@ from app.cli import (
     campaign_verify_super_reduce_plan7_post_submit as verify_plan7_cli,
 )
 from app.cli import campaign_audit_plan7_single_discount as audit_plan7_cli
+from app.cli import (
+    campaign_correct_plan7_single_discount as discount_correction_cli,
+)
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -23,9 +26,77 @@ from app.models.auth import AuditLog
 from app.models.campaign import CampaignPlan
 from app.models.settings import SystemSetting
 from app.services import settings_service
+from app.services import campaign_discount_correction_service
 
 
 TOKEN = "campaign-prepare-only-test-token"
+
+
+def test_plan7_discount_correction_cli_preserves_http_error_body(monkeypatch, capsys):
+    raw = __import__("json").dumps(
+        discount_correction_cli._FIXED_PAYLOAD).encode()
+    monkeypatch.setattr(discount_correction_cli, "_read_payload", lambda: raw)
+    monkeypatch.setattr(discount_correction_cli, "_service_token", lambda: TOKEN)
+    body = b'{"detail":{"error":"snapshot_cas_mismatch"}}'
+    monkeypatch.setattr(
+        discount_correction_cli, "call_api", lambda *_args, **_kwargs: (409, body))
+
+    assert discount_correction_cli.main() == 1
+    assert "snapshot_cas_mismatch" in capsys.readouterr().out
+
+
+def test_plan7_discount_correction_endpoint_uses_narrow_service_identity(monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_correct(_db, **kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "workflow_key": kwargs["workflow_key"],
+            "plan_id": kwargs["expected_plan_id"],
+            "execution_boundary": {"platform_write": False},
+        }
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        campaign_discount_correction_service,
+        "correct_plan7_single_discount", fake_correct)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    payload = discount_correction_cli._FIXED_PAYLOAD
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/correct-super-reduce-plan7-discount",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [{
+            "workflow_key": campaign_discount_correction_service.WORKFLOW_KEY,
+            "expected_plan_id": 7,
+            "expected_snapshot_id": 1,
+            "expected_snapshot_artifact_sha256": (
+                campaign_discount_correction_service
+                .EXPECTED_SNAPSHOT_ARTIFACT_SHA256),
+            "expected_missing_scope_sha256": (
+                campaign_discount_correction_service
+                .EXPECTED_MISSING_SCOPE_SHA256),
+        }]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def _request(path: str):
@@ -84,6 +155,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/audit-super-reduce-plan7-discount"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/correct-super-reduce-plan7-discount"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"

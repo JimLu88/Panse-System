@@ -116,6 +116,18 @@ class CampaignPlan7DiscountAuditIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountCorrectionIn(BaseModel):
+    """Immutable CAS input for the exact four-row plan-7 correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_snapshot_id: int = Field(ge=1)
+    expected_snapshot_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_missing_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -502,6 +514,41 @@ def audit_super_reduce_plan7_discount(
     if not result.get("ok"):
         error = result.get("error")
         code = 404 if error == "workflow_not_found" else 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/correct-super-reduce-plan7-discount")
+def correct_super_reduce_plan7_discount(
+        body: CampaignPlan7DiscountCorrectionIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Submit only snapshot-1's four missing discount rows, once.
+
+    The service performs an exact read-before-write, one four-row import and an
+    exact readback.  It cannot call campaign signup, modify prices, rotate SKUs,
+    or touch the 384 rows already present in the original activity.
+    """
+    from app.services import campaign_discount_correction_service
+
+    result = campaign_discount_correction_service.correct_plan7_single_discount(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_snapshot_id=body.expected_snapshot_id,
+        expected_snapshot_artifact_sha256=(
+            body.expected_snapshot_artifact_sha256),
+        expected_missing_scope_sha256=body.expected_missing_scope_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "discount_correction_request_not_allowed",
+                "discount_correction_plan_identity_not_allowed",
+                "discount_correction_erp_price_scope_drift",
+                "discount_correction_final_price_math_mismatch"}:
+            code = 422
         raise HTTPException(code, detail=result)
     return result
 
