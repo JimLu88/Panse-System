@@ -2550,14 +2550,59 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
         elif not res.get("submitted"):
             error = "平台未返回已提交写入回执，不能视为报名完成"
     else:
-        success = bool(res.get("submitted") if phase == "commit" else res.get("ok"))
         error = res.get("error") or res.get("message")
-    return {"ok": success, "error": error,
-            "job": j["job"], "validation": validation,
-            "submitted": res.get("submitted"),
-            "final_import": res.get("final_import"),
-            "final_step_error": res.get("final_step_error"),
-            "screenshot_base64": res.get("screenshot_base64")}
+        if channel == "single_item_discount" and phase == "commit":
+            final_import = res.get("final_import")
+            complete = bool(
+                isinstance(final_import, dict)
+                and final_import.get("state") == "complete"
+                and int(final_import.get("failed") or 0) == 0
+                and (expected_rows is None
+                     or int(final_import.get("ok") or -1) == expected_rows)
+            )
+            success = bool(res.get("ok") and res.get("submitted") and complete)
+            if not isinstance(final_import, dict):
+                error = error or "单品立减平台终态缺失，禁止按成功处理"
+            elif not complete:
+                error = error or (
+                    "单品立减终态未完整成功："
+                    f"成功{final_import.get('ok')}行/失败{final_import.get('failed')}行"
+                )
+        else:
+            success = bool(res.get("submitted") if phase == "commit" else res.get("ok"))
+    out = {"ok": success, "error": error,
+           "job": j["job"], "validation": validation,
+           "submitted": res.get("submitted"),
+           "final_import": res.get("final_import"),
+           "final_step_error": res.get("final_step_error"),
+           "screenshot_base64": res.get("screenshot_base64")}
+    if channel == "single_item_discount" and phase == "commit" and plan is not None:
+        try:
+            from app.services import campaign_discount_audit_service
+            out["evidence_request_id"] = (
+                campaign_discount_audit_service.persist_single_discount_terminal(
+                    plan_id=plan.id,
+                    workflow_key=str(plan.workflow_key or ""),
+                    job_id=j.get("job"),
+                    target_xlsx=xlsx,
+                    result=out,
+                )
+            )
+            if not out["evidence_request_id"]:
+                raise RuntimeError("terminal_evidence_not_persisted")
+            failed_artifact = (out.get("final_import") or {}).get(
+                "failed_artifact")
+            if isinstance(failed_artifact, dict):
+                failed_artifact.pop("xlsx_b64", None)
+                failed_artifact.pop("content_b64", None)
+        except Exception as exc:  # noqa: BLE001 - platform may already be written
+            out["ok"] = False
+            out["error"] = (
+                "平台终态已返回，但完整回执保存失败；禁止自动重试: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            out["evidence_persist_error"] = f"{type(exc).__name__}: {exc}"
+    return out
 
 
 def _learn_from_validation(db: Session, plan, validation) -> dict:

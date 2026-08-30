@@ -10,7 +10,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, JSON, Date, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (Boolean, JSON, Date, DateTime, Integer, LargeBinary,
+                        String, Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -76,6 +77,34 @@ class CampaignReconReport(Base, TimestampMixin):
     summary: Mapped[Optional[dict]] = mapped_column(JSON)
     rows: Mapped[Optional[list]] = mapped_column(JSON)
     alarm_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class CampaignEvidenceSnapshot(Base, TimestampMixin):
+    """Append-only platform evidence for audits and business terminal receipts."""
+
+    __tablename__ = "campaign_evidence_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workflow_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    evidence_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    web_agent_job_id: Mapped[Optional[str]] = mapped_column(String(64))
+    scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    platform_summary: Mapped[Optional[dict]] = mapped_column(JSON)
+    rows: Mapped[Optional[list]] = mapped_column(JSON)
+    failure_rows: Mapped[Optional[list]] = mapped_column(JSON)
+    execution_boundary: Mapped[dict] = mapped_column(JSON, nullable=False)
+    artifact_kind: Mapped[Optional[str]] = mapped_column(String(64))
+    artifact_filename: Mapped[Optional[str]] = mapped_column(String(255))
+    artifact_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    artifact_size: Mapped[Optional[int]] = mapped_column(Integer)
+    artifact_blob: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
+    failure_artifact_filename: Mapped[Optional[str]] = mapped_column(String(255))
+    failure_artifact_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    failure_artifact_size: Mapped[Optional[int]] = mapped_column(Integer)
+    failure_artifact_blob: Mapped[Optional[bytes]] = mapped_column(LargeBinary)
 
 
 class CampaignCalendar(Base, TimestampMixin):

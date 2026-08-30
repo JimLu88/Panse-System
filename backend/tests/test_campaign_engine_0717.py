@@ -1277,11 +1277,15 @@ def _mock_wa(monkeypatch, calls):
         return {"ok": True, "job": "job-1"}
 
     def fake_wait(db, job_id, **kw):
+        expected = int((calls[-1] if calls else {}).get("expected_rows") or 1)
         return {"status": "done", "result": {"ok": True, "submitted": True,
                                              "validation": {
                                                  "total_items": 1, "ok": 1,
                                                  "failed": 0, "terminal": True,
-                                                 "failed_items": []}}}
+                                                 "failed_items": []},
+                                             "final_import": {
+                                                 "ok": expected, "failed": 0,
+                                                 "state": "complete"}}}
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1292,6 +1296,10 @@ def _mock_wa(monkeypatch, calls):
 
     monkeypatch.setattr(web_agent_service, "upload_file", fake_upload)
     monkeypatch.setattr(web_agent_service, "wait_job", fake_wait)
+    from app.services import campaign_discount_audit_service
+    monkeypatch.setattr(
+        campaign_discount_audit_service, "persist_single_discount_terminal",
+        lambda **_kwargs: "pytest-terminal-receipt")
     monkeypatch.setattr(web_agent_service, "campaign_export_items",
                         lambda db, title, **kw: {
                             "ok": True, "xlsx_bytes": bio.getvalue(),

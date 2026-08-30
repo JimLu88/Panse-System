@@ -28,12 +28,16 @@ CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH = (
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
+CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH = (
+    "/api/campaigns/audit-super-reduce-plan7-discount"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
     CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH,
     CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH,
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
+    CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
 })
 
 
@@ -259,7 +263,11 @@ def require_campaign_prepare_principal(
                     else (
                         "campaign.super_reduce.plan7.resume_execute"
                         if path == CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH
-                        else "campaign.prepare"
+                        else (
+                            "campaign.super_reduce.plan7.discount_audit"
+                            if path == CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH
+                            else "campaign.prepare"
+                        )
                     )
                 )
             ),

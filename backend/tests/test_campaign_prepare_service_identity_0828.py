@@ -15,6 +15,7 @@ from app.cli import campaign_resume_super_reduce_plan7 as resume_plan7_cli
 from app.cli import (
     campaign_verify_super_reduce_plan7_post_submit as verify_plan7_cli,
 )
+from app.cli import campaign_audit_plan7_single_discount as audit_plan7_cli
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -79,6 +80,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/verify-super-reduce-plan7-post-submit"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/audit-super-reduce-plan7-discount"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"
@@ -289,6 +294,34 @@ def test_plan7_post_submit_verify_cli_has_fixed_direct_endpoint(monkeypatch):
         ),
         "token": TOKEN,
         "timeout": 1200,
+    }
+
+
+def test_plan7_discount_audit_cli_has_fixed_direct_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        @staticmethod
+        def read(): return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured.update(url=req.full_url,
+                            token=req.get_header("X-api-key"), timeout=timeout)
+            return Response()
+
+    monkeypatch.setattr(
+        audit_plan7_cli.request, "build_opener", lambda *_: Opener())
+    status, body = audit_plan7_cli.call_api(b'{}', token=TOKEN)
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured == {
+        "url": "http://127.0.0.1:8000/api/campaigns/audit-super-reduce-plan7-discount",
+        "token": TOKEN,
+        "timeout": 2100,
     }
 
 

@@ -106,6 +106,16 @@ class CampaignPlan7PostSubmitVerifyIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountAuditIn(BaseModel):
+    """Exact read-only current-state audit for plan 7 single discounts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -471,6 +481,27 @@ def verify_super_reduce_plan7_post_submit(
                 "post_submit_verify_state_not_allowed",
                 "post_submit_verify_scope_drift"}:
             code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/audit-super-reduce-plan7-discount")
+def audit_super_reduce_plan7_discount(
+        body: CampaignPlan7DiscountAuditIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Read and persist exact plan-7 single-discount state without writing it."""
+    from app.services import campaign_discount_audit_service
+
+    result = campaign_discount_audit_service.audit_plan7_single_discount(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_scope_sha256=body.expected_scope_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 422
         raise HTTPException(code, detail=result)
     return result
 
