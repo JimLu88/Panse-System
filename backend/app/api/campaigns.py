@@ -176,6 +176,18 @@ class CampaignPlan7PartialSignupAuditIn(BaseModel):
     expected_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DraftPublishIn(BaseModel):
+    """Exact one-shot publication of two existing audited platform drafts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_snapshot_id: int = Field(ge=1)
+    expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -763,6 +775,40 @@ def audit_super_reduce_plan7_partial_signup(
                 "partial_signup_manifest_drift",
                 "partial_signup_feedback_scope_mismatch",
                 "partial_signup_final_price_math_blocked"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/publish-super-reduce-plan7-existing-drafts")
+def publish_super_reduce_plan7_existing_drafts(
+        body: CampaignPlan7DraftPublishIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Publish exactly two audited drafts once; never upload or change price."""
+    from app.services import campaign_plan7_remaining_signup_service
+
+    result = (
+        campaign_plan7_remaining_signup_service
+        .publish_plan7_existing_drafts(
+            db,
+            workflow_key=_validate_workflow_key(body.workflow_key),
+            expected_plan_id=body.plan_id,
+            expected_attempt_id=body.expected_attempt_id,
+            expected_snapshot_id=body.expected_snapshot_id,
+            expected_scope_sha256=body.expected_scope_sha256,
+        )
+    )
+    if not result.get("ok"):
+        code = 404 if result.get("error") == "workflow_not_found" else 409
+        if result.get("error") in {
+                "draft_publish_request_not_allowed",
+                "draft_publish_plan_identity_not_allowed",
+                "draft_publish_snapshot_identity_mismatch",
+                "draft_publish_snapshot_scope_mismatch",
+                "draft_publish_price_fingerprint_mismatch",
+                "draft_publish_global_paused_scope_mismatch",
+                "draft_publish_pre_read_price_or_sku_mismatch"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result

@@ -2,6 +2,26 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 exact existing-draft publication entry
+
+- The only permitted scope is the two platform drafts created by attempt
+  `782299846f10d86ef4742c20`: items `717809819543` and `793084818113`, 29 SKUs,
+  immutable price fingerprint
+  `0355c293c277330e490858df4f6b4bb57484881fcea9897f27c194b68fb7231b`.
+- Before the irreversible claim, a fresh full enrolled export must prove that
+  every `暂停` item on the long-running Super Reduce sign record is exactly one
+  of those two items, and that all 29 SKU IDs/prices still match snapshot `9`.
+  One extra draft, one missing SKU or one price/status drift stops before the
+  publish click.
+- The entry never uploads a workbook, changes a price, rebuilds a draft,
+  withdraws/pauses/removes an item, touches the other three failures, plan 8 or
+  the 388 single-discount rows. It claims once before the platform confirmation;
+  unknown/failure outcomes are permanently no-retry. A successful confirmation
+  still requires a fresh 29-SKU readback in `已发布设定`/`活动中` state.
+- Task 01 owns the sole business invocation through
+  `scripts/campaign_publish_plan7_existing_drafts_nas.ps1`; maintenance only
+  ships and verifies the program and must not run the command.
+
 ## 2026-08-30 plan 7 partial draft-import audit
 
 - The one claimed five-item job returned the official terminal `5 total / 2
@@ -18,6 +38,22 @@ Last updated: 2026-08-30 (Asia/Shanghai)
   status and all three official failure reasons must be known first; the two
   draft-import successes, any already-enrolled item and every price conflict
   are forbidden from another upload.
+- The one permitted audit is complete as snapshot `9`. Official feedback
+  SHA-256 is
+  `699a962e46d8a68daaeaabd3a29d1322c337510f68c5339f7d8983f5aaeabaae`.
+  Items `717809819543` and `793084818113` were imported only into platform
+  draft; every expected SKU price matches exactly, but every row is `暂停` and
+  neither item is proven active. Items `1036273574687`, `1074244132390` and
+  `793202812082` failed respectively because the upload omitted current
+  platform SKU `6280268983409`, the official coupon-after price ceiling would
+  require a lower signup price, and official 60-day sales were zero.
+- The audit performed platform reads only and recorded `platform_write=false`,
+  `account_action=false`, `price_change=false`, `sku_rotation=false`,
+  `notification=false` and `automatic_retry=false`. Failed-only recovery
+  remains closed: publishing could also affect the two existing drafts, the
+  missing SKU has no trusted ERP daily-price mapping, and the other two failures
+  are hard price/no-sales gates. The attempt must not be rerun or described as
+  a completed signup.
 
 ## 2026-08-30 plan 7 fresh official-scope partition
 

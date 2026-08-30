@@ -46,6 +46,9 @@ CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH = (
 CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH = (
     "/api/campaigns/audit-super-reduce-plan7-partial-signup"
 )
+CAMPAIGN_PLAN7_DRAFT_PUBLISH_PATH = (
+    "/api/campaigns/publish-super-reduce-plan7-existing-drafts"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
@@ -58,6 +61,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH,
     CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH,
     CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH,
+    CAMPAIGN_PLAN7_DRAFT_PUBLISH_PATH,
 })
 
 
@@ -289,6 +293,8 @@ def require_campaign_prepare_principal(
                 "campaign.super_reduce.plan7.remaining_signup"),
             CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH: (
                 "campaign.super_reduce.plan7.partial_signup_audit"),
+            CAMPAIGN_PLAN7_DRAFT_PUBLISH_PATH: (
+                "campaign.super_reduce.plan7.publish_existing_drafts"),
         }
         return ServicePrincipal(
             username=identity,

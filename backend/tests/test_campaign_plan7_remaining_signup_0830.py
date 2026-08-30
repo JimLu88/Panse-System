@@ -518,3 +518,160 @@ def test_partial_signup_audit_persists_official_failure_artifact_once(
         evidence_type=service.PARTIAL_AUDIT_EVIDENCE_TYPE).one()
     assert snapshot.failure_artifact_blob == feedback_bytes
     assert snapshot.execution_boundary["platform_write"] is False
+
+
+def _draft_publish_snapshot(db_session, monkeypatch):
+    verified = {
+        "717809819543": [{
+            "item_id": "717809819543", "sku_id": "s1",
+            "expected_activity_price": 100.0,
+            "is_custom_placeholder": False, "statuses": ["暂停"],
+        }, {
+            "item_id": "717809819543", "sku_id": "s2",
+            "expected_activity_price": 50.0,
+            "is_custom_placeholder": True, "statuses": ["暂停"],
+        }],
+        "793084818113": [{
+            "item_id": "793084818113", "sku_id": "s3",
+            "expected_activity_price": 200.0,
+            "is_custom_placeholder": False, "statuses": ["暂停"],
+        }, {
+            "item_id": "793084818113", "sku_id": "s4",
+            "expected_activity_price": 60.0,
+            "is_custom_placeholder": True, "statuses": ["暂停"],
+        }],
+    }
+    summary = {
+        "attempt_id": service.PARTIAL_ATTEMPT_ID,
+        "draft_imported_item_ids": sorted(service.DRAFT_PUBLISH_ITEM_IDS),
+        "failed_item_ids": sorted(
+            service.AUTHORIZED_MISSING_ITEM_IDS
+            - service.DRAFT_PUBLISH_ITEM_IDS),
+        "official_paused_or_pending_item_ids": sorted(
+            service.DRAFT_PUBLISH_ITEM_IDS),
+        "published": False,
+        "per_item_sku_verification": {
+            item_id: {"ok": True, "verified": rows}
+            for item_id, rows in verified.items()
+        },
+    }
+    rows = service._draft_publish_rows(summary)
+    monkeypatch.setattr(service, "DRAFT_PUBLISH_SKU_COUNT", len(rows))
+    monkeypatch.setattr(
+        service, "DRAFT_PUBLISH_SCOPE_SHA256",
+        service._draft_publish_scope_sha256(rows))
+    snapshot = CampaignEvidenceSnapshot(
+        plan_id=7, workflow_key=service.WORKFLOW_KEY,
+        evidence_type=service.PARTIAL_AUDIT_EVIDENCE_TYPE,
+        request_id="draft-publish-source", scope_sha256="a" * 64,
+        result_status="partial_draft_import_audited",
+        platform_summary=summary, rows=[], failure_rows=[],
+        execution_boundary={"platform_write": False},
+    )
+    db_session.add_all([_plan(), snapshot])
+    db_session.commit()
+    return snapshot, rows
+
+
+def _draft_live_rows(rows, status):
+    return [{
+        "item_id": row["item_id"], "sku_id": row["sku_id"],
+        "activity_price": row["signup_price"], "status": status,
+    } for row in rows]
+
+
+def test_draft_publish_is_exact_once_without_upload(db_session, monkeypatch):
+    snapshot, rows = _draft_publish_snapshot(db_session, monkeypatch)
+    refreshes = [
+        {"ok": True, "rows": _draft_live_rows(rows, "暂停"),
+         "export_evidence": {"filename": "pre.xlsx", "sha256": "1" * 64,
+                             "size": 100}},
+        {"ok": True, "rows": _draft_live_rows(rows, "已发布设定"),
+         "export_evidence": {"filename": "post.xlsx", "sha256": "2" * 64,
+                             "size": 101}},
+    ]
+    calls = []
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_args, **_kwargs: refreshes.pop(0))
+    monkeypatch.setattr(
+        web_agent_service, "publish_plan7_existing_super_reduce_drafts",
+        lambda *_args, **_kwargs: calls.append(_kwargs) or {
+            "ok": True, "published": True,
+            "platform_write_observed": True, "job_id": "job-publish",
+        })
+    request = {
+        "workflow_key": service.WORKFLOW_KEY,
+        "expected_plan_id": 7,
+        "expected_attempt_id": service.PARTIAL_ATTEMPT_ID,
+        "expected_snapshot_id": snapshot.id,
+        "expected_scope_sha256": service.DRAFT_PUBLISH_SCOPE_SHA256,
+    }
+
+    first = service.publish_plan7_existing_drafts(db_session, **request)
+    replay = service.publish_plan7_existing_drafts(db_session, **request)
+
+    assert first["ok"] is True
+    assert first["receipt"]["status"] == "completed"
+    assert first["receipt"]["upload"] is False
+    assert first["receipt"]["post_read_verification"]["verified_skus"] == 4
+    assert replay["ok"] is True and replay["idempotent_replay"] is True
+    assert len(calls) == 1
+
+
+def test_draft_publish_blocks_if_any_other_paused_item_exists(
+        db_session, monkeypatch):
+    snapshot, rows = _draft_publish_snapshot(db_session, monkeypatch)
+    live = _draft_live_rows(rows, "暂停") + [{
+        "item_id": "999999999999", "sku_id": "other",
+        "activity_price": 1.0, "status": "暂停",
+    }]
+    called = []
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_args, **_kwargs: {"ok": True, "rows": live})
+    monkeypatch.setattr(
+        web_agent_service, "publish_plan7_existing_super_reduce_drafts",
+        lambda *_args, **_kwargs: called.append(True))
+
+    result = service.publish_plan7_existing_drafts(
+        db_session, workflow_key=service.WORKFLOW_KEY,
+        expected_plan_id=7, expected_attempt_id=service.PARTIAL_ATTEMPT_ID,
+        expected_snapshot_id=snapshot.id,
+        expected_scope_sha256=service.DRAFT_PUBLISH_SCOPE_SHA256)
+
+    assert result["ok"] is False
+    assert result["error"] == "draft_publish_global_paused_scope_mismatch"
+    assert called == []
+    assert service._load_draft_publish_receipt(db_session) is None
+
+
+def test_draft_publish_unknown_terminal_is_claimed_and_never_retried(
+        db_session, monkeypatch):
+    snapshot, rows = _draft_publish_snapshot(db_session, monkeypatch)
+    monkeypatch.setattr(
+        campaign_service, "refresh_floor_evidence_from_current_activity",
+        lambda *_args, **_kwargs: {
+            "ok": True, "rows": _draft_live_rows(rows, "暂停")})
+    calls = []
+    monkeypatch.setattr(
+        web_agent_service, "publish_plan7_existing_super_reduce_drafts",
+        lambda *_args, **_kwargs: calls.append(True) or {
+            "ok": False, "error": "confirmation_unknown",
+            "platform_write_observed": None,
+        })
+    request = {
+        "workflow_key": service.WORKFLOW_KEY,
+        "expected_plan_id": 7,
+        "expected_attempt_id": service.PARTIAL_ATTEMPT_ID,
+        "expected_snapshot_id": snapshot.id,
+        "expected_scope_sha256": service.DRAFT_PUBLISH_SCOPE_SHA256,
+    }
+
+    first = service.publish_plan7_existing_drafts(db_session, **request)
+    second = service.publish_plan7_existing_drafts(db_session, **request)
+
+    assert first["ok"] is False
+    assert first["receipt"]["status"] == "failed_unknown_no_retry"
+    assert second["error"] == "draft_publish_already_claimed_no_retry"
+    assert len(calls) == 1

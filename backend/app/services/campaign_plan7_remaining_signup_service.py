@@ -89,6 +89,12 @@ PARTIAL_MANIFEST_SHA256 = (
 )
 PARTIAL_TERMINAL_COUNTS = {"total_items": 5, "ok": 2, "failed": 3}
 PARTIAL_AUDIT_EVIDENCE_TYPE = "plan7_remaining_partial_import_audit"
+DRAFT_PUBLISH_ITEM_IDS = {"717809819543", "793084818113"}
+DRAFT_PUBLISH_SKU_COUNT = 29
+DRAFT_PUBLISH_SCOPE_SHA256 = (
+    "0355c293c277330e490858df4f6b4bb57484881fcea9897f27c194b68fb7231b"
+)
+DRAFT_PUBLISH_RECEIPT_KEY = "campaign_plan7_partial_draft_publish_v1"
 
 
 def _utcnow() -> str:
@@ -1175,4 +1181,279 @@ def audit_plan7_partial_signup(
         "snapshot_id": snapshot.id,
         "feedback_xlsx_b64": base64.b64encode(feedback_bytes).decode("ascii"),
         "execution_boundary": _execution_boundary(),
+    }
+
+
+def _draft_publish_rows(summary: dict) -> list[dict]:
+    verification = summary.get("per_item_sku_verification") or {}
+    rows: list[dict] = []
+    for item_id in sorted(DRAFT_PUBLISH_ITEM_IDS):
+        checked = verification.get(item_id) or {}
+        for row in checked.get("verified") or []:
+            rows.append({
+                "item_id": str(row.get("item_id") or ""),
+                "sku_id": str(row.get("sku_id") or ""),
+                "signup_price": round(
+                    float(row.get("expected_activity_price")), 2),
+                "is_placeholder": bool(row.get("is_custom_placeholder")),
+            })
+    return sorted(rows, key=lambda row: (row["item_id"], row["sku_id"]))
+
+
+def _draft_publish_scope_sha256(rows: list[dict]) -> str:
+    raw = json.dumps(
+        rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _load_draft_publish_receipt(db: Session) -> dict | None:
+    raw = settings_service.get(
+        db, DRAFT_PUBLISH_RECEIPT_KEY, env_fallback=False)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    return value if isinstance(value, dict) else {"status": "invalid"}
+
+
+def _save_draft_publish_receipt(db: Session, payload: dict) -> None:
+    settings_service.set_value(
+        db,
+        DRAFT_PUBLISH_RECEIPT_KEY,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+        description=(
+            "超级立减计划7两件既有草稿一次性原位发布回执（不含凭据）"),
+    )
+
+
+def _verify_draft_publish_live_rows(
+        expected_rows: list[dict], live_rows: list[dict], *,
+        required_statuses: set[str]) -> dict:
+    live_by_pair: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in live_rows:
+        live_by_pair[(
+            str(row.get("item_id") or ""),
+            str(row.get("sku_id") or ""),
+        )].append(row)
+    failures = []
+    verified = []
+    for expected in expected_rows:
+        pair = (expected["item_id"], expected["sku_id"])
+        candidates = live_by_pair.get(pair) or []
+        exact = [row for row in candidates if (
+            row.get("activity_price") is not None
+            and abs(float(row["activity_price"])
+                    - float(expected["signup_price"])) <= 0.005
+            and str(row.get("status") or "") in required_statuses
+        )]
+        if exact:
+            verified.append({
+                **expected,
+                "statuses": sorted({
+                    str(row.get("status") or "") for row in exact}),
+            })
+        else:
+            failures.append({
+                **expected,
+                "actual_prices": [row.get("activity_price") for row in candidates],
+                "actual_statuses": [str(row.get("status") or "")
+                                    for row in candidates],
+            })
+    return {
+        "ok": not failures,
+        "checked_skus": len(expected_rows),
+        "verified_skus": len(verified),
+        "failures": failures,
+    }
+
+
+def publish_plan7_existing_drafts(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_attempt_id: str, expected_snapshot_id: int,
+        expected_scope_sha256: str) -> dict:
+    """Publish exactly two audited platform drafts once, without an upload."""
+    if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
+            or expected_attempt_id != PARTIAL_ATTEMPT_ID
+            or expected_scope_sha256 != DRAFT_PUBLISH_SCOPE_SHA256):
+        return _fail("draft_publish_request_not_allowed")
+    plan = db.get(CampaignPlan, PLAN_ID)
+    if (plan is None or plan.workflow_key != WORKFLOW_KEY):
+        return _fail("workflow_not_found")
+    if (plan.campaign_type != "super_reduce"
+            or plan.platform_activity_mode != "long_running_update"
+            or str(plan.qn_campaign_title or "").strip() != "超级立减"):
+        return _fail("draft_publish_plan_identity_not_allowed")
+    existing_receipt = _load_draft_publish_receipt(db)
+    if existing_receipt:
+        if existing_receipt.get("status") == "completed":
+            return {
+                "ok": True,
+                "idempotent_replay": True,
+                "receipt": existing_receipt,
+                "execution_boundary": _execution_boundary(),
+            }
+        return _fail(
+            "draft_publish_already_claimed_no_retry",
+            receipt=existing_receipt,
+        )
+
+    snapshot = db.get(CampaignEvidenceSnapshot, expected_snapshot_id)
+    if (snapshot is None
+            or snapshot.plan_id != PLAN_ID
+            or snapshot.workflow_key != WORKFLOW_KEY
+            or snapshot.evidence_type != PARTIAL_AUDIT_EVIDENCE_TYPE
+            or snapshot.result_status != "partial_draft_import_audited"):
+        return _fail("draft_publish_snapshot_identity_mismatch")
+    summary = snapshot.platform_summary or {}
+    if (summary.get("attempt_id") != PARTIAL_ATTEMPT_ID
+            or set(summary.get("draft_imported_item_ids") or [])
+            != DRAFT_PUBLISH_ITEM_IDS
+            or set(summary.get("failed_item_ids") or [])
+            != (AUTHORIZED_MISSING_ITEM_IDS - DRAFT_PUBLISH_ITEM_IDS)
+            or set(summary.get("official_paused_or_pending_item_ids") or [])
+            != DRAFT_PUBLISH_ITEM_IDS
+            or summary.get("published") is not False):
+        return _fail("draft_publish_snapshot_scope_mismatch")
+    expected_rows = _draft_publish_rows(summary)
+    if (len(expected_rows) != DRAFT_PUBLISH_SKU_COUNT
+            or {row["item_id"] for row in expected_rows}
+            != DRAFT_PUBLISH_ITEM_IDS
+            or _draft_publish_scope_sha256(expected_rows)
+            != DRAFT_PUBLISH_SCOPE_SHA256):
+        return _fail("draft_publish_price_fingerprint_mismatch")
+
+    # Fresh full enrolled export before the irreversible claim.  The global
+    # one-click publish is allowed only when every paused row on the exact
+    # sign-record belongs to these two audited items and all 29 prices match.
+    refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
+        db, plan, allow_placeholder_safe_lowering=True)
+    if not refreshed.get("ok"):
+        return _fail(
+            refreshed.get("error") or "draft_publish_pre_read_failed",
+            step=refreshed.get("step"), job_id=refreshed.get("job_id"))
+    live_rows = refreshed.get("rows") or []
+    paused_item_ids = {
+        str(row.get("item_id") or "") for row in live_rows
+        if str(row.get("status") or "") == "暂停"
+    } - {""}
+    if paused_item_ids != DRAFT_PUBLISH_ITEM_IDS:
+        return _fail(
+            "draft_publish_global_paused_scope_mismatch",
+            expected_item_ids=sorted(DRAFT_PUBLISH_ITEM_IDS),
+            actual_item_ids=sorted(paused_item_ids),
+            export_evidence=refreshed.get("export_evidence"),
+        )
+    pre_verify = _verify_draft_publish_live_rows(
+        expected_rows, live_rows, required_statuses={"暂停"})
+    if not pre_verify.get("ok"):
+        return _fail(
+            "draft_publish_pre_read_price_or_sku_mismatch",
+            verification=pre_verify,
+            export_evidence=refreshed.get("export_evidence"),
+        )
+
+    attempt_id = secrets.token_hex(12)
+    claimed = {
+        "status": "claimed",
+        "attempt_id": attempt_id,
+        "claimed_at": _utcnow(),
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "source_attempt_id": PARTIAL_ATTEMPT_ID,
+        "source_snapshot_id": snapshot.id,
+        "scope_sha256": DRAFT_PUBLISH_SCOPE_SHA256,
+        "item_ids": sorted(DRAFT_PUBLISH_ITEM_IDS),
+        "sku_count": DRAFT_PUBLISH_SKU_COUNT,
+        "pre_read_export": refreshed.get("export_evidence"),
+        "automatic_retry": False,
+        "upload": False,
+        "price_change": False,
+    }
+    _save_draft_publish_receipt(db, claimed)
+    db.commit()
+
+    from app.services import web_agent_service
+    result = web_agent_service.publish_plan7_existing_super_reduce_drafts(
+        db,
+        item_ids=sorted(DRAFT_PUBLISH_ITEM_IDS),
+        sku_count=DRAFT_PUBLISH_SKU_COUNT,
+    )
+    claimed.update({
+        "job_id": result.get("job_id"),
+        "platform_result": {
+            key: value for key, value in result.items()
+            if key not in {"screenshot_base64"}
+        },
+    })
+    if (not result.get("ok") or result.get("published") is not True
+            or result.get("platform_write_observed") is not True):
+        claimed.update({
+            "status": "failed_unknown_no_retry",
+            "finished_at": _utcnow(),
+        })
+        _save_draft_publish_receipt(db, claimed)
+        db.commit()
+        return _fail(
+            result.get("error") or "draft_publish_terminal_unknown_no_retry",
+            receipt=claimed,
+        )
+
+    post = campaign_service.refresh_floor_evidence_from_current_activity(
+        db, plan, allow_placeholder_safe_lowering=True)
+    claimed["post_read_export"] = post.get("export_evidence")
+    if not post.get("ok"):
+        claimed.update({
+            "status": "failed_post_read_no_retry",
+            "finished_at": _utcnow(),
+            "post_read_error": post.get("error"),
+        })
+        _save_draft_publish_receipt(db, claimed)
+        db.commit()
+        return _fail("draft_publish_post_read_failed_no_retry", receipt=claimed)
+    post_verify = _verify_draft_publish_live_rows(
+        expected_rows, post.get("rows") or [],
+        required_statuses={"已发布设定", "活动中"})
+    claimed["post_read_verification"] = post_verify
+    if not post_verify.get("ok"):
+        claimed.update({
+            "status": "failed_post_read_no_retry",
+            "finished_at": _utcnow(),
+        })
+        _save_draft_publish_receipt(db, claimed)
+        db.commit()
+        return _fail(
+            "draft_publish_post_read_not_active_no_retry",
+            receipt=claimed,
+        )
+    claimed.update({
+        "status": "completed",
+        "finished_at": _utcnow(),
+        "platform_write_observed": True,
+        "published": True,
+    })
+    _save_draft_publish_receipt(db, claimed)
+    _persist_snapshot(
+        db,
+        request_id=f"plan7-draft-publish-{attempt_id}",
+        scope_sha256=DRAFT_PUBLISH_SCOPE_SHA256,
+        result_status="completed",
+        rows=[{
+            "taobao_item_id": row["item_id"],
+            "taobao_sku_id": row["sku_id"],
+            "sku_code": "",
+            "price": row["signup_price"],
+            "is_placeholder": row["is_placeholder"],
+        } for row in expected_rows],
+        summary=claimed,
+        export_evidence=post.get("export_evidence"),
+        platform_write=True,
+        evidence_type="plan7_partial_draft_publish",
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "receipt": claimed,
+        "execution_boundary": _execution_boundary(platform_write=True),
     }

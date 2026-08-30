@@ -234,6 +234,32 @@ def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
             "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
 
 
+def publish_plan7_existing_super_reduce_drafts(
+        db: Session, *, item_ids: list[str], sku_count: int,
+        timeout_s: int = 180) -> dict:
+    """Publish two already-audited drafts without uploading another workbook."""
+    payload = {"item_ids": item_ids, "sku_count": int(sku_count)}
+    job = _post(
+        db, "/api/super-reduce/publish-plan7-existing-drafts",
+        payload, timeout=30)
+    if not job.get("ok") or not job.get("job"):
+        return {
+            "ok": False,
+            "error": job.get("error", "取数服务(:8500)未响应"),
+            "platform_write_observed": False,
+        }
+    final = wait_job(db, job["job"], timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if final.get("status") == "error" and not result:
+        return {
+            "ok": False,
+            "job_id": job["job"],
+            "error": final.get("error") or "plan7_draft_publish_job_failed",
+            "platform_write_observed": None,
+        }
+    return {**result, "job_id": job["job"]}
+
+
 def campaign_export_items(
         db: Session, campaign_title: str, *, campaign_id: str,
         united_activity_id: str, campaign_phase: str = "",

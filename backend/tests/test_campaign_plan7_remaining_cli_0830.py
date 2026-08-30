@@ -5,6 +5,7 @@ import time
 
 from app.cli import campaign_execute_plan7_remaining as cli
 from app.cli import campaign_audit_plan7_partial_signup as audit_cli
+from app.cli import campaign_publish_plan7_existing_drafts as publish_cli
 from app import dependencies
 
 
@@ -42,4 +43,18 @@ def test_partial_audit_payload_is_bound_to_the_single_failed_attempt():
         ),
     }
     assert dependencies.CAMPAIGN_PLAN7_PARTIAL_SIGNUP_AUDIT_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
+
+
+def test_draft_publish_payload_is_bound_to_two_audited_existing_drafts():
+    assert publish_cli._FIXED_PAYLOAD == {
+        "workflow_key": "campaign:super-reduce:2026-09-01",
+        "plan_id": 7,
+        "expected_attempt_id": "782299846f10d86ef4742c20",
+        "expected_snapshot_id": 9,
+        "expected_scope_sha256": (
+            "0355c293c277330e490858df4f6b4bb57484881fcea9897f27c194b68fb7231b"
+        ),
+    }
+    assert dependencies.CAMPAIGN_PLAN7_DRAFT_PUBLISH_PATH in (
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
