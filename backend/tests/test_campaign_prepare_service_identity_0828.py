@@ -22,6 +22,9 @@ from app.cli import (
 from app.cli import (
     campaign_recover_plan7_discount_sku_identity as identity_recovery_cli,
 )
+from app.cli import (
+    campaign_verify_plan7_discount_identity_readback as identity_readback_cli,
+)
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -109,6 +112,69 @@ def test_plan7_identity_recovery_cli_preserves_http_error_body(
 
     assert identity_recovery_cli.main() == 1
     assert "identity_cas_mismatch" in capsys.readouterr().out
+
+
+def test_plan7_identity_readback_endpoint_uses_narrow_service_identity(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_verify(_db, **kwargs):
+        calls.append(kwargs)
+        return {"ok": True, "workflow_key": kwargs["workflow_key"],
+                "plan_id": kwargs["expected_plan_id"],
+                "execution_boundary": {"platform_write": False}}
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        campaign_discount_identity_recovery_service,
+        "verify_plan7_identity_recovery_readback", fake_verify)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    payload = identity_readback_cli._FIXED_PAYLOAD
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/"
+            "verify-super-reduce-plan7-discount-sku-identity-readback",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [{
+            "workflow_key": payload["workflow_key"],
+            "expected_plan_id": 7,
+            "expected_attempt_id": payload["expected_attempt_id"],
+            "expected_terminal_evidence_request_id": payload[
+                "expected_terminal_evidence_request_id"],
+            "expected_scope_sha256": payload["expected_scope_sha256"],
+        }]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
+def test_plan7_identity_readback_cli_preserves_http_error_body(
+        monkeypatch, capsys):
+    raw = __import__("json").dumps(identity_readback_cli._FIXED_PAYLOAD).encode()
+    monkeypatch.setattr(identity_readback_cli, "_read_payload", lambda: raw)
+    monkeypatch.setattr(identity_readback_cli, "_service_token", lambda: TOKEN)
+    body = b'{"detail":{"error":"readback_not_exact"}}'
+    monkeypatch.setattr(identity_readback_cli, "call_api",
+                        lambda *_args, **_kwargs: (409, body))
+
+    assert identity_readback_cli.main() == 1
+    assert "readback_not_exact" in capsys.readouterr().out
 
 
 def test_plan7_discount_correction_cli_preserves_http_error_body(monkeypatch, capsys):
@@ -230,6 +296,12 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/verify-super-reduce-plan7-post-submit"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path=(
+            "/api/campaigns/"
+            "verify-super-reduce-plan7-discount-sku-identity-readback")
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,

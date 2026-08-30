@@ -2,6 +2,27 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 submitted identity-recovery readback closeout
+
+- Recovery attempt `ab51f002ac5570c9bb407d00` has an authoritative platform
+  terminal: four rows validated, four imported successfully, zero failed and
+  `submitted=true`.  It must never be uploaded or submitted again.
+- Its immediate readback failed before reading rows because the persistent
+  browser's first restored tab was Product Center, where `活动列表` correctly
+  had zero matches.  This was a readback page-binding failure, not a platform
+  import or pricing failure.
+- The dedicated closeout route/CLI is fixed to the same workflow, plan,
+  attempt, terminal evidence request and four-row scope.  It contains no upload
+  call, claims one readback receipt before contacting Web-Agent and updates the
+  existing attempt rather than creating a business attempt.  Completion still
+  requires current SKU IDs `6127845548093` through `6127845548096`, exact
+  deductions 612.63/627.08/644.50/662.44, status `未开始` and an immutable fresh
+  artifact.  Any difference is terminal and cannot retry automatically.
+- Focused ERP closeout/service tests passed 28; all 16 campaign test files
+  passed with two existing fixture skips.  Maintenance did not execute the
+  readback command or any platform write.
+
+
 ## 2026-08-30 plan 7 stale Taobao SKU identity recovery
 
 - The first exact four-row correction stopped safely with platform terminal

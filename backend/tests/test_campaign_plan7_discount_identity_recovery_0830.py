@@ -147,6 +147,49 @@ def _install_export_hash(monkeypatch, raw):
         svc, "EXPECTED_OFFICIAL_EXPORT_SHA256", hashlib.sha256(raw).hexdigest())
 
 
+def _seed_submitted_readback(db, monkeypatch):
+    _seed(db, monkeypatch)
+    for promo in db.query(PricingSkuPromo).all():
+        expected = next(
+            row for row in svc.EXPECTED_ROWS
+            if row["sku_code"] == promo.sku_code)
+        promo.taobao_sku_id = expected["sku_id"]
+    settings_service.set_value(
+        db, svc.IDENTITY_RECEIPT_KEY,
+        json.dumps({
+            "status": "completed",
+            "official_export_sha256": svc.EXPECTED_OFFICIAL_EXPORT_SHA256,
+        }),
+    )
+    settings_service.set_value(
+        db, svc.RECOVERY_ATTEMPT_KEY,
+        json.dumps({
+            "status": "failed_post_submit_readback",
+            "attempt_id": svc.EXPECTED_RECOVERY_ATTEMPT_ID,
+            "workflow_key": svc.WORKFLOW_KEY,
+            "plan_id": 7,
+            "submitted": True,
+            "terminal_job_id": "job2",
+            "terminal_evidence_request_id": (
+                svc.EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID),
+            "official_export_sha256": svc.EXPECTED_OFFICIAL_EXPORT_SHA256,
+            "new_scope_sha256": svc.EXPECTED_NEW_MISSING_SCOPE_SHA256,
+            "post_submit_snapshot_id": None,
+        }),
+    )
+    db.commit()
+
+
+def _verify_readback(db):
+    return svc.verify_plan7_identity_recovery_readback(
+        db, workflow_key=svc.WORKFLOW_KEY, expected_plan_id=7,
+        expected_attempt_id=svc.EXPECTED_RECOVERY_ATTEMPT_ID,
+        expected_terminal_evidence_request_id=(
+            svc.EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID),
+        expected_scope_sha256=svc.EXPECTED_NEW_MISSING_SCOPE_SHA256,
+    )
+
+
 def test_exact_identity_repair_and_recovery_writes_four_rows_once(
         db_session, monkeypatch):
     raw = _official_export()
@@ -274,3 +317,82 @@ def test_current_four_rows_are_noop_after_identity_repair(
     assert result["already_exact_no_write"] is True
     assert writes == []
     assert result["execution_boundary"]["platform_write"] is False
+
+
+def test_submitted_attempt_closes_with_one_read_only_exact_readback(
+        db_session, monkeypatch):
+    _seed_submitted_readback(db_session, monkeypatch)
+    monkeypatch.setattr(
+        svc, "_current_rows", lambda *_: (_raw_rows(), _canonical()))
+    reads = []
+    monkeypatch.setattr(svc, "_platform_read", lambda *_: (
+        reads.append(True) or {
+            "ok": True, "web_agent_job_id": "readback-only",
+            "rows": _rows("present_not_effective"),
+            "platform_summary": {"present_not_effective": 4},
+            "artifact": _artifact(),
+        }))
+    monkeypatch.setattr(
+        svc.campaign_service, "_upload_and_wait",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("readback must never upload")))
+
+    first = _verify_readback(db_session)
+    second = _verify_readback(db_session)
+
+    assert first["ok"] is True
+    assert first["attempt"]["attempt_id"] == svc.EXPECTED_RECOVERY_ATTEMPT_ID
+    assert first["attempt"]["status"] == "completed"
+    assert first["execution_boundary"]["platform_write"] is False
+    assert first["execution_boundary"]["account_action"] is False
+    assert second["ok"] is True
+    assert second["idempotent_replay"] is True
+    assert reads == [True]
+
+
+def test_readback_difference_is_terminal_and_never_uploads_or_rereads(
+        db_session, monkeypatch):
+    _seed_submitted_readback(db_session, monkeypatch)
+    monkeypatch.setattr(
+        svc, "_current_rows", lambda *_: (_raw_rows(), _canonical()))
+    bad_rows = _rows("present_not_effective")
+    bad_rows[0] = {
+        **bad_rows[0], "classification": "amount_mismatch",
+        "actual_deduct": "1.00",
+    }
+    reads = []
+    monkeypatch.setattr(svc, "_platform_read", lambda *_: (
+        reads.append(True) or {
+            "ok": True, "web_agent_job_id": "difference",
+            "rows": bad_rows, "artifact": _artifact(),
+        }))
+    monkeypatch.setattr(
+        svc.campaign_service, "_upload_and_wait",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("readback must never upload")))
+
+    first = _verify_readback(db_session)
+    second = _verify_readback(db_session)
+
+    assert first["error"] == "sku_identity_readback_not_exact_no_retry"
+    assert first["execution_boundary"]["platform_write"] is False
+    assert second["error"] == "sku_identity_readback_already_claimed_no_retry"
+    assert reads == [True]
+
+
+def test_readback_rejects_any_other_submitted_attempt(
+        db_session, monkeypatch):
+    _seed_submitted_readback(db_session, monkeypatch)
+    attempt = json.loads(settings_service.get(
+        db_session, svc.RECOVERY_ATTEMPT_KEY, env_fallback=False))
+    attempt["terminal_evidence_request_id"] = "wrong-terminal"
+    settings_service.set_value(
+        db_session, svc.RECOVERY_ATTEMPT_KEY, json.dumps(attempt))
+    db_session.commit()
+    reads = []
+    monkeypatch.setattr(svc, "_platform_read", lambda *_: reads.append(True))
+
+    result = _verify_readback(db_session)
+
+    assert result["error"] == "sku_identity_readback_attempt_receipt_mismatch"
+    assert reads == []

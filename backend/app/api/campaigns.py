@@ -141,6 +141,18 @@ class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     expected_new_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountIdentityReadbackIn(BaseModel):
+    """Exact read-only closeout for the already-submitted recovery attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_terminal_evidence_request_id: str = Field(min_length=1)
+    expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -612,6 +624,45 @@ def recover_super_reduce_plan7_discount_sku_identity(
             "sku_identity_recovery_final_price_math_mismatch",
         }:
             code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/verify-super-reduce-plan7-discount-sku-identity-readback")
+def verify_super_reduce_plan7_discount_sku_identity_readback(
+        body: CampaignPlan7DiscountIdentityReadbackIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Read four submitted rows once and close the existing attempt.
+
+    This route has no upload/submit path and cannot create a new business
+    attempt.  Any navigation or row difference is terminal and remains visible.
+    """
+    from app.services import campaign_discount_identity_recovery_service
+
+    result = (
+        campaign_discount_identity_recovery_service
+        .verify_plan7_identity_recovery_readback(
+            db,
+            workflow_key=_validate_workflow_key(body.workflow_key),
+            expected_plan_id=body.plan_id,
+            expected_attempt_id=body.expected_attempt_id,
+            expected_terminal_evidence_request_id=(
+                body.expected_terminal_evidence_request_id),
+            expected_scope_sha256=body.expected_scope_sha256,
+        )
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 422 if error in {
+            "sku_identity_readback_request_not_allowed",
+            "sku_identity_readback_plan_identity_not_allowed",
+            "sku_identity_readback_attempt_receipt_mismatch",
+            "sku_identity_readback_identity_receipt_mismatch",
+            "sku_identity_recovery_full_scope_drift",
+            "sku_identity_recovery_price_scope_drift",
+            "sku_identity_recovery_final_price_math_mismatch",
+        } else 409
         raise HTTPException(code, detail=result)
     return result
 

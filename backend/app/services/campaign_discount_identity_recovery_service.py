@@ -41,6 +41,11 @@ EXPECTED_OLD_ATTEMPT_ID = "a701400096c131d9ae2c3e38"
 OLD_ATTEMPT_KEY = "campaign_plan7_discount_correction_v1"
 IDENTITY_RECEIPT_KEY = "campaign_plan7_discount_sku_identity_v1"
 RECOVERY_ATTEMPT_KEY = "campaign_plan7_discount_identity_recovery_v1"
+READBACK_RECEIPT_KEY = (
+    "campaign_plan7_discount_identity_recovery_readback_v1")
+EXPECTED_RECOVERY_ATTEMPT_ID = "ab51f002ac5570c9bb407d00"
+EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID = (
+    "single-discount-terminal-30223e509426a655")
 EXPECTED_OFFICIAL_EXPORT_SHA256 = (
     "cdf6502bbf4c048824a0ad5f1545d6335faa117a854f3c624773c1e610a9a72b"
 )
@@ -662,4 +667,179 @@ def recover_plan7_single_discount_identity(
         },
         "execution_boundary": _boundary(
             platform_read=True, platform_write=True, identity_write=True),
+    }
+
+
+def _submitted_recovery_guard(attempt: dict) -> bool:
+    return bool(
+        attempt.get("status") == "failed_post_submit_readback"
+        and attempt.get("attempt_id") == EXPECTED_RECOVERY_ATTEMPT_ID
+        and attempt.get("workflow_key") == WORKFLOW_KEY
+        and attempt.get("plan_id") == PLAN_ID
+        and attempt.get("submitted") is True
+        and attempt.get("terminal_job_id") == "job2"
+        and attempt.get("terminal_evidence_request_id")
+        == EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID
+        and attempt.get("official_export_sha256")
+        == EXPECTED_OFFICIAL_EXPORT_SHA256
+        and attempt.get("new_scope_sha256")
+        == EXPECTED_NEW_MISSING_SCOPE_SHA256
+        and not attempt.get("post_submit_snapshot_id")
+    )
+
+
+def _readback_artifact_valid(artifact: dict) -> bool:
+    try:
+        raw = base64.b64decode(artifact["content_b64"], validate=True)
+        return bool(
+            raw
+            and int(artifact["size"]) == len(raw)
+            and hashlib.sha256(raw).hexdigest() == artifact["sha256"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def verify_plan7_identity_recovery_readback(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_attempt_id: str, expected_terminal_evidence_request_id: str,
+        expected_scope_sha256: str) -> dict:
+    """Close the already-submitted recovery with one read-only verification.
+
+    This function can never call the upload path or create a new business
+    attempt.  It claims one readback receipt before contacting Web-Agent and
+    updates the existing recovery attempt only after exact evidence is stored.
+    """
+    if (
+        workflow_key != WORKFLOW_KEY
+        or expected_plan_id != PLAN_ID
+        or expected_attempt_id != EXPECTED_RECOVERY_ATTEMPT_ID
+        or expected_terminal_evidence_request_id
+        != EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID
+        or expected_scope_sha256 != EXPECTED_NEW_MISSING_SCOPE_SHA256
+    ):
+        return _fail("sku_identity_readback_request_not_allowed")
+    plan = _plan_guard(db, lock=True)
+    if plan is None:
+        return _fail("sku_identity_readback_plan_identity_not_allowed")
+    attempt = _load_json_setting(db, RECOVERY_ATTEMPT_KEY) or {}
+    if (
+        attempt.get("status") == "completed"
+        and attempt.get("attempt_id") == EXPECTED_RECOVERY_ATTEMPT_ID
+        and attempt.get("post_submit_snapshot_id")
+    ):
+        return {
+            "ok": True, "idempotent_replay": True,
+            "workflow_key": WORKFLOW_KEY, "plan_id": PLAN_ID,
+            "attempt": attempt,
+            "execution_boundary": _boundary(platform_read=False),
+        }
+    existing = _load_json_setting(db, READBACK_RECEIPT_KEY)
+    if existing:
+        return _fail(
+            "sku_identity_readback_already_claimed_no_retry",
+            readback_id=existing.get("readback_id"),
+            readback_status=existing.get("status"))
+    if not _submitted_recovery_guard(attempt):
+        return _fail("sku_identity_readback_attempt_receipt_mismatch")
+    identity_receipt = _load_json_setting(db, IDENTITY_RECEIPT_KEY) or {}
+    if (
+        identity_receipt.get("status") != "completed"
+        or identity_receipt.get("official_export_sha256")
+        != EXPECTED_OFFICIAL_EXPORT_SHA256
+    ):
+        return _fail("sku_identity_readback_identity_receipt_mismatch")
+    try:
+        _, canonical = _current_rows(db, plan)
+    except ValueError as exc:
+        return _fail(str(exc))
+    readback_id = secrets.token_hex(12)
+    claim = {
+        "status": "claimed", "readback_id": readback_id,
+        "claimed_at": datetime.now(timezone.utc).isoformat(),
+        "workflow_key": WORKFLOW_KEY, "plan_id": PLAN_ID,
+        "attempt_id": EXPECTED_RECOVERY_ATTEMPT_ID,
+        "terminal_evidence_request_id": (
+            EXPECTED_TERMINAL_EVIDENCE_REQUEST_ID),
+        "scope_sha256": EXPECTED_NEW_MISSING_SCOPE_SHA256,
+        "platform_write": False, "automatic_retry": False,
+    }
+    _save_json_setting(
+        db, READBACK_RECEIPT_KEY, claim,
+        "计划7已提交SKU身份恢复的单次只读收口回执（不含凭据）")
+    db.commit()
+    try:
+        result = _platform_read(db, plan)
+    except Exception as exc:  # no platform write can follow this path
+        result = {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "rows": [],
+        }
+    artifact = result.get("artifact") if isinstance(
+        result.get("artifact"), dict) else {}
+    exact = _read_class(result, "present_not_effective")
+    artifact_ok = _readback_artifact_valid(artifact)
+    if exact and not artifact_ok:
+        exact = False
+        result = {**result, "error": "readback_artifact_invalid"}
+    snapshot_id = None
+    rows = result.get("rows") if isinstance(result.get("rows"), list) else []
+    if result.get("ok") is True and artifact_ok:
+        failures = [
+            row for row in rows
+            if row.get("classification") != "present_not_effective"
+            or row.get("actual_deduct") is None
+            or _money(row.get("actual_deduct"))
+            != _money(row.get("expected_deduct"))
+            or str(row.get("status") or "") != "未开始"
+        ]
+        snapshot = campaign_discount_audit_service._persist(
+            db, plan=plan,
+            evidence_type=(
+                "single_item_discount_identity_recovery_readback"),
+            request_id=f"plan7-identity-readback-{readback_id}",
+            web_agent_job_id=result.get("web_agent_job_id"),
+            scope_digest=EXPECTED_NEW_MISSING_SCOPE_SHA256,
+            status="complete" if exact else "differences",
+            summary=result.get("platform_summary"),
+            rows=rows, failure_rows=failures,
+            boundary=_boundary(platform_read=True), artifact=artifact)
+        snapshot_id = snapshot.id
+    finished = {
+        **claim,
+        "status": "completed" if exact else "failed_terminal_no_retry",
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "web_agent_job_id": result.get("web_agent_job_id"),
+        "artifact_sha256": artifact.get("sha256"),
+        "snapshot_id": snapshot_id,
+        "result_error": None if exact else (
+            result.get("error") or "readback_rows_not_exact"),
+        "rows": rows,
+    }
+    updated_attempt = {
+        **attempt,
+        "status": "completed" if exact else "failed_post_submit_readback",
+        "post_submit_web_agent_job_id": result.get("web_agent_job_id"),
+        "post_submit_artifact_sha256": artifact.get("sha256"),
+        "post_submit_snapshot_id": snapshot_id,
+        "result_error": finished["result_error"],
+        "readback_id": readback_id,
+    }
+    _save_json_setting(
+        db, READBACK_RECEIPT_KEY, finished,
+        "计划7已提交SKU身份恢复的单次只读收口回执（不含凭据）")
+    _save_json_setting(
+        db, RECOVERY_ATTEMPT_KEY, updated_attempt,
+        "计划7SKU身份修正后恢复终态回执")
+    db.commit()
+    if not exact:
+        return _fail(
+            "sku_identity_readback_not_exact_no_retry",
+            platform_read=True, attempt=updated_attempt,
+            readback=finished)
+    return {
+        "ok": True, "workflow_key": WORKFLOW_KEY, "plan_id": PLAN_ID,
+        "attempt": updated_attempt, "readback": finished,
+        "verified_rows": canonical,
+        "execution_boundary": _boundary(platform_read=True),
     }
