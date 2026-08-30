@@ -2,6 +2,26 @@
 
 Last updated: 2026-08-30 (Asia/Shanghai)
 
+## 2026-08-30 plan 7 fresh official-scope partition
+
+- Fresh official export SHA-256
+  `0faefce8f97c1b470fefcea4ece33bfc62c14beaf5471c9b88826ac8bee718c0`
+  contains 25 of the formerly reviewed 30 items. A product-name hit is not
+  success: every expected SKU was compared to its exact activity price, and
+  real-SKU final price was recalculated from official plus existing discount.
+- 21 items are exact and are read-only closeouts. Four existing items are hard
+  stops and cannot be uploaded or repriced: `1046992283533`, `717418169535`,
+  `840643621692`, `840659847455`. Five wholly missing items are the only new
+  upload scope: `1036273574687`, `1074244132390`, `717809819543`,
+  `793084818113`, `793202812082` (70 rows: 52 real + 18 placeholder; scope
+  SHA-256 `1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86`).
+- The recovery entry re-exports and re-partitions all 30 before claiming. Any
+  drift stops without a write. Only the exact five missing whole items can be
+  claimed; each still requires R16/R17, a platform terminal and exact per-SKU
+  post-submit export. The four conflicts stay in the plan hard-failure marker,
+  so the plan remains alarmed after the safe five complete. The old incident
+  payload is rejected.
+
 ## 2026-08-30 plan 7 pre-claim export recovery hardening
 
 - The second plan-7 remaining-signup request reached ERP and returned HTTP 409

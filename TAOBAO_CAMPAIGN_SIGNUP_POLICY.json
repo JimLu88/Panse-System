@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-30.1",
-  "updated_at": "2026-08-30T13:30:00+08:00",
+  "version": "2026-08-30.2",
+  "updated_at": "2026-08-30T19:30:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -17,7 +17,9 @@
     "bounded_plan7_remaining_manifest_batches": {
       "enabled": true,
       "workflow_key": "campaign:super-reduce:2026-09-01",
-      "authorized_item_scope_sha256": "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8",
+      "reviewed_full_scope_sha256": "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8",
+      "authorized_item_scope_sha256": "1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86",
+      "preexisting_scope_partition": "fresh_official_export_per_sku_exact_match_only; qualified_readonly_closeout; price_conflict_whole_item_hard_stop; wholly_missing_only_may_upload",
       "max_items_per_batch": 50,
       "max_rows_per_batch": 500,
       "split_only_when_limit_requires_it": true
@@ -84,6 +86,7 @@
     "qualification_hard_failure_action": "isolate_whole_item_report_and_continue_safe_items",
     "exclude_delisted_skus": true,
     "already_correct_items_are_not_reimported": true,
+    "existing_item_name_presence_is_not_success": "every_expected_sku_must_have_exact_activity_price_and_final_price_math_before_readonly_closeout",
     "accepted_items_are_excluded_from_later_manifest_batches": true,
     "published_wrong_price_or_missing_sku_action": "isolate_item_report_and_continue_safe_items",
     "target_scope_must_be_complete_and_mapped": true,

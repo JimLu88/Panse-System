@@ -25,4 +25,6 @@ def test_long_server_call_emits_heartbeat(monkeypatch, capsys):
 
 def test_recovery_payload_is_bound_to_the_observed_preclaim_incident():
     assert cli._FIXED_PAYLOAD["recovery_incident_id"] == (
-        "plan7-preclaim-export-e222849772c5")
+        "plan7-scope-review-08a753484e03")
+    assert cli._FIXED_PAYLOAD["expected_item_scope_sha256"] == (
+        "1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86")

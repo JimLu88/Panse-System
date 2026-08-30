@@ -52,17 +52,36 @@ AUTHORIZED_PLACEHOLDER_ITEM_IDS = {
     "840659847455", "841201084787", "917179577721",
     "918340407291", "918692510350", "983187789816",
 }
-AUTHORIZED_ITEM_SCOPE_SHA256 = (
+AUTHORIZED_FULL_SCOPE_SHA256 = (
     "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8"
 )
+READONLY_QUALIFIED_ITEM_IDS = {
+    "1036279566778", "1036312802226", "1036471324464",
+    "1037224597517", "1037239277197", "1038062316046",
+    "1038087212258", "1044450741007", "1046992019256",
+    "1048684921443", "717388593550", "717434309002",
+    "793052650673", "793178436895", "837902729785",
+    "840301943626", "841201084787", "917179577721",
+    "918340407291", "918692510350", "983187789816",
+}
+READONLY_HARD_STOP_ITEM_IDS = {
+    "1046992283533", "717418169535", "840643621692", "840659847455",
+}
+AUTHORIZED_MISSING_ITEM_IDS = {
+    "1036273574687", "1074244132390", "717809819543",
+    "793084818113", "793202812082",
+}
+AUTHORIZED_ITEM_SCOPE_SHA256 = (
+    "1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86"
+)
 ATTEMPT_KEY = "campaign_plan7_remaining_signup_v1"
-RECOVERY_INCIDENT_ID = "plan7-preclaim-export-e222849772c5"
+RECOVERY_INCIDENT_ID = "plan7-scope-review-08a753484e03"
 MAX_ITEMS_PER_BATCH = 50
 MAX_ROWS_PER_BATCH = 500
-EXPECTED_ITEM_COUNT = 30
-EXPECTED_ROW_COUNT = 299
-EXPECTED_REAL_SKU_ROWS = 221
-EXPECTED_PLACEHOLDER_SKU_ROWS = 78
+EXPECTED_ITEM_COUNT = 5
+EXPECTED_ROW_COUNT = 70
+EXPECTED_REAL_SKU_ROWS = 52
+EXPECTED_PLACEHOLDER_SKU_ROWS = 18
 
 
 def _utcnow() -> str:
@@ -244,6 +263,42 @@ def _active_or_pending_items(rows: list[dict], scope: set[str]) -> set[str]:
     } - {""}
 
 
+def _classify_existing_scope(
+        expected_rows: list[dict], live_rows: list[dict]) -> dict:
+    """Split the reviewed 30 items into exact, conflicting and wholly missing."""
+    by_item: dict[str, list[dict]] = defaultdict(list)
+    for row in expected_rows:
+        by_item[str(row.get("taobao_item_id") or "")].append(row)
+    present = _active_or_pending_items(
+        live_rows, AUTHORIZED_PLACEHOLDER_ITEM_IDS)
+    qualified: set[str] = set()
+    hard_stop: set[str] = set()
+    missing: set[str] = set()
+    verification: dict[str, dict] = {}
+    for item_id, item_rows in sorted(by_item.items()):
+        if item_id not in present:
+            missing.add(item_id)
+            verification[item_id] = {
+                "ok": False,
+                "classification": "wholly_missing",
+                "checked_skus": len(item_rows),
+                "verified_skus": 0,
+                "failed_skus": len(item_rows),
+            }
+            continue
+        checked = _verify_all_skus(item_rows, live_rows)
+        checked["classification"] = (
+            "qualified_existing" if checked["ok"] else "existing_price_conflict")
+        verification[item_id] = checked
+        (qualified if checked["ok"] else hard_stop).add(item_id)
+    return {
+        "qualified_item_ids": sorted(qualified),
+        "hard_stop_item_ids": sorted(hard_stop),
+        "missing_item_ids": sorted(missing),
+        "verification": verification,
+    }
+
+
 def _verify_all_skus(expected_rows: list[dict], live_rows: list[dict]) -> dict:
     allowed_statuses = {"已发布设定", "活动中", "暂停"}
     live_by_pair: dict[tuple[str, str], list[dict]] = defaultdict(list)
@@ -347,8 +402,21 @@ def execute_plan7_remaining_signup(
             or recovery_incident_id != RECOVERY_INCIDENT_ID):
         return _fail("remaining_signup_request_not_allowed")
     if _canonical_scope_digest(AUTHORIZED_PLACEHOLDER_ITEM_IDS) \
-            != AUTHORIZED_ITEM_SCOPE_SHA256:
+            != AUTHORIZED_FULL_SCOPE_SHA256:
         return _fail("remaining_signup_authorized_scope_constant_invalid")
+    if _canonical_scope_digest(AUTHORIZED_MISSING_ITEM_IDS) \
+            != AUTHORIZED_ITEM_SCOPE_SHA256:
+        return _fail("remaining_signup_missing_scope_constant_invalid")
+    partitions = (
+        READONLY_QUALIFIED_ITEM_IDS,
+        READONLY_HARD_STOP_ITEM_IDS,
+        AUTHORIZED_MISSING_ITEM_IDS,
+    )
+    if (set().union(*partitions) != AUTHORIZED_PLACEHOLDER_ITEM_IDS
+            or any(partitions[left] & partitions[right]
+                   for left in range(len(partitions))
+                   for right in range(left + 1, len(partitions)))):
+        return _fail("remaining_signup_scope_partition_constant_invalid")
 
     plan = db.get(CampaignPlan, PLAN_ID)
     if plan is None or plan.workflow_key != WORKFLOW_KEY:
@@ -429,14 +497,68 @@ def execute_plan7_remaining_signup(
         db.commit()
         return failed
     live_rows = refreshed.get("rows") or []
-    already_present = _active_or_pending_items(
-        live_rows, AUTHORIZED_PLACEHOLDER_ITEM_IDS)
-    if already_present:
+    review_rows, _review_stats = campaign_service.build_signup_rows(
+        db, plan, allow_placeholder_safe_lowering=True)
+    review_rows = [
+        row for row in review_rows
+        if str(row.get("taobao_item_id") or "")
+        in AUTHORIZED_PLACEHOLDER_ITEM_IDS
+    ]
+    scope_review = _classify_existing_scope(review_rows, live_rows)
+    if (set(scope_review["qualified_item_ids"])
+            != READONLY_QUALIFIED_ITEM_IDS
+            or set(scope_review["hard_stop_item_ids"])
+            != READONLY_HARD_STOP_ITEM_IDS
+            or set(scope_review["missing_item_ids"])
+            != AUTHORIZED_MISSING_ITEM_IDS):
         return _fail(
-            "remaining_signup_scope_already_present_requires_review",
-            item_ids=sorted(already_present),
+            "remaining_signup_live_scope_review_drift",
+            scope_review=scope_review,
             export_evidence=refreshed.get("export_evidence"),
         )
+    good_rows = [
+        row for row in review_rows
+        if str(row.get("taobao_item_id") or "")
+        in READONLY_QUALIFIED_ITEM_IDS
+    ]
+    discount_rows, _discount_stats = campaign_service.build_discount_rows(db, plan)
+    good_discount_rows = [
+        row for row in discount_rows
+        if str(row.get("taobao_item_id") or "")
+        in READONLY_QUALIFIED_ITEM_IDS
+    ]
+    price_math = campaign_service._check_price_math(
+        db, plan, good_rows, good_discount_rows)
+    if price_math.get("level") != "pass":
+        return _fail(
+            "remaining_signup_existing_price_math_blocked",
+            scope_review=scope_review,
+            price_math=price_math,
+            export_evidence=refreshed.get("export_evidence"),
+        )
+    hard_stop_failures = []
+    for item_id in sorted(READONLY_HARD_STOP_ITEM_IDS):
+        hard_stop_failures.extend(
+            scope_review["verification"][item_id].get("failures") or [])
+    _persist_snapshot(
+        db,
+        request_id=f"plan7-remaining-review-{secrets.token_hex(8)}",
+        scope_sha256=AUTHORIZED_FULL_SCOPE_SHA256,
+        result_status="reviewed",
+        rows=review_rows,
+        summary={
+            "recovery_incident_id": recovery_incident_id,
+            "scope_review": scope_review,
+            "qualified_price_math": price_math,
+            "attempt_claimed": False,
+            "platform_write": False,
+        },
+        export_evidence=refreshed.get("export_evidence"),
+        failure_rows=hard_stop_failures,
+        platform_write=False,
+        evidence_type="plan7_remaining_scope_review",
+    )
+    db.commit()
 
     # Lock and recompute after the network read so two callers cannot both
     # claim the same platform write.
@@ -488,14 +610,14 @@ def execute_plan7_remaining_signup(
     rows = [
         row for row in safe_rows
         if str(row.get("taobao_item_id") or "")
-        in AUTHORIZED_PLACEHOLDER_ITEM_IDS
+        in AUTHORIZED_MISSING_ITEM_IDS
     ]
     actual_items = {str(row["taobao_item_id"]) for row in rows}
-    if actual_items != AUTHORIZED_PLACEHOLDER_ITEM_IDS:
+    if actual_items != AUTHORIZED_MISSING_ITEM_IDS:
         return _fail(
             "remaining_signup_safe_scope_incomplete",
-            missing_item_ids=sorted(AUTHORIZED_PLACEHOLDER_ITEM_IDS - actual_items),
-            unexpected_item_ids=sorted(actual_items - AUTHORIZED_PLACEHOLDER_ITEM_IDS),
+            missing_item_ids=sorted(AUTHORIZED_MISSING_ITEM_IDS - actual_items),
+            unexpected_item_ids=sorted(actual_items - AUTHORIZED_MISSING_ITEM_IDS),
         )
     if any(
         str(row.get("taobao_item_id") or "") in (
@@ -550,7 +672,7 @@ def execute_plan7_remaining_signup(
         )
     checks = campaign_service.preflight(
         db, plan,
-        exact_item_scope=AUTHORIZED_PLACEHOLDER_ITEM_IDS,
+        exact_item_scope=AUTHORIZED_MISSING_ITEM_IDS,
         allow_placeholder_safe_lowering=True,
     )
     blocking = [row for row in checks if row.get("level") == "error"]
@@ -578,6 +700,7 @@ def execute_plan7_remaining_signup(
         "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID,
         "authorized_item_scope_sha256": AUTHORIZED_ITEM_SCOPE_SHA256,
+        "reviewed_full_scope_sha256": AUTHORIZED_FULL_SCOPE_SHA256,
         "manifest_sha256": manifest_sha,
         "item_ids": sorted(actual_items),
         "item_count": len(actual_items),
@@ -587,6 +710,8 @@ def execute_plan7_remaining_signup(
         "manifest_rows": _manifest_rows(rows),
         "excluded": {
             "already_accepted": sorted(ACCEPTED_ITEM_IDS),
+            "readonly_qualified": sorted(READONLY_QUALIFIED_ITEM_IDS),
+            "readonly_hard_stop": sorted(READONLY_HARD_STOP_ITEM_IDS),
             "official_exempt": sorted(OFFICIAL_EXEMPT_ITEM_IDS),
             "no_sales": sorted(no_sales),
             "no_valid_onsale_sku": sorted(NO_VALID_ONSALE_ITEM_IDS),
@@ -622,7 +747,7 @@ def execute_plan7_remaining_signup(
     )
     db.commit()
 
-    completed_items = set(ACCEPTED_ITEM_IDS)
+    completed_items = set(ACCEPTED_ITEM_IDS) | set(READONLY_QUALIFIED_ITEM_IDS)
     for batch in batches:
         batch_index = batch["batch_index"]
         attempt = _load_attempt(db) or claimed
@@ -769,7 +894,8 @@ def execute_plan7_remaining_signup(
     campaign_service._set_plan_item_marker(
         plan, "platform_qualified_items", completed_items)
     campaign_service._set_plan_item_marker(plan, "platform_no_sales_items", set())
-    campaign_service._set_plan_item_marker(plan, "platform_hard_failed_items", set())
+    campaign_service._set_plan_item_marker(
+        plan, "platform_hard_failed_items", READONLY_HARD_STOP_ITEM_IDS)
     all_safe_rows, _ = campaign_service.build_signup_rows(
         db, plan, allow_placeholder_safe_lowering=True)
     accepted_rows = [
@@ -778,14 +904,19 @@ def execute_plan7_remaining_signup(
     ]
     campaign_service._record_terminal_platform_acceptance(
         plan, accepted_rows, completed_items)
-    plan.status = "signup_pushed"
+    # Four already-enrolled items remain price-conflicted and are intentionally
+    # untouched. Keep the plan alarmed even after the only five missing items
+    # finish, so no downstream path can call the whole 30-item scope complete.
+    plan.status = "alarmed"
     final_attempt = _load_attempt(db) or claimed
     final_attempt.update({
         "status": "completed",
         "completed_at": _utcnow(),
         "completed_item_ids": sorted(completed_items),
-        "submitted_new_item_count": len(AUTHORIZED_PLACEHOLDER_ITEM_IDS),
+        "submitted_new_item_count": len(AUTHORIZED_MISSING_ITEM_IDS),
         "submitted_new_row_count": len(rows),
+        "readonly_qualified_item_ids": sorted(READONLY_QUALIFIED_ITEM_IDS),
+        "readonly_hard_stop_item_ids": sorted(READONLY_HARD_STOP_ITEM_IDS),
     })
     final_attempt.pop("current_batch", None)
     _save_attempt(db, final_attempt)
@@ -797,7 +928,7 @@ def execute_plan7_remaining_signup(
         "plan_status": plan.status,
         "attempt": _attempt_for_response(final_attempt),
         "manifest_sha256": manifest_sha,
-        "item_count": len(AUTHORIZED_PLACEHOLDER_ITEM_IDS),
+        "item_count": len(AUTHORIZED_MISSING_ITEM_IDS),
         "row_count": len(rows),
         "real_sku_rows": price_sources["real_sku_rows"],
         "placeholder_sku_rows": price_sources["placeholder_sku_rows"],

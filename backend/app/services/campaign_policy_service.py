@@ -68,8 +68,16 @@ def require_policy() -> dict[str, Any]:
     if bounded != {
         "enabled": True,
         "workflow_key": "campaign:super-reduce:2026-09-01",
-        "authorized_item_scope_sha256": (
+        "reviewed_full_scope_sha256": (
             "d2ee3fd43a5c80d31799fc17b1b9f57c90db9f7ec7c78a0c88a501a7b51db2b8"
+        ),
+        "authorized_item_scope_sha256": (
+            "1f66d114e711b0fb3448a8a1503120bb5edd35a2d6416105f66545392f15bc86"
+        ),
+        "preexisting_scope_partition": (
+            "fresh_official_export_per_sku_exact_match_only; "
+            "qualified_readonly_closeout; price_conflict_whole_item_hard_stop; "
+            "wholly_missing_only_may_upload"
         ),
         "max_items_per_batch": 50,
         "max_rows_per_batch": 500,
