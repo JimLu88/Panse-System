@@ -34,6 +34,9 @@ CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH = (
 CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH = (
     "/api/campaigns/update-super-reduce-plan7-discount-times"
 )
+CAMPAIGN_PLAN7_DISCOUNT_TIME_RECOVERY_PATH = (
+    "/api/campaigns/recover-super-reduce-plan7-discount-times"
+)
 CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH = (
     "/api/campaigns/correct-super-reduce-plan7-discount"
 )
@@ -60,6 +63,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH,
+    CAMPAIGN_PLAN7_DISCOUNT_TIME_RECOVERY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH,
@@ -289,6 +293,8 @@ def require_campaign_prepare_principal(
                 "campaign.super_reduce.plan7.discount_audit"),
             CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH: (
                 "campaign.super_reduce.plan7.discount_time_update"),
+            CAMPAIGN_PLAN7_DISCOUNT_TIME_RECOVERY_PATH: (
+                "campaign.super_reduce.plan7.discount_time_recovery"),
             CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH: (
                 "campaign.super_reduce.plan7.discount_correct"),
             CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH: (

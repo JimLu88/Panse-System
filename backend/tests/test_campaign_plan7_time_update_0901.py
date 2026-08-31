@@ -4,6 +4,7 @@ import json
 from sqlalchemy import select
 
 from app.cli import campaign_update_plan7_discount_times as cli
+from app.cli import campaign_recover_plan7_discount_times as recovery_cli
 from app.models.campaign import (
     CampaignEvidenceSnapshot,
     CampaignExecutionAttempt,
@@ -21,6 +22,20 @@ def _payload(**updates):
         "expected_end_at": svc.EXPECTED_END_AT,
         "target_start_at": svc.TARGET_START_AT,
         "target_end_at": svc.TARGET_END_AT,
+    }
+    value.update(updates)
+    return value
+
+
+def _recovery_payload(**updates):
+    value = {
+        **_payload(),
+        "failed_attempt_id": svc.RECOVERY_FAILED_ATTEMPT_ID,
+        "prewrite_receipts": [
+            {**receipt, "confirmed_activity_ids": list(
+                receipt["confirmed_activity_ids"])}
+            for receipt in svc.RECOVERY_PREWRITE_RECEIPTS
+        ],
     }
     value.update(updates)
     return value
@@ -84,6 +99,63 @@ def _terminal():
         },
         "web_agent_job_id": "commit-job",
     }
+
+
+def _failed_write_free_attempt(db, *, write_observed=False,
+                               confirmed_activity_ids=None):
+    digest = svc.manifest_sha256(_payload())
+    confirmed = confirmed_activity_ids or []
+    boundary = {
+        "platform_read": True,
+        "platform_write": bool(write_observed),
+        "account_action": bool(write_observed),
+        "automatic_retry": False,
+    }
+    attempt = CampaignExecutionAttempt(
+        id=svc.RECOVERY_FAILED_ATTEMPT_ID,
+        plan_id=svc.PLAN_ID,
+        workflow_key=svc.WORKFLOW_KEY,
+        operation=svc.OPERATION,
+        scope_sha256=digest,
+        state="failed",
+        write_claimed=True,
+        write_claimed_at=datetime.now(),
+        platform_write_observed=bool(write_observed),
+        automatic_retry_allowed=False,
+        request_id="plan7-time-update-original",
+        web_agent_job_id=svc.RECOVERY_FAILED_WEB_AGENT_JOB_ID,
+        last_step="cas_pre_read",
+        error_code="activity row zero",
+        result_summary={
+            "ok": False,
+            "phase": "commit",
+            "error": (
+                "RuntimeError: 活动 143780562424 "
+                "在活动列表中不是唯一记录（0条）"),
+            "step": "cas_pre_read",
+            "submitted": bool(write_observed),
+            "confirmed_activity_ids": confirmed,
+            "activities": [],
+            "web_agent_job_id": svc.RECOVERY_FAILED_WEB_AGENT_JOB_ID,
+            "execution_boundary": boundary,
+        },
+    )
+    snapshot = CampaignEvidenceSnapshot(
+        plan_id=svc.PLAN_ID,
+        workflow_key=svc.WORKFLOW_KEY,
+        evidence_type="plan7_discount_time_update_terminal",
+        request_id=attempt.request_id,
+        web_agent_job_id=svc.RECOVERY_FAILED_WEB_AGENT_JOB_ID,
+        scope_sha256=digest,
+        result_status="failed",
+        platform_summary={"platform_write_observed": bool(write_observed)},
+        rows=[],
+        failure_rows=[],
+        execution_boundary=boundary,
+    )
+    db.add_all([attempt, snapshot])
+    db.commit()
+    return attempt
 
 
 def test_request_is_exact_and_keeps_times_as_cas_fields():
@@ -206,3 +278,103 @@ def test_cli_preserves_non_2xx_json(monkeypatch, capsys):
     monkeypatch.setattr(cli, "call_api", lambda *_args, **_kwargs: (409, body))
     assert cli.main() == 1
     assert "activity_time_cas_mismatch" in capsys.readouterr().out
+
+
+def test_recovery_request_is_bound_to_two_exact_write_free_receipts():
+    normalized = svc.normalize_recovery_request(_recovery_payload())
+    assert normalized["failed_attempt_id"] == svc.RECOVERY_FAILED_ATTEMPT_ID
+    bad = _recovery_payload()
+    bad["prewrite_receipts"][1]["platform_write"] = True
+    try:
+        svc.normalize_recovery_request(bad)
+    except ValueError as exc:
+        assert "receipts_mismatch" in str(exc)
+    else:
+        raise AssertionError("write-observed recovery receipt was accepted")
+
+
+def test_write_free_failed_attempt_can_claim_one_recovery_only(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    old = _failed_write_free_attempt(db_session)
+    monkeypatch.setattr(svc, "_validate_plan_and_scope", lambda _db: (plan, None))
+    calls = []
+
+    def web_call(_db, *, payload, timeout_s=900):
+        calls.append(payload["phase"])
+        return _preflight() if payload["phase"] == "preflight" else _terminal()
+
+    monkeypatch.setattr(
+        svc.web_agent_service, "update_plan7_single_discount_times", web_call)
+    result = svc.recover_plan7_single_discount_times(
+        db_session, request_payload=_recovery_payload())
+    assert result["ok"] is True
+    assert result["attempt_state"] == "completed"
+    assert result["recovered_from_attempt_id"] == old.id
+    assert calls == ["preflight", "commit"]
+    db_session.refresh(old)
+    assert old.state == "failed"
+    assert old.platform_write_observed is False
+    attempts = db_session.execute(select(CampaignExecutionAttempt)).scalars().all()
+    assert sorted(row.operation for row in attempts) == [
+        svc.OPERATION, svc.RECOVERY_OPERATION]
+
+    replay = svc.recover_plan7_single_discount_times(
+        db_session, request_payload=_recovery_payload())
+    assert replay["ok"] is True
+    assert replay["idempotent_replay"] is True
+    assert calls == ["preflight", "commit"]
+
+
+def test_recovery_refuses_any_write_or_confirm_evidence(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    _failed_write_free_attempt(
+        db_session, write_observed=True,
+        confirmed_activity_ids=[svc.ACTIVITY_IDS[0]])
+    monkeypatch.setattr(svc, "_validate_plan_and_scope", lambda _db: (plan, None))
+    monkeypatch.setattr(
+        svc.web_agent_service, "update_plan7_single_discount_times",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe recovery reached Web-Agent")))
+    result = svc.recover_plan7_single_discount_times(
+        db_session, request_payload=_recovery_payload())
+    assert result["ok"] is False
+    assert result["error"] == (
+        "plan7_discount_time_recovery_write_free_proof_failed")
+    assert len(db_session.execute(select(CampaignExecutionAttempt)).scalars().all()) == 1
+
+
+def test_recovery_requires_current_old_time_before_new_claim(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    _failed_write_free_attempt(db_session)
+    monkeypatch.setattr(svc, "_validate_plan_and_scope", lambda _db: (plan, None))
+    monkeypatch.setattr(
+        svc.web_agent_service, "update_plan7_single_discount_times",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "error": "current_activity_time_drift",
+            "step": "cas_pre_read",
+            "submitted": False,
+            "confirmed_activity_ids": [],
+            "execution_boundary": {"platform_write": False},
+        })
+    result = svc.recover_plan7_single_discount_times(
+        db_session, request_payload=_recovery_payload())
+    assert result["ok"] is False
+    assert result["recovery_not_claimed"] is True
+    assert result["safe_retry_before_write"] is False
+    attempts = db_session.execute(select(CampaignExecutionAttempt)).scalars().all()
+    assert [row.operation for row in attempts] == [svc.OPERATION]
+
+
+def test_recovery_cli_preserves_non_2xx_json(monkeypatch, capsys):
+    raw = json.dumps(_recovery_payload()).encode()
+    monkeypatch.setattr(recovery_cli, "_read_payload", lambda: raw)
+    monkeypatch.setattr(recovery_cli, "_service_token", lambda: "token")
+    body = b'{"detail":{"error":"recovery_write_free_proof_failed"}}'
+    monkeypatch.setattr(
+        recovery_cli, "call_api", lambda *_args, **_kwargs: (409, body))
+    assert recovery_cli.main() == 1
+    assert "recovery_write_free_proof_failed" in capsys.readouterr().out

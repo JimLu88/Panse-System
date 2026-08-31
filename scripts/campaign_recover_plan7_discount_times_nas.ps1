@@ -1,19 +1,9 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ExpectedStartAt,
-    [Parameter(Mandatory = $true)]
-    [string]$ExpectedEndAt,
-    [Parameter(Mandatory = $true)]
-    [string]$TargetStartAt,
-    [Parameter(Mandatory = $true)]
-    [string]$TargetEndAt,
     [string]$SshHost = '15068803006@DS923plus',
     [int]$SshPort = 2222,
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
-
-throw '该脚本已永久禁用：原 attempt 9cf79b441a5fdbd56de061a7 已失败封存；请只使用 campaign_recover_plan7_discount_times_nas.ps1。'
 
 $ErrorActionPreference = 'Stop'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
@@ -24,13 +14,32 @@ $payload = [ordered]@{
     workflow_key = 'campaign:super-reduce:2026-09-01'
     plan_id = 7
     activity_ids = @('143780562424', '143936811502', '143939511827')
-    expected_start_at = $ExpectedStartAt
-    expected_end_at = $ExpectedEndAt
-    target_start_at = $TargetStartAt
-    target_end_at = $TargetEndAt
+    expected_start_at = '2026-09-01 00:00:00'
+    expected_end_at = '2026-09-01 23:59:59'
+    target_start_at = '2026-09-01 00:00:00'
+    target_end_at = '2026-09-05 23:59:59'
+    failed_attempt_id = '9cf79b441a5fdbd56de061a7'
+    prewrite_receipts = @(
+        [ordered]@{
+            request_id = 'feb0a38dc0ec'
+            web_agent_job_id = 'job1'
+            attempt_id = $null
+            platform_write = $false
+            submitted = $false
+            confirmed_activity_ids = @()
+        },
+        [ordered]@{
+            request_id = '32110b92632a'
+            web_agent_job_id = 'job2'
+            attempt_id = '9cf79b441a5fdbd56de061a7'
+            platform_write = $false
+            submitted = $false
+            confirmed_activity_ids = @()
+        }
+    )
 }
-$raw = $payload | ConvertTo-Json -Compress
-$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_update_plan7_discount_times'
+$raw = $payload | ConvertTo-Json -Compress -Depth 6
+$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_recover_plan7_discount_times'
 $previousOutputEncoding = $OutputEncoding
 $nativePreferenceExists = Test-Path Variable:PSNativeCommandUseErrorActionPreference
 if ($nativePreferenceExists) {
@@ -54,7 +63,7 @@ try {
                 if ($detail.error) { $diagnostic = "; error=$($detail.error)" }
             } catch { $diagnostic = '; API 已返回响应 JSON（见上方原文）' }
         }
-        throw "计划7三活动原位改时失败，退出码 $exitCode$diagnostic"
+        throw "计划7三活动一次性恢复失败，退出码 $exitCode$diagnostic"
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding

@@ -18,6 +18,14 @@
 - 计划 7 原只读审计脚本已同步到 392 行/55 商品的新范围；千牛新版页面进入商品中心
   骨架时不再在 3.5 秒后误报“活动列表不存在”，而是等待真实工具身份并尝试
   `myseller` 新入口、旧 `qn` 入口和只读菜单导航后再失败关闭。
+- 原入口的两次调用 `feb0a38dc0ec`、`32110b92632a` 均在平台写入前停止；第二次的
+  失败 claim `9cf79b441a5fdbd56de061a7` 保留为 `failed`，数据库和 Web-Agent 回执均证明
+  `platform_write=false`、`submitted=false`、`confirmed_activity_ids=[]`。原脚本
+  `campaign_update_plan7_discount_times_nas.ps1` 已永久禁用。
+- 唯一恢复入口为 `POST /api/campaigns/recover-super-reduce-plan7-discount-times` 和
+  `scripts/campaign_recover_plan7_discount_times_nas.ps1`。它固定绑定上述两份回执和旧
+  attempt，先逐活动 ID 搜索并证明三条仍是旧时间，之后才建立独立 recovery claim；
+  旧 attempt 不覆盖，恢复调用也只有一次且不自动重试。
 
 ## 2026-09-01 个人支付宝历史售后/送装费用已按用户确认归账
 
