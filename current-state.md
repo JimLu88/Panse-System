@@ -1,5 +1,13 @@
 # Current state — logistics bill product analytics
 
+## 2026-08-31 SKU 身份账本与升降桌新命名校准（待发布）
+
+- migration 0147 新建当前身份、追加观察和未保存槽提案三张表。回填只读 ERP 数据库，不访问淘宝；未知历史字段不猜。
+- 活动预检 R7 显示账本状态；正式写入前的淘宝官方全量导出会追加观察并做 item/SKU 三方精确比较，缺失、额外或身份冲突均停止。
+- 升降桌固定目标改为 `130cm 带高台升降桌` / `PPS2441004051311B1`。旧名称只作为禁止项；重载页面若出现即失败。
+- 新行逐字段复制源行；只允许规格名称和商家编码不同。源行页面价格必须关联 ERP 标价 9100 或日常价 6825，2000 默认值未消除即失败。
+- 只读查询/导出：`scripts/sku_identity_ledger_query_nas.ps1`；新预览：`scripts/campaign_stage_lift_desk_named_slot_nas.ps1`。详细边界见 `docs/campaign-sku-identity-ledger-20260831.md`。
+
 ## 2026-08-31 lift-desk visual checkpoint ready
 
 - The exact unsaved calibration preserved 12 existing options and created one

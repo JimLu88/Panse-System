@@ -85,6 +85,11 @@ from app.models.pricing_custom import PricingCustomField, PricingCustomValue
 from app.models.price_change import PriceChangeLog
 from app.models.pricing_version import PricingSkuVersion  # noqa: F401 - 工厂调价历史(有效期定价)
 from app.models.taobao_listing import TaobaoListing
+from app.models.sku_identity import (  # noqa: F401 - 淘宝 SKU 身份证据账本
+    SkuIdentity,
+    SkuIdentityObservation,
+    SkuPhysicalSlotProposal,
+)
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
     NpdInspectionTemplate, NpdInspectionItem,
@@ -106,6 +111,9 @@ __all__ = [
     "NpdKnowledgeNote",
     "Base",
     "TaobaoListing",
+    "SkuIdentity",
+    "SkuIdentityObservation",
+    "SkuPhysicalSlotProposal",
     "Material",
     "PartInventory",
     "ProductInventory",

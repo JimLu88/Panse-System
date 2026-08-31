@@ -1,4 +1,4 @@
-"""One exact unsaved calibration for the lift-desk backup SKU option.
+"""One exact unsaved calibration for the named lift-desk SKU option.
 
 The destination and manifest are fixed.  It uploads only the official option
 template and closes the browser before the product-save action.  It cannot
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from app.database import SessionLocal
-from app.services import web_agent_service
+from app.services import sku_identity_service, web_agent_service
 
 
 MANIFEST = {
@@ -18,13 +18,26 @@ MANIFEST = {
     "source_merchant_code": "PPS2441004051311",
     "target_merchant_code": "PPS2441004051311B1",
     "source_option": "130cm 带高台",
-    "new_option": "130cm 带高台（备用1）",
+    "new_option": "130cm 带高台升降桌",
+    "erp_price_guard": {
+        "list_price": "9100.00",
+        "daily_price": "6825.00",
+        "small_promo": "4190.00",
+        "mid_promo": "4050.00",
+        "big_promo": "3830.00",
+    },
 }
 
 
 def main() -> int:
     with SessionLocal() as db:
+        sku_identity_service.ensure_lift_desk_proposal(
+            db, authorization_ref="user:2026-08-31:lift-desk-pilot")
         result = web_agent_service.product_sku_slot_stage(db, MANIFEST)
+        if result.get("ok"):
+            result["ledger_proposal"] = sku_identity_service.mark_lift_desk_staged_unsaved(
+                db, result=result)
+        db.commit()
     # Keep the operator receipt bounded; the screenshot is already retained by
     # the Web-Agent output directory and base64 is not useful in the terminal.
     result.pop("screenshot_base64", None)

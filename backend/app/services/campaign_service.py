@@ -2046,7 +2046,7 @@ def preflight(
         allow_placeholder_safe_lowering: bool = False,
 ) -> list[dict]:
     """R0~R21 read-only pre-submit checks; never uploads to QianNiu."""
-    from app.services import no_sales_service
+    from app.services import no_sales_service, sku_identity_service
     from app.services import campaign_price_protection_service
 
     policy_check = _check_campaign_policy()
@@ -2168,12 +2168,24 @@ def preflight(
         _check_signup_shipping(plan, _srows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
+    ledger_gate = sku_identity_service.campaign_manifest_gate(db, [*_srows, *_drows])
+    r7 = next(check for check in checks if check["rule"] == "R7")
+    r7.update({
+        "level": ledger_gate["level"],
+        "title": ("SKU 身份账本完整；正式执行前仍刷新淘宝全量 SKU"
+                  if ledger_gate["level"] == "pass" else
+                  "SKU 身份仅来自 ERP 安全回填；正式执行前必须刷新淘宝全量 SKU"
+                  if ledger_gate["level"] == "warn" else
+                  "SKU 身份账本缺失或冲突，停止报名"),
+        "items": [{"missing": ledger_gate["missing"],
+                   "conflicts": ledger_gate["conflicts"],
+                   "unverified": ledger_gate["unverified"]}],
+    })
     requested_rotation = requested_sku_refresh_items(plan)
     if requested_rotation:
-        r7 = next(check for check in checks if check["rule"] == "R7")
         r7.update({
             "level": "error",
-            "title": "禁止 SKU 轮换；发现旧轮换标记即停止并要求修正正式映射",
+            "title": "仅允许已保存、已入身份账本并有官方全量证据的受控物理槽轮换；当前标记未满足",
             "items": sorted(requested_rotation),
         })
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -3694,7 +3706,8 @@ def _refresh_official_product_sku_identity(
     prevents an ERP mapping that omits a newly added live SKU from creating a
     partial whole-item upload.
     """
-    from app.services import campaign_recon_service, web_agent_service
+    from app.models.pricing import PricingSku
+    from app.services import campaign_recon_service, sku_identity_service, web_agent_service
 
     exported = web_agent_service.export_product_prices(db, timeout_s=420)
     if not exported.get("ok"):
@@ -3713,6 +3726,26 @@ def _refresh_official_product_sku_identity(
         sku_id = str(record.get("sku_id") or "").strip()
         if item_id.isdigit() and sku_id.isdigit():
             actual_by_item[item_id].add(sku_id)
+    artifact_sha256 = hashlib.sha256(content).hexdigest()
+    sku_by_code = {row.sku_code: row for row in db.execute(select(PricingSku)).scalars()}
+    ledger_rows = []
+    for record in records:
+        merchant = str(record.get("merchant_code") or "").strip()
+        sku = sku_by_code.get(merchant)
+        ledger_rows.append({
+            "taobao_item_id": record.get("item_id"),
+            "taobao_sku_id": record.get("sku_id"),
+            "merchant_code": merchant or None,
+            "sku_spec": record.get("sale_attr") or None,
+            "sku_code": sku.sku_code if sku else merchant or None,
+            "product_code": sku.product_code if sku else None,
+            "is_custom_placeholder": bool(sku.is_custom_placeholder) if sku else False,
+            "daily_price": record.get("sku_price"),
+            "sale_state": "official_product_export_current",
+        })
+    ledger_refresh = sku_identity_service.observe(
+        db, ledger_rows, evidence_source="official_product_export:campaign_execute",
+        evidence_sha256=artifact_sha256)
     expected_by_item: dict[str, set[str]] = defaultdict(set)
     for row in pending_rows:
         item_id = str(row.get("taobao_item_id") or "").strip()
@@ -3730,16 +3763,22 @@ def _refresh_official_product_sku_identity(
                 "missing_in_erp_manifest": sorted(actual - expected),
                 "missing_on_platform": sorted(expected - actual),
             })
+    ledger_gate = sku_identity_service.assert_exact_platform_snapshot(
+        db, records, item_ids=set(expected_by_item))
+    if not ledger_gate["ok"]:
+        mismatches.append({"ledger": ledger_gate})
     return {
-        "ok": not mismatches,
+        "ok": not mismatches and not ledger_refresh["conflicts"],
         "step": "official_product_sku_identity",
         "error": "official_product_sku_scope_mismatch" if mismatches else None,
         "mismatches": mismatches,
         "artifact": {
             "filename": exported.get("filename"),
             "size": len(content),
-            "sha256": hashlib.sha256(content).hexdigest(),
+            "sha256": artifact_sha256,
         },
+        "ledger_refresh": ledger_refresh,
+        "ledger_gate": ledger_gate,
         "checked_items": len(expected_by_item),
         "checked_skus": sum(len(value) for value in expected_by_item.values()),
     }

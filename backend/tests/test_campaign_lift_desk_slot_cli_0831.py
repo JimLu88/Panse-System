@@ -7,7 +7,11 @@ def test_lift_desk_stage_manifest_is_fixed_and_unsaved(monkeypatch):
         "source_merchant_code": "PPS2441004051311",
         "target_merchant_code": "PPS2441004051311B1",
         "source_option": "130cm 带高台",
-        "new_option": "130cm 带高台（备用1）",
+        "new_option": "130cm 带高台升降桌",
+        "erp_price_guard": {
+            "list_price": "9100.00", "daily_price": "6825.00",
+            "small_promo": "4190.00", "mid_promo": "4050.00", "big_promo": "3830.00",
+        },
     }
 
 
