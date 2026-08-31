@@ -14,6 +14,10 @@
   `scripts/campaign_stage_lift_desk_sku_slot_unsaved_apply_nas.ps1`.  It allows
   one exact `在当前规格后添加` click after the one-option guard and still
   closes the browser without saving the product.
+- The current one-time entry is
+  `scripts/campaign_stage_lift_desk_sku_slot_recognition_wait_nas.ps1`; it
+  additionally proves the 90-second same-modal, no-click recognition wait is
+  present before delegating to the exact calibration.
 
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
