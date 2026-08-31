@@ -69,6 +69,10 @@ RECOVERY_V2_PREWRITE_RECEIPT = {
     "confirmed_activity_ids": (),
     "recovery_not_claimed": True,
 }
+RECOVERY_V3_ATTEMPT_ID = "17f82907f8f3707736bbe2b2"
+RECOVERY_V3_REQUEST_ID = "plan7-time-recovery-v2-e21baed97be3e080"
+RECOVERY_V3_WEB_AGENT_JOB_ID = "job2"
+RECOVERY_V3_EXTERNAL_REQUEST_ID = "f5d44ce64b90"
 
 
 def _fmt(value: datetime | None) -> str:
@@ -223,6 +227,46 @@ def normalize_recovery_v2_request(value: dict) -> dict:
             "confirmed_activity_ids": list(
                 normalized["confirmed_activity_ids"]),
         },
+    }
+
+
+def normalize_recovery_v3_request(value: dict) -> dict:
+    """Accept only the exact already-submitted V2 attempt for readback."""
+    allowed = {
+        "workflow_key", "plan_id", "attempt_id", "request_id",
+        "web_agent_job_id", "external_request_id",
+        "confirmed_activity_ids",
+    }
+    if not isinstance(value, dict) or set(value) != allowed:
+        raise ValueError("plan7_discount_time_readback_v3_fields_invalid")
+    confirmed = value.get("confirmed_activity_ids")
+    if not isinstance(confirmed, list):
+        raise ValueError("plan7_discount_time_readback_v3_confirmed_ids_invalid")
+    normalized = {
+        "workflow_key": str(value.get("workflow_key") or "").strip(),
+        "plan_id": value.get("plan_id"),
+        "attempt_id": str(value.get("attempt_id") or "").strip(),
+        "request_id": str(value.get("request_id") or "").strip(),
+        "web_agent_job_id": str(value.get("web_agent_job_id") or "").strip(),
+        "external_request_id": str(
+            value.get("external_request_id") or "").strip(),
+        "confirmed_activity_ids": tuple(
+            str(item or "").strip() for item in confirmed),
+    }
+    expected = {
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "attempt_id": RECOVERY_V3_ATTEMPT_ID,
+        "request_id": RECOVERY_V3_REQUEST_ID,
+        "web_agent_job_id": RECOVERY_V3_WEB_AGENT_JOB_ID,
+        "external_request_id": RECOVERY_V3_EXTERNAL_REQUEST_ID,
+        "confirmed_activity_ids": ACTIVITY_IDS,
+    }
+    if normalized != expected:
+        raise ValueError("plan7_discount_time_readback_v3_identity_mismatch")
+    return {
+        **normalized,
+        "confirmed_activity_ids": list(normalized["confirmed_activity_ids"]),
     }
 
 
@@ -554,6 +598,21 @@ def recover_plan7_single_discount_times(
 
 def recover_plan7_single_discount_times_v2(
         db: Session, *, request_payload: dict) -> dict:
+    """Permanently retire V2 after all three confirmations were observed."""
+    return {
+        "ok": False,
+        "error": "plan7_discount_time_recovery_v2_retired_after_submit",
+        "attempt_id": RECOVERY_V3_ATTEMPT_ID,
+        "submitted": True,
+        "platform_write_observed": True,
+        "confirmed_activity_ids": list(ACTIVITY_IDS),
+        "automatic_retry": False,
+        "execution_boundary": _boundary(),
+    }
+
+
+def _retired_recover_plan7_single_discount_times_v2_implementation(
+        db: Session, *, request_payload: dict) -> dict:
     """One V2 recovery bound to both original and V1 write-free receipts."""
     try:
         recovery = normalize_recovery_v2_request(request_payload)
@@ -709,4 +768,206 @@ def recover_plan7_single_discount_times_v2(
         "plan7_discount_scope_sha256": EXPECTED_SCOPE_SHA256,
         "automatic_retry": False,
         "execution_boundary": snapshot.execution_boundary,
+    }
+
+
+def _validate_v3_attempt_and_plan(
+        db: Session) -> tuple[
+            CampaignExecutionAttempt | None, CampaignPlan | None, dict | None]:
+    attempt = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.id == RECOVERY_V3_ATTEMPT_ID,
+    )).scalar_one_or_none()
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.id == PLAN_ID,
+        CampaignPlan.workflow_key == WORKFLOW_KEY,
+    )).scalar_one_or_none()
+    if attempt is None:
+        return None, plan, {"error": "plan7_discount_time_readback_attempt_not_found"}
+    if plan is None:
+        return attempt, None, {"error": "workflow_not_found"}
+    if attempt.state == "completed" and attempt.last_step == "readback_verified":
+        return attempt, plan, None
+    summary = dict(attempt.result_summary or {})
+    boundary = dict(summary.get("execution_boundary") or {})
+    activities = summary.get("activities") or []
+    activity_ids = [str(row.get("activity_id") or "") for row in activities]
+    pending_exact = bool(
+        activity_ids == list(ACTIVITY_IDS)
+        and all(
+            row.get("before_start_at") == EXPECTED_START_AT
+            and row.get("before_end_at") == EXPECTED_END_AT
+            and row.get("requested_start_at") == TARGET_START_AT
+            and row.get("requested_end_at") == TARGET_END_AT
+            and row.get("platform_terminal")
+            == "confirm_clicked_pending_readback"
+            for row in activities
+        )
+    )
+    if not (
+        attempt.plan_id == PLAN_ID
+        and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == RECOVERY_V2_OPERATION
+        and attempt.state == "unknown"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is True
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == RECOVERY_V3_REQUEST_ID
+        and attempt.web_agent_job_id == RECOVERY_V3_WEB_AGENT_JOB_ID
+        and attempt.last_step == "commit_unknown"
+        and summary.get("submitted") is True
+        and summary.get("confirmed_activity_ids") == list(ACTIVITY_IDS)
+        and boundary.get("platform_write") is True
+        and boundary.get("account_action") is True
+        and pending_exact
+    ):
+        return attempt, plan, {
+            "error": "plan7_discount_time_readback_attempt_evidence_mismatch"}
+    if (
+        plan.campaign_type != "super_reduce"
+        or plan.platform_activity_mode != "long_running_update"
+        or _fmt(plan.start_at) != EXPECTED_START_AT
+        or _fmt(plan.end_at) not in {EXPECTED_END_AT, TARGET_END_AT}
+    ):
+        return attempt, plan, {
+            "error": "plan7_discount_time_readback_plan_identity_drift"}
+    scope = campaign_discount_audit_service._scope_rows(db, plan)
+    digest = campaign_discount_audit_service.scope_sha256(scope)
+    item_count = len({row["item_id"] for row in scope})
+    if (digest != EXPECTED_SCOPE_SHA256
+            or len(scope) != EXPECTED_SCOPE_ROWS
+            or item_count != EXPECTED_SCOPE_ITEMS):
+        return attempt, plan, {
+            "error": "plan7_discount_time_readback_scope_drift",
+            "actual_scope_sha256": digest,
+            "actual_rows": len(scope),
+            "actual_items": item_count,
+        }
+    return attempt, plan, None
+
+
+def closeout_plan7_single_discount_times_v3(
+        db: Session, *, request_payload: dict) -> dict:
+    """Read only platform state, then close the already-written V2 attempt."""
+    try:
+        request_data = normalize_recovery_v3_request(request_payload)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc),
+                "execution_boundary": _boundary()}
+    attempt, plan, problem = _validate_v3_attempt_and_plan(db)
+    if problem:
+        return {"ok": False, **problem, "execution_boundary": _boundary()}
+    if attempt.state == "completed" and attempt.last_step == "readback_verified":
+        snapshot = db.execute(select(CampaignEvidenceSnapshot).where(
+            CampaignEvidenceSnapshot.plan_id == PLAN_ID,
+            CampaignEvidenceSnapshot.workflow_key == WORKFLOW_KEY,
+            CampaignEvidenceSnapshot.evidence_type
+            == "plan7_discount_time_recovery_v3_readback",
+        )).scalars().first()
+        return {
+            "ok": True,
+            "idempotent_replay": True,
+            "attempt_id": attempt.id,
+            "attempt_state": attempt.state,
+            "last_step": attempt.last_step,
+            "plan_end_at": _fmt(plan.end_at),
+            "activities": list(snapshot.rows or []) if snapshot else [],
+            "automatic_retry": False,
+            "execution_boundary": _boundary(platform_read=True),
+        }
+
+    base_payload = {
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "activity_ids": list(ACTIVITY_IDS),
+        "expected_start_at": EXPECTED_START_AT,
+        "expected_end_at": EXPECTED_END_AT,
+        "target_start_at": TARGET_START_AT,
+        "target_end_at": TARGET_END_AT,
+    }
+    result = web_agent_service.update_plan7_single_discount_times(
+        db, payload=_web_payload(base_payload, "readback"))
+    boundary = dict(result.get("execution_boundary") or {})
+    if (
+        boundary.get("platform_write")
+        or boundary.get("account_action")
+        or result.get("submitted")
+        or result.get("confirmed_activity_ids")
+    ):
+        return {
+            "ok": False,
+            "error": "plan7_discount_time_readback_boundary_violation",
+            "attempt_id": attempt.id,
+            "automatic_retry": False,
+            "execution_boundary": _boundary(platform_read=True),
+        }
+    activities = result.get("activities") or []
+    exact = bool(
+        result.get("ok")
+        and [str(row.get("activity_id") or "") for row in activities]
+        == list(ACTIVITY_IDS)
+        and all(
+            row.get("time_match") is True
+            and not (row.get("business_field_diffs") or [])
+            for row in activities
+        )
+    )
+    request_id = f"plan7-time-readback-v3-{secrets.token_hex(8)}"
+    snapshot = CampaignEvidenceSnapshot(
+        plan_id=PLAN_ID,
+        workflow_key=WORKFLOW_KEY,
+        evidence_type="plan7_discount_time_recovery_v3_readback",
+        request_id=request_id,
+        web_agent_job_id=result.get("web_agent_job_id"),
+        scope_sha256=attempt.scope_sha256,
+        result_status="completed" if exact else "failed",
+        platform_summary={
+            "source_attempt_id": attempt.id,
+            "source_request_id": attempt.request_id,
+            "external_request_id": request_data["external_request_id"],
+            "submitted_before_readback": True,
+            "confirmed_activity_ids": list(ACTIVITY_IDS),
+            "platform_write_observed": False,
+        },
+        rows=activities,
+        failure_rows=[] if exact else [
+            {
+                "activity_id": row.get("activity_id"),
+                "time_match": row.get("time_match"),
+                "business_field_diffs": row.get("business_field_diffs") or [],
+            }
+            for row in activities
+            if not row.get("time_match")
+            or (row.get("business_field_diffs") or [])
+        ],
+        execution_boundary=_boundary(platform_read=True),
+    )
+    db.add(snapshot)
+    if exact:
+        original_summary = dict(attempt.result_summary or {})
+        original_summary["readback"] = {
+            "request_id": request_id,
+            "web_agent_job_id": result.get("web_agent_job_id"),
+            "activities": activities,
+            "terminal_classification": "succeeded",
+            "execution_boundary": _boundary(platform_read=True),
+        }
+        attempt.state = "completed"
+        attempt.last_step = "readback_verified"
+        attempt.error_code = None
+        attempt.result_summary = original_summary
+        plan.end_at = datetime.strptime(TARGET_END_AT, "%Y-%m-%d %H:%M:%S")
+    db.commit()
+    return {
+        "ok": exact,
+        "error": None if exact else (
+            result.get("error") or "plan7_discount_time_readback_not_exact"),
+        "attempt_id": attempt.id,
+        "attempt_state": attempt.state,
+        "last_step": attempt.last_step,
+        "plan_end_at": _fmt(plan.end_at),
+        "readback_request_id": request_id,
+        "web_agent_job_id": result.get("web_agent_job_id"),
+        "activities": activities,
+        "automatic_retry": False,
+        "execution_boundary": _boundary(platform_read=True),
     }

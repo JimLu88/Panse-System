@@ -531,7 +531,7 @@ def audit_plan7_single_discount(
 
 def update_plan7_single_discount_times(
         db: Session, *, payload: dict, timeout_s: int = 900) -> dict:
-    """Run the exact plan-7 time-update preflight or one-shot commit job."""
+    """Run exact plan-7 preflight/commit or the editor-free readback job."""
     started = _post(
         db, "/api/single-item-discount/plan7-time-update",
         payload, timeout=30)

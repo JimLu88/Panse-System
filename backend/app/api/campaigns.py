@@ -171,6 +171,20 @@ class CampaignPlan7DiscountTimeRecoveryV2In(
     first_recovery_receipt: CampaignPlan7DiscountTimeRecoveryV2ReceiptIn
 
 
+class CampaignPlan7DiscountTimeReadbackV3In(BaseModel):
+    """Exact read-only closeout of the already-submitted V2 attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    request_id: str
+    web_agent_job_id: str
+    external_request_id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    confirmed_activity_ids: list[str] = Field(min_length=3, max_length=3)
+
+
 class CampaignPlan7DiscountCorrectionIn(BaseModel):
     """Immutable CAS input for the exact four-row plan-7 correction."""
 
@@ -716,6 +730,38 @@ def recover_super_reduce_plan7_discount_times_v2(
             "plan7_discount_time_recovery_v2_fields_invalid",
             "plan7_discount_time_recovery_v2_receipt_invalid",
             "plan7_discount_time_recovery_v2_receipt_mismatch",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/closeout-super-reduce-plan7-discount-times-v3")
+def closeout_super_reduce_plan7_discount_times_v3(
+        body: CampaignPlan7DiscountTimeReadbackV3In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Read back only; never open an editor or write to the platform."""
+    from app.services import campaign_plan7_time_update_service
+
+    result = (
+        campaign_plan7_time_update_service
+        .closeout_plan7_single_discount_times_v3(
+            db, request_payload=body.model_dump())
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "plan7_discount_time_readback_attempt_not_found",
+        } else 409
+        if error in {
+            "plan7_discount_time_readback_v3_fields_invalid",
+            "plan7_discount_time_readback_v3_confirmed_ids_invalid",
+            "plan7_discount_time_readback_v3_identity_mismatch",
+            "plan7_discount_time_readback_attempt_evidence_mismatch",
+            "plan7_discount_time_readback_plan_identity_drift",
+            "plan7_discount_time_readback_scope_drift",
         }:
             code = 422
         raise HTTPException(code, detail=result)

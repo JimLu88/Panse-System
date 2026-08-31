@@ -212,6 +212,59 @@ def test_plan7_time_recovery_v2_endpoint_uses_narrow_service_identity(
         engine.dispose()
 
 
+def test_plan7_time_readback_v3_endpoint_uses_narrow_service_identity(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_closeout(_db, *, request_payload):
+        calls.append(request_payload)
+        return {
+            "ok": True,
+            "attempt_state": "completed",
+            "last_step": "readback_verified",
+            "execution_boundary": {"platform_write": False},
+        }
+
+    svc = campaign_plan7_time_update_service
+    payload = {
+        "workflow_key": svc.WORKFLOW_KEY,
+        "plan_id": svc.PLAN_ID,
+        "attempt_id": svc.RECOVERY_V3_ATTEMPT_ID,
+        "request_id": svc.RECOVERY_V3_REQUEST_ID,
+        "web_agent_job_id": svc.RECOVERY_V3_WEB_AGENT_JOB_ID,
+        "external_request_id": svc.RECOVERY_V3_EXTERNAL_REQUEST_ID,
+        "confirmed_activity_ids": list(svc.ACTIVITY_IDS),
+    }
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        svc, "closeout_plan7_single_discount_times_v3", fake_closeout)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/closeout-super-reduce-plan7-discount-times-v3",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [payload]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
 TOKEN = "campaign-prepare-only-test-token"
 
 
@@ -498,6 +551,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/recover-super-reduce-plan7-discount-times-v2"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/closeout-super-reduce-plan7-discount-times-v3"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,

@@ -1,5 +1,20 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-01 计划7三项改时 V3 只读收口
+
+- V2 attempt `17f82907f8f3707736bbe2b2` 已确认三个固定活动，平台写入边界已经发生；
+  V2 API 与脚本因此永久禁用，严禁再次打开编辑器或点击确认。
+- 原 job1 预检证明三条业务身份：固定活动名、ID、自选商品活动、SKU级、减钱、创建时间
+  以及原导入状态；原整行签名同时包含派生提示“即将到期”。提交后截图中活动
+  `143939511827` 的时间已变为 9 月 1 日至 9 月 5 日，派生提示变为“进行中”，固定业务
+  字段与导入状态未见变化。其余两条仍必须由正式 V3 逐 ID 只读回读。
+- 唯一收口入口为
+  `POST /api/campaigns/closeout-super-reduce-plan7-discount-times-v3` 和
+  `scripts/campaign_closeout_plan7_discount_times_v3_nas.ps1`。它固定绑定外部 request
+  `f5d44ce64b90`、内部 request、attempt、job2 和三项 confirmed ID；Web-Agent 只搜索和
+  回读，不打开编辑器。只有三条新时间精确且固定业务字段无差异时，ERP 才把原 attempt
+  原位改为 `completed/readback_verified` 并同步计划结束时间；否则保持 `unknown`。
+
 ## 2026-09-01 计划7三项单品立减原位改时入口
 
 - 唯一允许的活动 ID 是 `143780562424`、`143936811502`、`143939511827`；调用端必须
@@ -25,12 +40,12 @@
 - 首次恢复 `ecee536af3b8` 因页面没有“重置”按钮而在只读预检停止；回执证明
   `platform_write=false`、`submitted=false`、`confirmed_activity_ids=[]` 且未创建
   recovery claim。V1 API 与脚本均永久禁用。
-- 唯一恢复入口为
+- 已完成的 V2 恢复入口原为
   `POST /api/campaigns/recover-super-reduce-plan7-discount-times-v2` 和
   `scripts/campaign_recover_plan7_discount_times_v2_nas.ps1`。它固定绑定原失败 attempt、
   原两份零写入回执和首次恢复零写入回执，并要求数据库不存在 V1 claim；先逐活动 ID
   搜索并证明三条仍是旧时间，之后才建立独立 V2 claim。旧 attempt 不覆盖，V2 也只有
-  一次且不自动重试。
+  一次且不自动重试；现因三条确认均已发生而永久禁用，只允许上方 V3 只读收口。
 
 ## 2026-09-01 个人支付宝历史售后/送装费用已按用户确认归账
 
