@@ -197,6 +197,32 @@ class CampaignPlan7DiscountCorrectionIn(BaseModel):
     expected_missing_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountSupplementRowIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(pattern=r"^\d+$")
+    sku_id: str = Field(pattern=r"^\d+$")
+    expected_deduct: str = Field(pattern=r"^\d+(?:\.\d{2})$")
+
+
+class CampaignPlan7DiscountSupplementIn(BaseModel):
+    """Immutable input for the exact four-SKU existing-activity supplement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    activity_ids: list[str] = Field(min_length=3, max_length=3)
+    target_activity_id: str = Field(pattern=r"^\d+$")
+    item_id: str = Field(pattern=r"^\d+$")
+    rows: list[CampaignPlan7DiscountSupplementRowIn] = Field(
+        min_length=4, max_length=4)
+    scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    readonly_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    start_at: str
+    end_at: str
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -798,6 +824,37 @@ def correct_super_reduce_plan7_discount(
                 "discount_correction_plan_identity_not_allowed",
                 "discount_correction_erp_price_scope_drift",
                 "discount_correction_final_price_math_mismatch"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/supplement-super-reduce-plan7-single-discount")
+def supplement_super_reduce_plan7_single_discount(
+        body: CampaignPlan7DiscountSupplementIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Append exactly four reviewed SKUs to one existing plan-7 activity once."""
+    from app.services import campaign_plan7_discount_supplement_service
+
+    result = (
+        campaign_plan7_discount_supplement_service
+        .execute_plan7_discount_supplement(
+            db, request_payload=body.model_dump())
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "plan7_discount_supplement_request_not_allowed",
+            "plan7_discount_supplement_plan_identity_drift",
+            "plan7_discount_supplement_erp_scope_drift",
+            "plan7_discount_supplement_xlsx_scope_drift",
+            "plan7_discount_supplement_activity_scope_not_exact",
+            "plan7_discount_supplement_activity_identity_drift",
+            "plan7_discount_supplement_readback_scope_drift",
+            "plan7_discount_supplement_platform_state_not_allowed",
+        }:
             code = 422
         raise HTTPException(code, detail=result)
     return result
