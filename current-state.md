@@ -22,10 +22,15 @@
   失败 claim `9cf79b441a5fdbd56de061a7` 保留为 `failed`，数据库和 Web-Agent 回执均证明
   `platform_write=false`、`submitted=false`、`confirmed_activity_ids=[]`。原脚本
   `campaign_update_plan7_discount_times_nas.ps1` 已永久禁用。
-- 唯一恢复入口为 `POST /api/campaigns/recover-super-reduce-plan7-discount-times` 和
-  `scripts/campaign_recover_plan7_discount_times_nas.ps1`。它固定绑定上述两份回执和旧
-  attempt，先逐活动 ID 搜索并证明三条仍是旧时间，之后才建立独立 recovery claim；
-  旧 attempt 不覆盖，恢复调用也只有一次且不自动重试。
+- 首次恢复 `ecee536af3b8` 因页面没有“重置”按钮而在只读预检停止；回执证明
+  `platform_write=false`、`submitted=false`、`confirmed_activity_ids=[]` 且未创建
+  recovery claim。V1 API 与脚本均永久禁用。
+- 唯一恢复入口为
+  `POST /api/campaigns/recover-super-reduce-plan7-discount-times-v2` 和
+  `scripts/campaign_recover_plan7_discount_times_v2_nas.ps1`。它固定绑定原失败 attempt、
+  原两份零写入回执和首次恢复零写入回执，并要求数据库不存在 V1 claim；先逐活动 ID
+  搜索并证明三条仍是旧时间，之后才建立独立 V2 claim。旧 attempt 不覆盖，V2 也只有
+  一次且不自动重试。
 
 ## 2026-09-01 个人支付宝历史售后/送装费用已按用户确认归账
 

@@ -151,6 +151,26 @@ class CampaignPlan7DiscountTimeRecoveryIn(CampaignPlan7DiscountTimeUpdateIn):
         min_length=2, max_length=2)
 
 
+class CampaignPlan7DiscountTimeRecoveryV2ReceiptIn(BaseModel):
+    """The exact first-recovery receipt proving it stopped before a claim."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    web_agent_job_id: str
+    platform_write: bool
+    submitted: bool
+    confirmed_activity_ids: list[str]
+    recovery_not_claimed: bool
+
+
+class CampaignPlan7DiscountTimeRecoveryV2In(
+        CampaignPlan7DiscountTimeRecoveryIn):
+    """Replacement recovery bound to the exact write-free V1 receipt."""
+
+    first_recovery_receipt: CampaignPlan7DiscountTimeRecoveryV2ReceiptIn
+
+
 class CampaignPlan7DiscountCorrectionIn(BaseModel):
     """Immutable CAS input for the exact four-row plan-7 correction."""
 
@@ -660,6 +680,42 @@ def recover_super_reduce_plan7_discount_times(
             "plan7_discount_time_recovery_attempt_mismatch",
             "plan7_discount_time_recovery_receipts_invalid",
             "plan7_discount_time_recovery_receipts_mismatch",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super-reduce-plan7-discount-times-v2")
+def recover_super_reduce_plan7_discount_times_v2(
+        body: CampaignPlan7DiscountTimeRecoveryV2In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """One V2 recovery after the original and V1 calls both stopped write-free."""
+    from app.services import campaign_plan7_time_update_service
+
+    result = (
+        campaign_plan7_time_update_service
+        .recover_plan7_single_discount_times_v2(
+            db, request_payload=body.model_dump())
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "plan7_discount_time_recovery_attempt_not_found",
+        } else 409
+        if error in {
+            "plan7_discount_time_update_request_not_allowed",
+            "plan7_discount_time_update_plan_identity_drift",
+            "plan7_discount_time_update_scope_drift",
+            "plan7_discount_time_recovery_fields_invalid",
+            "plan7_discount_time_recovery_attempt_mismatch",
+            "plan7_discount_time_recovery_receipts_invalid",
+            "plan7_discount_time_recovery_receipts_mismatch",
+            "plan7_discount_time_recovery_v2_fields_invalid",
+            "plan7_discount_time_recovery_v2_receipt_invalid",
+            "plan7_discount_time_recovery_v2_receipt_mismatch",
         }:
             code = 422
         raise HTTPException(code, detail=result)

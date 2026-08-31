@@ -40,6 +40,7 @@ EXPECTED_SCOPE_ROWS = 392
 EXPECTED_SCOPE_ITEMS = 55
 OPERATION = "discount_time_update"
 RECOVERY_OPERATION = "discount_time_update_recovery"
+RECOVERY_V2_OPERATION = "discount_time_update_recovery_v2"
 RECOVERY_FAILED_ATTEMPT_ID = "9cf79b441a5fdbd56de061a7"
 RECOVERY_FAILED_WEB_AGENT_JOB_ID = "job2"
 RECOVERY_PREWRITE_RECEIPTS = (
@@ -60,6 +61,14 @@ RECOVERY_PREWRITE_RECEIPTS = (
         "confirmed_activity_ids": (),
     },
 )
+RECOVERY_V2_PREWRITE_RECEIPT = {
+    "request_id": "ecee536af3b8",
+    "web_agent_job_id": "job1",
+    "platform_write": False,
+    "submitted": False,
+    "confirmed_activity_ids": (),
+    "recovery_not_claimed": True,
+}
 
 
 def _fmt(value: datetime | None) -> str:
@@ -171,6 +180,49 @@ def normalize_recovery_request(value: dict) -> dict:
                 receipt["confirmed_activity_ids"])}
             for receipt in normalized_receipts
         ],
+    }
+
+
+def normalize_recovery_v2_request(value: dict) -> dict:
+    """Bind the replacement entry to the first recovery's write-free stop."""
+    v1_keys = {
+        "workflow_key", "plan_id", "activity_ids", "expected_start_at",
+        "expected_end_at", "target_start_at", "target_end_at",
+        "failed_attempt_id", "prewrite_receipts",
+    }
+    if not isinstance(value, dict) or set(value) != v1_keys | {
+            "first_recovery_receipt"}:
+        raise ValueError("plan7_discount_time_recovery_v2_fields_invalid")
+    v1 = normalize_recovery_request({key: value.get(key) for key in v1_keys})
+    receipt = value.get("first_recovery_receipt")
+    allowed = {
+        "request_id", "web_agent_job_id", "platform_write", "submitted",
+        "confirmed_activity_ids", "recovery_not_claimed",
+    }
+    if not isinstance(receipt, dict) or set(receipt) != allowed:
+        raise ValueError("plan7_discount_time_recovery_v2_receipt_invalid")
+    confirmed = receipt.get("confirmed_activity_ids")
+    if not isinstance(confirmed, list):
+        raise ValueError("plan7_discount_time_recovery_v2_receipt_invalid")
+    normalized = {
+        "request_id": str(receipt.get("request_id") or "").strip(),
+        "web_agent_job_id": str(
+            receipt.get("web_agent_job_id") or "").strip(),
+        "platform_write": receipt.get("platform_write"),
+        "submitted": receipt.get("submitted"),
+        "confirmed_activity_ids": tuple(
+            str(item or "").strip() for item in confirmed),
+        "recovery_not_claimed": receipt.get("recovery_not_claimed"),
+    }
+    if normalized != RECOVERY_V2_PREWRITE_RECEIPT:
+        raise ValueError("plan7_discount_time_recovery_v2_receipt_mismatch")
+    return {
+        **v1,
+        "first_recovery_receipt": {
+            **normalized,
+            "confirmed_activity_ids": list(
+                normalized["confirmed_activity_ids"]),
+        },
     }
 
 
@@ -490,9 +542,21 @@ def _recovery_attempt_replay(attempt: CampaignExecutionAttempt) -> dict:
 
 def recover_plan7_single_discount_times(
         db: Session, *, request_payload: dict) -> dict:
-    """One recovery only after proving both known calls wrote nothing."""
+    """Permanently retire V1 after its first write-free preflight failure."""
+    return {
+        "ok": False,
+        "error": "plan7_discount_time_recovery_v1_retired",
+        "recovery_not_claimed": True,
+        "automatic_retry": False,
+        "execution_boundary": _boundary(),
+    }
+
+
+def recover_plan7_single_discount_times_v2(
+        db: Session, *, request_payload: dict) -> dict:
+    """One V2 recovery bound to both original and V1 write-free receipts."""
     try:
-        recovery = normalize_recovery_request(request_payload)
+        recovery = normalize_recovery_v2_request(request_payload)
     except ValueError as exc:
         return {
             "ok": False, "error": str(exc),
@@ -506,8 +570,15 @@ def recover_plan7_single_discount_times(
     if problem:
         return {"ok": False, **problem, "execution_boundary": _boundary()}
     digest = manifest_sha256(base_payload)
+    if _existing_attempt(db, digest, operation=RECOVERY_OPERATION) is not None:
+        return {
+            "ok": False,
+            "error": "plan7_discount_time_recovery_v1_claim_exists",
+            "automatic_retry": False,
+            "execution_boundary": _boundary(),
+        }
     existing = _existing_attempt(
-        db, digest, operation=RECOVERY_OPERATION)
+        db, digest, operation=RECOVERY_V2_OPERATION)
     if existing is not None:
         return _recovery_attempt_replay(existing)
     old_attempt, problem = _validate_recovery_prewrite_evidence(
@@ -536,18 +607,19 @@ def recover_plan7_single_discount_times(
         id=secrets.token_hex(12),
         plan_id=PLAN_ID,
         workflow_key=WORKFLOW_KEY,
-        operation=RECOVERY_OPERATION,
+        operation=RECOVERY_V2_OPERATION,
         scope_sha256=digest,
         state="claimed",
         write_claimed=True,
         write_claimed_at=datetime.now().astimezone(),
         platform_write_observed=None,
         automatic_retry_allowed=False,
-        request_id=f"plan7-time-recovery-{secrets.token_hex(8)}",
+        request_id=f"plan7-time-recovery-v2-{secrets.token_hex(8)}",
         last_step="recovery_preflight_complete_write_claimed",
         result_summary={
             "recovered_from_attempt_id": old_attempt.id,
             "prewrite_receipts": recovery["prewrite_receipts"],
+            "first_recovery_receipt": recovery["first_recovery_receipt"],
             "preflight_activities": preflight.get("activities") or [],
             "execution_boundary": _boundary(platform_read=True),
         },
@@ -558,7 +630,7 @@ def recover_plan7_single_discount_times(
     except IntegrityError:
         db.rollback()
         raced = _existing_attempt(
-            db, digest, operation=RECOVERY_OPERATION)
+            db, digest, operation=RECOVERY_V2_OPERATION)
         if raced is not None:
             return _recovery_attempt_replay(raced)
         raise
@@ -598,11 +670,12 @@ def recover_plan7_single_discount_times(
     summary = _safe_result_summary(result)
     summary["recovered_from_attempt_id"] = old_attempt.id
     summary["prewrite_receipts"] = recovery["prewrite_receipts"]
+    summary["first_recovery_receipt"] = recovery["first_recovery_receipt"]
     attempt.result_summary = summary
     snapshot = CampaignEvidenceSnapshot(
         plan_id=PLAN_ID,
         workflow_key=WORKFLOW_KEY,
-        evidence_type="plan7_discount_time_update_recovery_terminal",
+        evidence_type="plan7_discount_time_update_recovery_v2_terminal",
         request_id=attempt.request_id,
         web_agent_job_id=attempt.web_agent_job_id,
         scope_sha256=digest,

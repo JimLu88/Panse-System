@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from app.cli import campaign_update_plan7_discount_times as cli
 from app.cli import campaign_recover_plan7_discount_times as recovery_cli
+from app.cli import campaign_recover_plan7_discount_times_v2 as recovery_v2_cli
 from app.models.campaign import (
     CampaignEvidenceSnapshot,
     CampaignExecutionAttempt,
@@ -36,6 +37,20 @@ def _recovery_payload(**updates):
                 receipt["confirmed_activity_ids"])}
             for receipt in svc.RECOVERY_PREWRITE_RECEIPTS
         ],
+    }
+    value.update(updates)
+    return value
+
+
+def _recovery_v2_payload(**updates):
+    value = {
+        **_recovery_payload(),
+        "first_recovery_receipt": {
+            **svc.RECOVERY_V2_PREWRITE_RECEIPT,
+            "confirmed_activity_ids": list(
+                svc.RECOVERY_V2_PREWRITE_RECEIPT[
+                    "confirmed_activity_ids"]),
+        },
     }
     value.update(updates)
     return value
@@ -293,6 +308,28 @@ def test_recovery_request_is_bound_to_two_exact_write_free_receipts():
         raise AssertionError("write-observed recovery receipt was accepted")
 
 
+def test_v2_recovery_is_bound_to_first_write_free_recovery_receipt():
+    normalized = svc.normalize_recovery_v2_request(_recovery_v2_payload())
+    assert normalized["first_recovery_receipt"]["request_id"] == "ecee536af3b8"
+    bad = _recovery_v2_payload()
+    bad["first_recovery_receipt"]["recovery_not_claimed"] = False
+    try:
+        svc.normalize_recovery_v2_request(bad)
+    except ValueError as exc:
+        assert "receipt_mismatch" in str(exc)
+    else:
+        raise AssertionError("unsafe first-recovery receipt was accepted")
+
+
+def test_v1_recovery_is_permanently_retired(db_session):
+    result = svc.recover_plan7_single_discount_times(
+        db_session, request_payload=_recovery_payload())
+    assert result["ok"] is False
+    assert result["error"] == "plan7_discount_time_recovery_v1_retired"
+    assert result["recovery_not_claimed"] is True
+    assert result["execution_boundary"]["platform_write"] is False
+
+
 def test_write_free_failed_attempt_can_claim_one_recovery_only(
         db_session, monkeypatch):
     plan = _plan(db_session)
@@ -306,8 +343,8 @@ def test_write_free_failed_attempt_can_claim_one_recovery_only(
 
     monkeypatch.setattr(
         svc.web_agent_service, "update_plan7_single_discount_times", web_call)
-    result = svc.recover_plan7_single_discount_times(
-        db_session, request_payload=_recovery_payload())
+    result = svc.recover_plan7_single_discount_times_v2(
+        db_session, request_payload=_recovery_v2_payload())
     assert result["ok"] is True
     assert result["attempt_state"] == "completed"
     assert result["recovered_from_attempt_id"] == old.id
@@ -317,10 +354,10 @@ def test_write_free_failed_attempt_can_claim_one_recovery_only(
     assert old.platform_write_observed is False
     attempts = db_session.execute(select(CampaignExecutionAttempt)).scalars().all()
     assert sorted(row.operation for row in attempts) == [
-        svc.OPERATION, svc.RECOVERY_OPERATION]
+        svc.OPERATION, svc.RECOVERY_V2_OPERATION]
 
-    replay = svc.recover_plan7_single_discount_times(
-        db_session, request_payload=_recovery_payload())
+    replay = svc.recover_plan7_single_discount_times_v2(
+        db_session, request_payload=_recovery_v2_payload())
     assert replay["ok"] is True
     assert replay["idempotent_replay"] is True
     assert calls == ["preflight", "commit"]
@@ -337,8 +374,8 @@ def test_recovery_refuses_any_write_or_confirm_evidence(
         svc.web_agent_service, "update_plan7_single_discount_times",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("unsafe recovery reached Web-Agent")))
-    result = svc.recover_plan7_single_discount_times(
-        db_session, request_payload=_recovery_payload())
+    result = svc.recover_plan7_single_discount_times_v2(
+        db_session, request_payload=_recovery_v2_payload())
     assert result["ok"] is False
     assert result["error"] == (
         "plan7_discount_time_recovery_write_free_proof_failed")
@@ -360,8 +397,8 @@ def test_recovery_requires_current_old_time_before_new_claim(
             "confirmed_activity_ids": [],
             "execution_boundary": {"platform_write": False},
         })
-    result = svc.recover_plan7_single_discount_times(
-        db_session, request_payload=_recovery_payload())
+    result = svc.recover_plan7_single_discount_times_v2(
+        db_session, request_payload=_recovery_v2_payload())
     assert result["ok"] is False
     assert result["recovery_not_claimed"] is True
     assert result["safe_retry_before_write"] is False
@@ -378,3 +415,37 @@ def test_recovery_cli_preserves_non_2xx_json(monkeypatch, capsys):
         recovery_cli, "call_api", lambda *_args, **_kwargs: (409, body))
     assert recovery_cli.main() == 1
     assert "recovery_write_free_proof_failed" in capsys.readouterr().out
+
+
+def test_v2_recovery_refuses_existing_v1_claim(db_session, monkeypatch):
+    plan = _plan(db_session)
+    _failed_write_free_attempt(db_session)
+    digest = svc.manifest_sha256(_payload())
+    db_session.add(CampaignExecutionAttempt(
+        id="v1claim00000000000000001",
+        plan_id=svc.PLAN_ID,
+        workflow_key=svc.WORKFLOW_KEY,
+        operation=svc.RECOVERY_OPERATION,
+        scope_sha256=digest,
+        state="failed",
+        write_claimed=True,
+        automatic_retry_allowed=False,
+        request_id="v1-claim",
+    ))
+    db_session.commit()
+    monkeypatch.setattr(svc, "_validate_plan_and_scope", lambda _db: (plan, None))
+    result = svc.recover_plan7_single_discount_times_v2(
+        db_session, request_payload=_recovery_v2_payload())
+    assert result["ok"] is False
+    assert result["error"] == "plan7_discount_time_recovery_v1_claim_exists"
+
+
+def test_v2_recovery_cli_preserves_non_2xx_json(monkeypatch, capsys):
+    raw = json.dumps(_recovery_v2_payload()).encode()
+    monkeypatch.setattr(recovery_v2_cli, "_read_payload", lambda: raw)
+    monkeypatch.setattr(recovery_v2_cli, "_service_token", lambda: "token")
+    body = b'{"detail":{"error":"recovery_v1_claim_exists"}}'
+    monkeypatch.setattr(
+        recovery_v2_cli, "call_api", lambda *_args, **_kwargs: (409, body))
+    assert recovery_v2_cli.main() == 1
+    assert "recovery_v1_claim_exists" in capsys.readouterr().out

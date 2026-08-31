@@ -6,7 +6,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-throw '该脚本已永久禁用：首次恢复 ecee536af3b8 在写入前失败且未建 claim；请只使用 campaign_recover_plan7_discount_times_v2_nas.ps1。'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'
 if (-not (Test-Path -LiteralPath $ssh)) { throw "找不到 Git SSH: $ssh" }
@@ -38,9 +37,17 @@ $payload = [ordered]@{
             confirmed_activity_ids = @()
         }
     )
+    first_recovery_receipt = [ordered]@{
+        request_id = 'ecee536af3b8'
+        web_agent_job_id = 'job1'
+        platform_write = $false
+        submitted = $false
+        confirmed_activity_ids = @()
+        recovery_not_claimed = $true
+    }
 }
-$raw = $payload | ConvertTo-Json -Compress -Depth 6
-$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_recover_plan7_discount_times'
+$raw = $payload | ConvertTo-Json -Compress -Depth 7
+$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_recover_plan7_discount_times_v2'
 $previousOutputEncoding = $OutputEncoding
 $nativePreferenceExists = Test-Path Variable:PSNativeCommandUseErrorActionPreference
 if ($nativePreferenceExists) {
@@ -64,7 +71,7 @@ try {
                 if ($detail.error) { $diagnostic = "; error=$($detail.error)" }
             } catch { $diagnostic = '; API 已返回响应 JSON（见上方原文）' }
         }
-        throw "计划7三活动一次性恢复失败，退出码 $exitCode$diagnostic"
+        throw "计划7三活动V2一次性恢复失败，退出码 $exitCode$diagnostic"
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding

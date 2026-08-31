@@ -148,6 +148,70 @@ def test_plan7_time_recovery_endpoint_uses_narrow_service_identity(monkeypatch):
         engine.dispose()
 
 
+def test_plan7_time_recovery_v2_endpoint_uses_narrow_service_identity(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_recover(_db, *, request_payload):
+        calls.append(request_payload)
+        return {
+            "ok": True,
+            "attempt_state": "completed",
+            "execution_boundary": {"platform_write": True},
+        }
+
+    svc = campaign_plan7_time_update_service
+    payload = {
+        "workflow_key": svc.WORKFLOW_KEY,
+        "plan_id": svc.PLAN_ID,
+        "activity_ids": list(svc.ACTIVITY_IDS),
+        "expected_start_at": svc.EXPECTED_START_AT,
+        "expected_end_at": svc.EXPECTED_END_AT,
+        "target_start_at": svc.TARGET_START_AT,
+        "target_end_at": svc.TARGET_END_AT,
+        "failed_attempt_id": svc.RECOVERY_FAILED_ATTEMPT_ID,
+        "prewrite_receipts": [
+            {**receipt, "confirmed_activity_ids": list(
+                receipt["confirmed_activity_ids"])}
+            for receipt in svc.RECOVERY_PREWRITE_RECEIPTS
+        ],
+        "first_recovery_receipt": {
+            **svc.RECOVERY_V2_PREWRITE_RECEIPT,
+            "confirmed_activity_ids": list(
+                svc.RECOVERY_V2_PREWRITE_RECEIPT[
+                    "confirmed_activity_ids"]),
+        },
+    }
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        svc, "recover_plan7_single_discount_times_v2", fake_recover)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/recover-super-reduce-plan7-discount-times-v2",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [payload]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
 TOKEN = "campaign-prepare-only-test-token"
 
 
@@ -430,6 +494,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/recover-super-reduce-plan7-discount-times"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/recover-super-reduce-plan7-discount-times-v2"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
