@@ -1,5 +1,16 @@
 # Current state — logistics bill product analytics
 
+## 2026-08-31 lift-desk template-15 retry gate
+
+- QianNiu expanded the exact lift-desk SKU option template from one column to
+  15 columns.  Web-Agent release `f83100f01ec338e86ecfea1f63c4e580f3da9777`
+  preserves every official header and writes only the exact option column.
+- The new one-time operator entry is
+  `scripts/campaign_stage_lift_desk_sku_slot_template15_nas.ps1`.  It first
+  proves the main workstation has the repaired source markers, then delegates
+  to the same exact item-scoped calibration.  It still closes before product
+  save and cannot withdraw an activity or submit a campaign.
+
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
 - Historical no-sales registration no longer pre-excludes a product. Every new
