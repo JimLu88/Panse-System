@@ -21,6 +21,10 @@
 - Because QianNiu rebuilds that dialog DOM, the superseding one-time entry is
   `scripts/campaign_stage_lift_desk_sku_slot_dialog_rebind_nas.ps1`.  It proves
   fresh per-poll dialog lookup and the bounded zero-dialog transition grace.
+- The current superseding entry is
+  `scripts/campaign_stage_lift_desk_sku_slot_topmost_dialog_nas.ps1`.  It also
+  proves hidden/covered/nested dialog auditing and refuses two independently
+  interactable dialogs.
 
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
