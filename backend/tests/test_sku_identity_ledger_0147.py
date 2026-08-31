@@ -82,3 +82,26 @@ def test_platform_snapshot_comparison_fails_closed_on_drift():
     assert ok["ok"] is True
     assert drift["ok"] is False
     assert drift["missing_in_ledger"] == [("793202812082", "6241447059626")]
+
+
+def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept():
+    db = _db()
+    old = {
+        "taobao_item_id": "793202812082", "taobao_sku_id": "6241447059625",
+        "merchant_code": "PPS24410040513", "sku_spec": "130cm 带高台",
+        "sku_code": "PPS2441004051311", "product_code": "PPS24410040513",
+    }
+    sku_identity_service.observe(
+        db, [old], evidence_source="erp_database_backfill:0147",
+        evidence_sha256="e" * 64)
+    result = sku_identity_service.observe(
+        db, [{**old, "merchant_code": "PPS2441004051311"}],
+        evidence_source="erp_database_backfill:0147-correction",
+        evidence_sha256="f" * 64)
+    row = db.execute(select(SkuIdentity)).scalar_one()
+    history = db.execute(select(SkuIdentityObservation).order_by(
+        SkuIdentityObservation.id)).scalars().all()
+    assert result["conflicts"] == 0 and result["refreshed"] == 1
+    assert row.merchant_code == "PPS2441004051311"
+    assert [x.merchant_code for x in history] == ["PPS24410040513", "PPS2441004051311"]
+    assert history[-1].disposition == "erp_backfill_merchant_code_corrected"

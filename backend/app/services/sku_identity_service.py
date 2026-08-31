@@ -69,6 +69,27 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
             db.add(current)
             db.flush()
             inserted += 1
+        elif (current.identity_sha256 != digest
+              and current.latest_evidence_source.startswith("erp_database_backfill")
+              and current.merchant_code == current.product_code
+              and meaning["merchant_code"] == meaning["sku_code"]
+              and all(getattr(current, field) == meaning[field] for field in (
+                  "taobao_item_id", "taobao_sku_id", "sku_spec", "sku_code",
+                  "product_code", "is_custom_placeholder"))):
+            # 0147's first production backfill exposed a legacy import quirk:
+            # TaobaoListing.merchant_code may hold the product code while its
+            # matched sku_code is the exact per-SKU merchant code. Preserve the
+            # old observation, but correct the canonical backfill projection
+            # before any platform evidence relies on it.
+            current.merchant_code = meaning["merchant_code"]
+            current.identity_sha256 = digest
+            current.last_observed_at = now
+            current.latest_sale_state = _clean(raw.get("sale_state"))
+            current.latest_daily_price = raw.get("daily_price")
+            current.latest_evidence_source = evidence_source
+            current.latest_evidence_sha256 = evidence_sha256
+            refreshed += 1
+            disposition = "erp_backfill_merchant_code_corrected"
         elif current.identity_sha256 != digest:
             current.conflict_detected = True
             conflicts += 1
@@ -107,7 +128,7 @@ def backfill_from_erp(db: Session) -> dict:
         rows.append({
             "taobao_item_id": listing.taobao_item_id,
             "taobao_sku_id": listing.taobao_sku_id,
-            "merchant_code": listing.merchant_code,
+            "merchant_code": listing.sku_code or listing.merchant_code,
             "sku_spec": listing.sku_spec,
             "sku_code": listing.sku_code or (sku.sku_code if sku else None),
             "product_code": listing.product_code or (sku.product_code if sku else None),
