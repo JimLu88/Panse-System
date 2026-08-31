@@ -66,6 +66,27 @@ def test_lift_desk_slot_stays_proposed_and_never_claims_live_sku_id():
     assert row.proposed_fields["allowed_differences"] == ["option_name", "merchant_code"]
 
 
+def test_failed_unsaved_stage_is_recorded_without_claiming_created_or_saved():
+    db = _db()
+    sku_identity_service.ensure_lift_desk_proposal(
+        db, authorization_ref="user:2026-08-31:lift-desk-pilot")
+    receipt = sku_identity_service.mark_lift_desk_stage_failed(db, result={
+        "ok": False, "error": "sku_source_target_field_diff", "job_id": "job1",
+        "platform_product_write": False,
+        "field_copy": {"source_count": 1, "target_count": 1,
+                       "diff": [{"index": 4, "source": "2个", "target": ""}],
+                       "default_2000_eliminated": False},
+    })
+    row = db.execute(select(SkuPhysicalSlotProposal)).scalar_one()
+    assert receipt["state"] == "staging_failed"
+    assert row.product_create_status == "preview_failed"
+    assert row.product_save_status == "not_saved"
+    assert row.campaign_signup_status == "not_submitted"
+    assert row.proposed_fields["stage_failures"][-1]["error"] == (
+        "sku_source_target_field_diff")
+    assert row.proposed_fields["stage_failures"][-1]["platform_product_write"] is False
+
+
 def test_platform_snapshot_comparison_fails_closed_on_drift():
     db = _db()
     sku_identity_service.observe(db, [{

@@ -37,6 +37,9 @@ def main() -> int:
         if result.get("ok"):
             result["ledger_proposal"] = sku_identity_service.mark_lift_desk_staged_unsaved(
                 db, result=result)
+        else:
+            result["ledger_proposal"] = sku_identity_service.mark_lift_desk_stage_failed(
+                db, result=result)
         db.commit()
     # Keep the operator receipt bounded; the screenshot is already retained by
     # the Web-Agent output directory and base64 is not useful in the terminal.

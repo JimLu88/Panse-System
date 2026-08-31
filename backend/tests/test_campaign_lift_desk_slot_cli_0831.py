@@ -1,4 +1,5 @@
 from app.cli import campaign_stage_lift_desk_sku_slot as cli
+import inspect
 
 
 def test_lift_desk_stage_manifest_is_fixed_and_unsaved(monkeypatch):
@@ -29,3 +30,10 @@ def test_web_agent_stage_helper_returns_terminal_job_result(monkeypatch, db_sess
     assert result["ok"] is True
     assert result["job_id"] == "job-stage"
     assert result["platform_product_write"] is False
+
+
+def test_cli_records_failed_preview_instead_of_claiming_created():
+    source = inspect.getsource(cli.main)
+    assert "mark_lift_desk_stage_failed" in source
+    assert "mark_lift_desk_staged_unsaved" in source
+    assert "if result.get(\"ok\")" in source

@@ -230,6 +230,48 @@ def mark_lift_desk_staged_unsaved(db: Session, *, result: dict) -> dict:
             "evidence_sha256": row.evidence_sha256}
 
 
+def mark_lift_desk_stage_failed(db: Session, *, result: dict) -> dict:
+    """Record a failed unsaved preview without claiming product creation."""
+    row = db.execute(select(SkuPhysicalSlotProposal).where(
+        SkuPhysicalSlotProposal.target_merchant_code == LIFT_DESK_PROPOSAL["target_merchant_code"]
+    ).with_for_update()).scalar_one()
+    if (result.get("ok") is not False
+            or result.get("platform_product_write") is not False):
+        raise ValueError("lift_desk_failed_stage_receipt_invalid")
+    failure = {
+        "error": _clean(result.get("error")) or "unknown_unsaved_stage_failure",
+        "job_id": _clean(result.get("job_id")),
+        "source_count": result.get("source_count") or (result.get("field_copy") or {}).get("source_count"),
+        "target_count": result.get("target_count") or (result.get("field_copy") or {}).get("target_count"),
+        "diff": (result.get("field_copy") or {}).get("diff"),
+        "price_stock": (result.get("field_copy") or {}).get("price_stock"),
+        "default_2000_eliminated": (result.get("field_copy") or {}).get(
+            "default_2000_eliminated"),
+        "platform_product_write": False,
+        "product_save_status": "not_saved",
+        "campaign_signup_status": "not_submitted",
+    }
+    proposed = dict(row.proposed_fields or {})
+    history = list(proposed.get("stage_failures") or [])[-9:]
+    history.append({**failure, "receipt_sha256": _hash(failure)})
+    proposed["stage_failures"] = history
+    row.proposed_fields = proposed
+    row.lifecycle_state = "staging_failed"
+    row.product_create_status = "preview_failed"
+    row.product_save_status = "not_saved"
+    row.campaign_signup_status = "not_submitted"
+    row.evidence_source = "web_agent_unsaved_calibration_failed"
+    row.evidence_sha256 = _hash({
+        "proposal_id": row.id, "latest_failure": failure,
+        "platform_product_write": False})
+    db.flush()
+    return {"id": row.id, "state": row.lifecycle_state,
+            "product_create_status": row.product_create_status,
+            "product_save_status": row.product_save_status,
+            "campaign_signup_status": row.campaign_signup_status,
+            "failure": failure, "evidence_sha256": row.evidence_sha256}
+
+
 def query(db: Session, *, item_id: str | None = None, merchant_code: str | None = None) -> dict:
     stmt = select(SkuIdentity).order_by(SkuIdentity.taobao_item_id, SkuIdentity.taobao_sku_id)
     if item_id:
