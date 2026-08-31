@@ -64,6 +64,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
   grep -R -q "企业微信接收发货密码" /usr/share/nginx/html/assets && echo wechat_password_inbound=yes
   grep -R -q "群聊智能机器人" /usr/share/nginx/html/assets && echo wechat_aibot_inbound=yes
   grep -R -q "个人支付宝售后待匹配" /usr/share/nginx/html/assets && echo aftersales_payment_linkage=yes
+  grep -R -q "订单安装费（正常送装、直达）" /usr/share/nginx/html/assets && echo personal_alipay_install_target=yes
   true
 '")
 [[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
@@ -75,6 +76,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
 [[ "$web_features" == *'wechat_password_inbound=yes'* ]] || fail "Web 静态资源缺企业微信密码接收配置"
 [[ "$web_features" == *'wechat_aibot_inbound=yes'* ]] || fail "Web 静态资源缺企业微信群聊智能机器人配置"
 [[ "$web_features" == *'aftersales_payment_linkage=yes'* ]] || fail "Web 静态资源缺个人支付宝售后关联界面"
+[[ "$web_features" == *'personal_alipay_install_target=yes'* ]] || fail "Web 静态资源缺个人支付宝正常安装费去向"
 pass "既有目标功能 + 企业微信密码接收配置均在在线 bundle"
 
 migration=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 alembic current" 2>&1)
@@ -87,9 +89,9 @@ for table in procurement_agent_states procurement_inquiries procurement_messages
 done
 pass "四张采购表已独立创建"
 
-aftersales_link_schema=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-db-1 psql -U panse -d panse_erp -Atc \"select concat(to_regclass('public.after_sales_payment_links') is not null, '|', exists(select 1 from information_schema.columns where table_schema='public' and table_name='after_sales' and column_name='payment_link_managed'))\"")
-[[ "$aftersales_link_schema" == "true|true" || "$aftersales_link_schema" == "t|t" ]] || fail "个人支付宝售后关联表/托管标记未创建: $aftersales_link_schema"
-pass "个人支付宝售后关联表 + 售后托管标记存在"
+aftersales_link_schema=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-db-1 psql -U panse -d panse_erp -Atc \"select concat(to_regclass('public.after_sales_payment_links') is not null, '|', exists(select 1 from information_schema.columns where table_schema='public' and table_name='after_sales' and column_name='payment_link_managed'), '|', exists(select 1 from information_schema.columns where table_schema='public' and table_name='after_sales_payment_links' and column_name='accounting_target'))\"")
+[[ "$aftersales_link_schema" == "true|true|true" || "$aftersales_link_schema" == "t|t|t" ]] || fail "个人支付宝关联表/托管标记/入账去向未创建: $aftersales_link_schema"
+pass "个人支付宝关联表 + 售后托管标记 + 入账去向存在"
 
 containers=$("${SSH[@]}" "$NAS_DOCKER ps --filter name=panse-system --format '{{.Names}}|{{.Status}}'")
 printf '%s\n' "$containers"

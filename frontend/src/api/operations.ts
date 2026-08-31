@@ -654,6 +654,7 @@ export interface AfterSalesPaymentLink {
   status: 'proposed' | 'confirmed' | 'rejected' | 'voided';
   category: string;
   category_label: string;
+  accounting_target: 'aftersales' | 'order_install';
   allocated_amount: number;
   match_method: string | null;
   confidence: number;
@@ -685,7 +686,11 @@ export const scanAfterSalesPaymentLinks = (startDate: string, endDate: string, a
   }).then((r) => r.data);
 
 export const confirmAfterSalesPaymentLink = (
-  id: number, payload: { expected_version: number; order_no?: string; category?: string; note?: string },
+  id: number, payload: {
+    expected_version: number; order_no?: string; category?: string;
+    accounting_target?: 'aftersales' | 'order_install';
+    clear_wanshifu?: boolean; note?: string;
+  },
 ) => api.post<AfterSalesPaymentLink>(`/api/aftersales/payment-links/${id}/confirm`, payload)
   .then((r) => r.data);
 

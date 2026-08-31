@@ -26,6 +26,7 @@ from app.models.order import Order
 PERSONAL_ACCOUNT = "主力号"
 ALLOCATION_FULL = "full"
 LINK_STATES = frozenset({"proposed", "confirmed", "rejected", "voided"})
+ACCOUNTING_TARGETS = frozenset({"aftersales", "order_install"})
 
 CATEGORY_LABELS = {
     "price_difference": "差价退补",
@@ -56,6 +57,7 @@ class Candidate:
     remark: Optional[str]
     category: str
     category_label: str
+    suggested_accounting_target: str
     extracted_order_no: Optional[str]
     extracted_customer_name: Optional[str]
     order_id: Optional[int]
@@ -107,6 +109,13 @@ def classify_remark(value: Optional[str]) -> Optional[str]:
     if "售后" in text:
         return "misc_after_sales"
     return None
+
+
+def _suggested_accounting_target(category: str, text: str) -> str:
+    # “送装/直达”是正常履约安装费；“维修/上门售后”仍是售后成本。
+    if category == "onsite_service" and any(k in text for k in ("送装", "直达")):
+        return "order_install"
+    return "aftersales"
 
 
 def _explicit_order_nos(text: str) -> list[str]:
@@ -252,6 +261,7 @@ def _candidate_for_flow(db: Session, flow: AlipayFlow) -> Optional[Candidate]:
         transaction_time=flow.transaction_time.isoformat() if flow.transaction_time else None,
         amount=str(_q2(flow.amount)), counterparty=flow.counterparty, remark=flow.remark,
         category=category, category_label=CATEGORY_LABELS[category],
+        suggested_accounting_target=_suggested_accounting_target(category, text),
         extracted_order_no=explicit[0] if len(explicit) == 1 else None,
         extracted_customer_name=name,
         order_id=chosen.id if chosen else None,
@@ -314,6 +324,7 @@ def persist_scan(
             order_id=candidate.order_id,
             wanshifu_order_id=candidate.wanshifu_order_id,
             category=candidate.category,
+            accounting_target=candidate.suggested_accounting_target,
             allocated_amount=Decimal(candidate.amount),
             status="proposed",
             match_method=candidate.match_method,
@@ -362,8 +373,11 @@ def _resolve_order(db: Session, link: AfterSalesPaymentLink, order_no: Optional[
 
 def _resolve_wanshifu(
     db: Session, order: Order, wanshifu_order_no: Optional[str], existing_id: Optional[int],
+    *, clear_existing: bool = False,
 ) -> Optional[WanshifuOrder]:
-    if wanshifu_order_no:
+    if clear_existing:
+        row = None
+    elif wanshifu_order_no:
         row = db.execute(
             select(WanshifuOrder).where(WanshifuOrder.wsf_order_no == wanshifu_order_no.strip())
         ).scalar_one_or_none()
@@ -431,10 +445,68 @@ def _apply_managed_amount(row: AfterSales, *, category: str, amount: Decimal, fl
     row.remark = f"关联账自动同步；支付宝流水 {flow.transaction_no}"
 
 
+def _confirmed_install_total(
+    db: Session, order_id: int, *, exclude_link_id: Optional[int] = None,
+) -> Decimal:
+    stmt = select(func.coalesce(func.sum(AfterSalesPaymentLink.allocated_amount), 0)).where(
+        AfterSalesPaymentLink.order_id == order_id,
+        AfterSalesPaymentLink.accounting_target == "order_install",
+        AfterSalesPaymentLink.status == "confirmed",
+    )
+    if exclude_link_id is not None:
+        stmt = stmt.where(AfterSalesPaymentLink.id != exclude_link_id)
+    return _q2(db.execute(stmt).scalar_one())
+
+
+def _record_order_install_change(
+    db: Session, order: Order, *, field: str, old, new, actor: str,
+) -> None:
+    from app.services import field_change_service
+    field_change_service.record(
+        db, table="orders", pk=order.order_no, field=field, old=old, new=new,
+        actor=actor, source="personal_alipay_link",
+        row_label=f"订单 {order.order_no}",
+        field_label={"install_fee": "安装费", "actual_install": "实际安装费"}[field],
+    )
+
+
+def _apply_order_install(
+    db: Session, link: AfterSalesPaymentLink, order: Order, *, actor: str,
+) -> None:
+    previous_total = _confirmed_install_total(db, order.id, exclude_link_id=link.id)
+    current_install = _q2(order.install_fee)
+    current_actual = None if order.actual_install is None else _q2(order.actual_install)
+    if current_install != previous_total:
+        raise ValueError("订单已有非本关联账管理的安装费，不能自动覆盖")
+    if current_actual is not None and current_actual != previous_total:
+        raise ValueError("订单已有不同来源的实际安装费，不能自动覆盖")
+
+    new_total = previous_total + _q2(link.allocated_amount)
+    evidence = dict(link.evidence_json or {})
+    evidence["accounting_apply"] = {
+        "target": "order_install",
+        "before_install_fee": str(order.install_fee) if order.install_fee is not None else None,
+        "before_actual_install": str(order.actual_install) if order.actual_install is not None else None,
+        "previous_confirmed_link_total": str(previous_total),
+        "new_confirmed_link_total": str(new_total),
+    }
+    link.evidence_json = evidence
+    _record_order_install_change(
+        db, order, field="install_fee", old=order.install_fee, new=new_total, actor=actor,
+    )
+    _record_order_install_change(
+        db, order, field="actual_install", old=order.actual_install, new=new_total, actor=actor,
+    )
+    order.install_fee = new_total
+    order.actual_install = new_total
+    link.after_sales_id = None
+
+
 def confirm(
     db: Session, link_id: int, *, expected_version: int, actor: str,
     order_no: Optional[str] = None, category: Optional[str] = None,
     wanshifu_order_no: Optional[str] = None, decision_note: Optional[str] = None,
+    accounting_target: Optional[str] = None, clear_wanshifu: bool = False,
     auto: bool = False,
 ) -> AfterSalesPaymentLink:
     link = db.execute(
@@ -455,6 +527,13 @@ def confirm(
     final_category = (category or link.category).strip()
     if final_category not in CATEGORY_LABELS:
         raise ValueError("未知售后类型")
+    final_target = (accounting_target or link.accounting_target or "aftersales").strip()
+    if final_target not in ACCOUNTING_TARGETS:
+        raise ValueError("未知入账去向")
+    if final_target == "order_install" and final_category != "onsite_service":
+        raise ValueError("只有正常送装/直达费用可以计入订单安装费")
+    if auto and final_target != "aftersales":
+        raise ValueError("订单安装费必须经过人工核对，不能自动确认")
     flow = db.get(AlipayFlow, link.alipay_flow_id)
     if flow is None or (flow.amount or 0) >= 0:
         raise ValueError("只能确认真实存在的支出流水")
@@ -469,12 +548,23 @@ def confirm(
         raise ValueError("确认的分摊合计超过原流水支出")
 
     order = _resolve_order(db, link, order_no)
-    wsf = _resolve_wanshifu(db, order, wanshifu_order_no, link.wanshifu_order_id)
-    row = _managed_aftersales_for_link(db, link, flow, order)
+    wsf = _resolve_wanshifu(
+        db, order, wanshifu_order_no, link.wanshifu_order_id,
+        clear_existing=clear_wanshifu,
+    )
     link.order_id = order.id
     link.wanshifu_order_id = wsf.id if wsf else None
     link.category = final_category
-    _apply_managed_amount(row, category=final_category, amount=_q2(link.allocated_amount), flow=flow)
+    link.accounting_target = final_target
+    if final_target == "order_install":
+        if wsf is not None:
+            raise ValueError("该订单已有万师傅候选，必须先证明不是重复安装费")
+        _apply_order_install(db, link, order, actor=actor)
+        flow.reconciliation_type = "install"
+    else:
+        row = _managed_aftersales_for_link(db, link, flow, order)
+        _apply_managed_amount(row, category=final_category, amount=_q2(link.allocated_amount), flow=flow)
+        flow.reconciliation_type = "aftersales"
 
     link.status = "confirmed"
     link.decided_by = actor
@@ -482,7 +572,6 @@ def confirm(
     link.decision_note = decision_note or link.decision_note
     link.version += 1
     flow.reconciliation_status = "matched"
-    flow.reconciliation_type = "aftersales"
     db.flush()
     return link
 
@@ -516,14 +605,32 @@ def void(
         return link
     if link.status != "confirmed" or link.version != expected_version:
         raise ValueError("只能作废当前版本的已确认关联")
-    row = db.get(AfterSales, link.after_sales_id) if link.after_sales_id else None
-    if row is None or not row.payment_link_managed:
-        raise ValueError("找不到可安全回撤的系统托管售后行")
-    for field in _LINK_AMOUNT_FIELDS:
-        setattr(row, field, None)
-    row.out_platform_total = None
-    row.status = "link_voided"
-    row.remark = f"关联账已作废：{decision_note.strip()}"
+    if (link.accounting_target or "aftersales") == "order_install":
+        order = db.get(Order, link.order_id) if link.order_id else None
+        if order is None:
+            raise ValueError("找不到可安全回撤的订单安装费")
+        other_total = _confirmed_install_total(db, order.id, exclude_link_id=link.id)
+        expected_total = other_total + _q2(link.allocated_amount)
+        if _q2(order.install_fee) != expected_total or _q2(order.actual_install) != expected_total:
+            raise ValueError("订单安装费已被其他来源改动，不能自动回撤")
+        restore = None if other_total == 0 else other_total
+        _record_order_install_change(
+            db, order, field="install_fee", old=order.install_fee, new=restore, actor=actor,
+        )
+        _record_order_install_change(
+            db, order, field="actual_install", old=order.actual_install, new=restore, actor=actor,
+        )
+        order.install_fee = restore
+        order.actual_install = restore
+    else:
+        row = db.get(AfterSales, link.after_sales_id) if link.after_sales_id else None
+        if row is None or not row.payment_link_managed:
+            raise ValueError("找不到可安全回撤的系统托管售后行")
+        for field in _LINK_AMOUNT_FIELDS:
+            setattr(row, field, None)
+        row.out_platform_total = None
+        row.status = "link_voided"
+        row.remark = f"关联账已作废：{decision_note.strip()}"
     link.status = "voided"
     link.decided_by = actor
     link.decided_at = datetime.now(timezone.utc)
@@ -552,6 +659,7 @@ def serialize(db: Session, link: AfterSalesPaymentLink) -> dict:
     return {
         "id": link.id, "version": link.version, "status": link.status,
         "allocation_key": link.allocation_key, "category": link.category,
+        "accounting_target": link.accounting_target or "aftersales",
         "category_label": CATEGORY_LABELS.get(link.category, link.category),
         "allocated_amount": float(link.allocated_amount),
         "match_method": link.match_method, "confidence": float(link.confidence or 0),

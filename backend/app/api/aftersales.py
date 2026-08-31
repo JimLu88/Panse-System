@@ -104,7 +104,9 @@ class PaymentDecisionIn(BaseModel):
     expected_version: int
     order_no: Optional[str] = None
     category: Optional[str] = None
+    accounting_target: Optional[str] = None
     wanshifu_order_no: Optional[str] = None
+    clear_wanshifu: bool = False
     note: Optional[str] = None
 
 
@@ -186,7 +188,9 @@ def confirm_payment_link(
             db, link_id, expected_version=payload.expected_version,
             actor=getattr(user, "username", None) or "operator",
             order_no=payload.order_no, category=payload.category,
+            accounting_target=payload.accounting_target,
             wanshifu_order_no=payload.wanshifu_order_no,
+            clear_wanshifu=payload.clear_wanshifu,
             decision_note=payload.note,
         )
     except ValueError as exc:

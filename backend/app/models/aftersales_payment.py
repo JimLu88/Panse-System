@@ -37,6 +37,9 @@ class AfterSalesPaymentLink(Base, TimestampMixin):
     )
 
     category: Mapped[str] = mapped_column(String(40), nullable=False)
+    accounting_target: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="aftersales",
+    )
     allocated_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed", index=True)
     match_method: Mapped[Optional[str]] = mapped_column(String(40))
@@ -63,6 +66,10 @@ class AfterSalesPaymentLink(Base, TimestampMixin):
             "category in ('price_difference','review_refund','customer_compensation',"
             "'repair_service','onsite_service','return_service','misc_after_sales')",
             name="ck_after_sales_payment_category",
+        ),
+        CheckConstraint(
+            "accounting_target in ('aftersales','order_install')",
+            name="ck_after_sales_payment_accounting_target",
         ),
         CheckConstraint("version > 0", name="ck_after_sales_payment_version_positive"),
         Index("ix_after_sales_payment_status_category", "status", "category"),

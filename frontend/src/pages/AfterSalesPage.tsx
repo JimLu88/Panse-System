@@ -14,6 +14,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Drawer,
   Form,
   Input,
@@ -109,6 +110,8 @@ export default function AfterSalesPage() {
   const [paymentConfirmFor, setPaymentConfirmFor] = useState<AfterSalesPaymentLink | null>(null);
   const [paymentOrderNo, setPaymentOrderNo] = useState('');
   const [paymentCategory, setPaymentCategory] = useState('');
+  const [paymentTarget, setPaymentTarget] = useState<'aftersales' | 'order_install'>('aftersales');
+  const [paymentClearWanshifu, setPaymentClearWanshifu] = useState(false);
 
   const confirmDisassemble = (r: AfterSalesItem) => {
     Modal.confirm({
@@ -166,14 +169,21 @@ export default function AfterSalesPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '扫描失败'),
   });
   const confirmPaymentMut = useMutation({
-    mutationFn: (v: { row: AfterSalesPaymentLink; orderNo: string; category: string }) => confirmAfterSalesPaymentLink(v.row.id, {
+    mutationFn: (v: {
+      row: AfterSalesPaymentLink; orderNo: string; category: string;
+      target: 'aftersales' | 'order_install'; clearWanshifu: boolean;
+    }) => confirmAfterSalesPaymentLink(v.row.id, {
       expected_version: v.row.version,
       order_no: v.orderNo.trim(),
       category: v.category,
+      accounting_target: v.target,
+      clear_wanshifu: v.clearWanshifu,
       note: '在售后页核对原流水、订单和用途后确认',
     }),
-    onSuccess: () => {
-      message.success('已联动写入售后、财务和逐单核对');
+    onSuccess: (r) => {
+      message.success(r.accounting_target === 'order_install'
+        ? '已联动写入订单安装费、财务和逐单核对'
+        : '已联动写入售后、财务和逐单核对');
       setPaymentConfirmFor(null);
       refreshPaymentViews();
     },
@@ -274,6 +284,8 @@ export default function AfterSalesPage() {
                     setPaymentConfirmFor(r);
                     setPaymentOrderNo(r.order?.order_no ?? '');
                     setPaymentCategory(r.category);
+                    setPaymentTarget(r.accounting_target ?? 'aftersales');
+                    setPaymentClearWanshifu(false);
                   }}
                 >
                   核对
@@ -299,6 +311,8 @@ export default function AfterSalesPage() {
           row: paymentConfirmFor,
           orderNo: paymentOrderNo,
           category: paymentCategory,
+          target: paymentTarget,
+          clearWanshifu: paymentClearWanshifu,
         })}
       >
         <Alert
@@ -327,11 +341,28 @@ export default function AfterSalesPage() {
               { value: 'misc_after_sales', label: '其他售后' },
             ]}
           />
+          <Select
+            value={paymentTarget}
+            style={{ width: '100%' }}
+            onChange={setPaymentTarget}
+            options={[
+              { value: 'aftersales', label: '售后成本（差价、返现、赔付、维修、返厂）' },
+              { value: 'order_install', label: '订单安装费（正常送装、直达）' },
+            ]}
+          />
           {paymentConfirmFor?.wanshifu_order && (
-            <Alert
-              type="info" showIcon
-              message={`发现万师傅单 ${paymentConfirmFor.wanshifu_order.order_no}，确认前请排除重复记账`}
-            />
+            <Space direction="vertical">
+              <Alert
+                type="info" showIcon
+                message={`发现万师傅单 ${paymentConfirmFor.wanshifu_order.order_no}，确认前请排除重复记账`}
+              />
+              <Checkbox
+                checked={paymentClearWanshifu}
+                onChange={(e) => setPaymentClearWanshifu(e.target.checked)}
+              >
+                已核对：这笔个人支付宝支出与该万师傅单不是同一笔费用
+              </Checkbox>
+            </Space>
           )}
         </Space>
       </Modal>

@@ -108,6 +108,84 @@ def test_onsite_service_and_wanshifu_candidate_require_review(db_session):
     assert "必须复核" in row.reason
 
 
+def test_normal_delivery_is_suggested_as_order_install(db_session):
+    order = _order(db_session, "O-INSTALL", "思阅")
+    _flow(db_session, "FLOW-INSTALL", "思阅送装", amount="-180")
+
+    row = svc.preview(db_session)[0]
+
+    assert row.category == "onsite_service"
+    assert row.order_id == order.id
+    assert row.suggested_accounting_target == "order_install"
+    assert row.auto_eligible is False
+
+
+def test_confirm_order_install_updates_order_without_aftersales_and_voids(db_session):
+    order = _order(db_session, "O-INSTALL", "思阅")
+    flow = _flow(db_session, "FLOW-INSTALL", "思阅送装", amount="-180")
+    scan = svc.persist_scan(db_session)
+    link = db_session.get(AfterSalesPaymentLink, scan["link_ids"][0])
+
+    svc.confirm(
+        db_session, link.id, expected_version=1, actor="tester",
+        accounting_target="order_install",
+    )
+
+    assert link.accounting_target == "order_install"
+    assert link.after_sales_id is None
+    assert order.install_fee == Decimal("180.00")
+    assert order.actual_install == Decimal("180.00")
+    assert flow.reconciliation_status == "matched"
+    assert flow.reconciliation_type == "install"
+    assert db_session.query(AfterSales).filter(AfterSales.alipay_flow_no == flow.transaction_no).count() == 0
+
+    svc.void(db_session, link.id, expected_version=2, actor="admin", decision_note="测试回撤")
+    assert order.install_fee is None
+    assert order.actual_install is None
+    assert flow.reconciliation_status == "open"
+    assert flow.reconciliation_type is None
+
+
+def test_confirm_order_install_never_overwrites_existing_install_cost(db_session):
+    order = _order(db_session, "O-INSTALL", "思阅")
+    order.install_fee = Decimal("179")
+    _flow(db_session, "FLOW-INSTALL", "思阅送装", amount="-180")
+    scan = svc.persist_scan(db_session)
+    link = db_session.get(AfterSalesPaymentLink, scan["link_ids"][0])
+
+    with pytest.raises(ValueError, match="不能自动覆盖"):
+        svc.confirm(
+            db_session, link.id, expected_version=1, actor="tester",
+            accounting_target="order_install",
+        )
+
+
+def test_manual_repair_can_record_separate_from_prior_wanshifu(db_session):
+    order = _order(db_session, "O-AZ", "阿哲")
+    wsf = WanshifuOrder(
+        wsf_order_no="P-FIRST", customer_name="阿哲", status="交易成功",
+        matched_order_no=order.order_no, net_amount=Decimal("179"),
+    )
+    db_session.add(wsf)
+    flow = _flow(db_session, "FLOW-THIRD", "阿哲客户床维修费第三次", amount="-150")
+    db_session.flush()
+    scan = svc.persist_scan(db_session)
+    link = db_session.get(AfterSalesPaymentLink, scan["link_ids"][0])
+    assert link.wanshifu_order_id == wsf.id
+
+    svc.confirm(
+        db_session, link.id, expected_version=1, actor="tester",
+        accounting_target="aftersales", clear_wanshifu=True,
+        decision_note="发生在万师傅首修完成后，明确为第三次维修",
+    )
+
+    row = db_session.get(AfterSales, link.after_sales_id)
+    assert link.wanshifu_order_id is None
+    assert row.second_visit_fee == Decimal("150.00")
+    assert row.out_platform_total == Decimal("150.00")
+    assert flow.reconciliation_type == "aftersales"
+
+
 def test_persist_auto_confirm_updates_single_authoritative_chain(db_session):
     order = _order(db_session, "O-SAFE", "陈二年")
     flow = _flow(db_session, "FLOW-SAFE", "陈二年客户差价补偿")
