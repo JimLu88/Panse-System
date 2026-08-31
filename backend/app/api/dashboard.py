@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -82,9 +82,16 @@ def finance_overview(
     ).scalar())
     recon_unresolved = db.query(func.count(DataException.id)).filter(
         DataException.status == "open", DataException.exception_type == "reconciliation_diff").scalar() or 0
-    af_cost_expr = func.coalesce(AfterSales.in_platform_total, 0) + func.coalesce(AfterSales.out_platform_total, 0)
-    aftersales_count = db.query(func.count(AfterSales.id)).scalar() or 0
-    aftersales_cost = _safe_decimal(db.query(func.sum(af_cost_expr)).scalar())
+    from app.services.aftersales_finance_service import total_cost_expr
+    af_period = (
+        AfterSales.processed_at >= start,
+        AfterSales.processed_at <= end,
+        or_(AfterSales.status.is_(None), AfterSales.status != "link_voided"),
+    )
+    aftersales_count = db.query(func.count(AfterSales.id)).filter(*af_period).scalar() or 0
+    aftersales_cost = _safe_decimal(
+        db.query(func.sum(total_cost_expr())).filter(*af_period).scalar()
+    )
     return {
         "period": period, "start": start.isoformat(), "end": end.isoformat(),
         "order_revenue": revenue, "theoretical_cost": theoretical_cost,
@@ -230,10 +237,13 @@ def get_dashboard(
     )
 
     # 售后 (笔数 + 平台内外售后总成本)
-    aftersales_count = db.query(func.count(AfterSales.id)).scalar() or 0
-    aftersales_cost_expr = (func.coalesce(AfterSales.in_platform_total, 0)
-                            + func.coalesce(AfterSales.out_platform_total, 0))
-    aftersales_cost = _safe_decimal(db.query(func.sum(aftersales_cost_expr)).scalar())
+    aftersales_count = db.query(func.count(AfterSales.id)).filter(
+        or_(AfterSales.status.is_(None), AfterSales.status != "link_voided")
+    ).scalar() or 0
+    from app.services.aftersales_finance_service import total_cost_expr
+    aftersales_cost = _safe_decimal(db.query(func.sum(total_cost_expr())).filter(
+        or_(AfterSales.status.is_(None), AfterSales.status != "link_voided")
+    ).scalar())
 
     # 未解决异常数
     open_exceptions = (

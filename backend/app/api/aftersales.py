@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import io
+from dataclasses import asdict
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -50,9 +52,8 @@ class AfterSalesOut(BaseModel):
 
 
 def _out(a: AfterSales, order=None) -> AfterSalesOut:
-    def _d(v):
-        return Decimal(str(v)) if v is not None else Decimal("0")
-    total = _d(a.compensation_fee) + _d(a.good_review_refund) + _d(a.second_visit_fee) + _d(a.return_pack_freight)
+    from app.services.aftersales_finance_service import total_cost
+    total = total_cost(a)
     return AfterSalesOut(
         id=a.id, platform_order_no=a.platform_order_no, status=a.status,
         reason=a.reason, refill_tracking_no=a.refill_tracking_no,
@@ -89,6 +90,151 @@ def list_aftersales(
         for o in db.execute(select(Order).where(Order.order_no.in_(nos))).scalars().all():
             omap.setdefault(o.order_no, o)
     return [_out(a, omap.get(a.platform_order_no)) for a in rows]
+
+
+# -------- 个人支付宝售后打款关联账 --------
+
+class PaymentScanIn(BaseModel):
+    start_date: date
+    end_date: date
+    auto_confirm_safe: bool = False
+
+
+class PaymentDecisionIn(BaseModel):
+    expected_version: int
+    order_no: Optional[str] = None
+    category: Optional[str] = None
+    wanshifu_order_no: Optional[str] = None
+    note: Optional[str] = None
+
+
+class PaymentRejectIn(BaseModel):
+    expected_version: int
+    note: str
+
+
+@router.get("/payment-links/preview")
+def preview_payment_links(
+    start_date: date,
+    end_date: date,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """只读预览：不建候选、不改流水、不改售后/订单/万师傅。"""
+    if end_date < start_date:
+        raise HTTPException(400, "end_date 不能早于 start_date")
+    from app.services import aftersales_payment_link_service as links
+    rows = links.preview(db, start_date=start_date, end_date=end_date)
+    return {
+        "count": len(rows),
+        "auto_eligible": sum(1 for row in rows if row.auto_eligible),
+        "needs_review": sum(1 for row in rows if not row.auto_eligible),
+        "rows": [asdict(row) for row in rows],
+        "execution_boundary": {"accounting_write": False, "platform_write": False, "notification": False},
+    }
+
+
+@router.post("/payment-links/scan")
+def scan_payment_links(
+    payload: PaymentScanIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """建立可审计候选；只有显式开启 auto_confirm_safe 才会确认安全唯一项。"""
+    if payload.end_date < payload.start_date:
+        raise HTTPException(400, "end_date 不能早于 start_date")
+    from app.services import aftersales_payment_link_service as links
+    result = links.persist_scan(
+        db, start_date=payload.start_date, end_date=payload.end_date,
+        auto_confirm_safe=payload.auto_confirm_safe,
+        actor=getattr(user, "username", None) or "operator",
+    )
+    db.commit()
+    return {**result, "execution_boundary": {
+        "candidate_write": True,
+        "accounting_write": bool(result["confirmed"]),
+        "platform_write": False,
+        "notification": False,
+    }}
+
+
+@router.get("/payment-links")
+def get_payment_links(
+    status: Optional[str] = None,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    from app.services import aftersales_payment_link_service as links
+    try:
+        rows = links.list_links(db, status=status, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"count": len(rows), "rows": rows}
+
+
+@router.post("/payment-links/{link_id}/confirm")
+def confirm_payment_link(
+    link_id: int,
+    payload: PaymentDecisionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import aftersales_payment_link_service as links
+    try:
+        row = links.confirm(
+            db, link_id, expected_version=payload.expected_version,
+            actor=getattr(user, "username", None) or "operator",
+            order_no=payload.order_no, category=payload.category,
+            wanshifu_order_no=payload.wanshifu_order_no,
+            decision_note=payload.note,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+    db.commit()
+    return links.serialize(db, row)
+
+
+@router.post("/payment-links/{link_id}/reject")
+def reject_payment_link(
+    link_id: int,
+    payload: PaymentRejectIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import aftersales_payment_link_service as links
+    try:
+        row = links.reject(
+            db, link_id, expected_version=payload.expected_version,
+            actor=getattr(user, "username", None) or "operator", decision_note=payload.note,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+    db.commit()
+    return links.serialize(db, row)
+
+
+@router.post("/payment-links/{link_id}/void")
+def void_payment_link(
+    link_id: int,
+    payload: PaymentRejectIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin")),
+):
+    """作废不删记录；金额从系统托管售后行撤销，完整保留决策轨迹。"""
+    from app.services import aftersales_payment_link_service as links
+    try:
+        row = links.void(
+            db, link_id, expected_version=payload.expected_version,
+            actor=getattr(user, "username", None) or "admin", decision_note=payload.note,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+    db.commit()
+    return links.serialize(db, row)
 
 
 class CreateReturnIn(BaseModel):

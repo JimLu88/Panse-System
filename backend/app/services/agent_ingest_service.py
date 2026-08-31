@@ -1370,6 +1370,7 @@ def run_ingest(
     on every artifact evidence row.  The role is checked against the workbook
     content before import; a disagreement is a hard batch error.
     """
+    ingest_started_at = datetime.now(timezone.utc)
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
     _pending_pw_files: list[str] = []   # 本轮新下载、待新口令解密的加密发货报表
@@ -1575,8 +1576,21 @@ def run_ingest(
     # 让"导入了对应记录就把异常消掉"即时生效, 不必等夜间调度。
     if report["imported"]:
         try:
-            from app.services import alipay_flow_router_service, exception_recheck_service
+            from app.services import (
+                aftersales_payment_link_service,
+                alipay_flow_router_service,
+                exception_recheck_service,
+            )
             alipay_flow_router_service.run_all(db, create_purchases=False)
+            # 只扫本轮新入库的个人支付宝流水。精确类型+唯一订单
+            # 才自动确认；送装/直达/退回/万师傅可能重复项只建候选。
+            # 历史存量不会因一次新导入被突然改账。
+            report["aftersales_payment_linkage"] = aftersales_payment_link_service.persist_scan(
+                db,
+                created_since=ingest_started_at,
+                auto_confirm_safe=True,
+                actor="automation:alipay-ingest",
+            )
             db.commit()
             report["auto_resolved"] = exception_recheck_service.bulk_close_resolved(db)
             db.commit()

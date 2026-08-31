@@ -38,6 +38,9 @@ openapi=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://loca
 [[ "$openapi" == *'"/api/procurement/agent/heartbeat"'* ]] || fail "OpenAPI 缺采购执行器心跳路由"
 [[ "$openapi" == *'"/api/wechat/callback"'* ]] || fail "OpenAPI 缺企业微信入站回调路由"
 [[ "$openapi" == *'"/api/wechat/aibot/callback"'* ]] || fail "OpenAPI 缺企业微信群聊智能机器人回调路由"
+[[ "$openapi" == *'"/api/aftersales/payment-links/preview"'* ]] || fail "OpenAPI 缺个人支付宝售后只读预览"
+[[ "$openapi" == *'"/api/aftersales/payment-links/scan"'* ]] || fail "OpenAPI 缺个人支付宝售后候选扫描"
+[[ "$openapi" == *'"/api/aftersales/payment-links/{link_id}/confirm"'* ]] || fail "OpenAPI 缺个人支付宝售后确认入口"
 pass "既有关键路由 + 采购模块 + 企业微信入站回调路由"
 
 prepare_identity=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"import os; from app.database import SessionLocal; from app.models.settings import SystemSetting; s=SessionLocal(); r=s.query(SystemSetting).filter_by(key='campaign_prepare_service_token').one_or_none(); print('ok' if bool(os.environ.get('SETTINGS_ENCRYPTION_KEY')) and r is not None and r.is_secret and bool(r.value_encrypted) and not r.value_plain else 'bad'); s.close()\"")
@@ -60,6 +63,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
   grep -R -q "计算基准尺寸" /usr/share/nginx/html/assets && echo quote_basis_dimensions=yes
   grep -R -q "企业微信接收发货密码" /usr/share/nginx/html/assets && echo wechat_password_inbound=yes
   grep -R -q "群聊智能机器人" /usr/share/nginx/html/assets && echo wechat_aibot_inbound=yes
+  grep -R -q "个人支付宝售后待匹配" /usr/share/nginx/html/assets && echo aftersales_payment_linkage=yes
   true
 '")
 [[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
@@ -70,6 +74,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
 [[ "$web_features" == *'quote_basis_dimensions=yes'* ]] || fail "Web 静态资源缺报价计算基准尺寸"
 [[ "$web_features" == *'wechat_password_inbound=yes'* ]] || fail "Web 静态资源缺企业微信密码接收配置"
 [[ "$web_features" == *'wechat_aibot_inbound=yes'* ]] || fail "Web 静态资源缺企业微信群聊智能机器人配置"
+[[ "$web_features" == *'aftersales_payment_linkage=yes'* ]] || fail "Web 静态资源缺个人支付宝售后关联界面"
 pass "既有目标功能 + 企业微信密码接收配置均在在线 bundle"
 
 migration=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 alembic current" 2>&1)
@@ -81,6 +86,10 @@ for table in procurement_agent_states procurement_inquiries procurement_messages
   [[ "$procurement_tables" == *"$table"* ]] || fail "数据库缺采购表 $table"
 done
 pass "四张采购表已独立创建"
+
+aftersales_link_schema=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-db-1 psql -U panse -d panse_erp -Atc \"select concat(to_regclass('public.after_sales_payment_links') is not null, '|', exists(select 1 from information_schema.columns where table_schema='public' and table_name='after_sales' and column_name='payment_link_managed'))\"")
+[[ "$aftersales_link_schema" == "true|true" || "$aftersales_link_schema" == "t|t" ]] || fail "个人支付宝售后关联表/托管标记未创建: $aftersales_link_schema"
+pass "个人支付宝售后关联表 + 售后托管标记存在"
 
 containers=$("${SSH[@]}" "$NAS_DOCKER ps --filter name=panse-system --format '{{.Names}}|{{.Status}}'")
 printf '%s\n' "$containers"

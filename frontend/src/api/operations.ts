@@ -648,6 +648,52 @@ export const fetchAfterSales = (status?: string, limit = 100) =>
   api.get<AfterSalesItem[]>('/api/aftersales', { params: { status, limit } })
     .then((r) => r.data);
 
+export interface AfterSalesPaymentLink {
+  id: number;
+  version: number;
+  status: 'proposed' | 'confirmed' | 'rejected' | 'voided';
+  category: string;
+  category_label: string;
+  allocated_amount: number;
+  match_method: string | null;
+  confidence: number;
+  extracted_order_no: string | null;
+  extracted_customer_name: string | null;
+  decision_note: string | null;
+  order: null | {
+    id: number; order_no: string; customer_name: string | null;
+    product_name: string | null; order_date: string | null; status: string;
+  };
+  after_sales_id: number | null;
+  wanshifu_order: null | { id: number; order_no: string; status: string; matched_order_no: string | null };
+  flow: null | {
+    id: number; transaction_no: string; time: string | null; amount: number;
+    counterparty: string | null; remark: string | null;
+    reconciliation_status: string; reconciliation_type: string | null;
+  };
+  evidence: Record<string, any>;
+}
+
+export const fetchAfterSalesPaymentLinks = (status = 'proposed') =>
+  api.get<{ count: number; rows: AfterSalesPaymentLink[] }>('/api/aftersales/payment-links', {
+    params: { status, limit: 500 },
+  }).then((r) => r.data);
+
+export const scanAfterSalesPaymentLinks = (startDate: string, endDate: string, autoConfirmSafe = false) =>
+  api.post('/api/aftersales/payment-links/scan', {
+    start_date: startDate, end_date: endDate, auto_confirm_safe: autoConfirmSafe,
+  }).then((r) => r.data);
+
+export const confirmAfterSalesPaymentLink = (
+  id: number, payload: { expected_version: number; order_no?: string; category?: string; note?: string },
+) => api.post<AfterSalesPaymentLink>(`/api/aftersales/payment-links/${id}/confirm`, payload)
+  .then((r) => r.data);
+
+export const rejectAfterSalesPaymentLink = (id: number, expectedVersion: number, note: string) =>
+  api.post<AfterSalesPaymentLink>(`/api/aftersales/payment-links/${id}/reject`, {
+    expected_version: expectedVersion, note,
+  }).then((r) => r.data);
+
 export const createReturn = (payload: { order_no: string; reason: string; tracking_no?: string }) =>
   api.post<AfterSalesItem>('/api/aftersales', payload).then((r) => r.data);
 

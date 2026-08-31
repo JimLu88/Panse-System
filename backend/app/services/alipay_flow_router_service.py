@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AlipayFlow
 from app.models.marketing import AfterSales, DailyOperation, OutsourcingExpense, PromotionFlow
-from app.models.order import FactoryOrder, PartPurchase
+from app.models.order import FactoryOrder, Order, PartPurchase
 from app.services import internal_accounts
 
 _logger = logging.getLogger("panse.alipay_router")
@@ -132,11 +132,24 @@ def create_aftersales_from_flows(db: Session) -> int:
         )
         if not is_aftersales:
             continue
+        # SQL isnot(None) 会把空字符串也选中；旧逻辑因此生成了
+        # platform_order_no="" 的孤儿售后。这里只接受能在 ERP 订单库
+        # 精确找到的订单；备注/姓名推理统一交给可审计关联账。
+        order_no = (f.related_order_no or "").strip()
+        if not order_no:
+            continue
+        order_exists = db.execute(
+            select(Order.id).where(Order.order_no == order_no)
+        ).scalar_one_or_none()
+        if order_exists is None:
+            continue
         when = f.transaction_time.date() if f.transaction_time else date.today()
+        amount = _q2(f.amount)
         db.add(AfterSales(
-            platform_order_no=(f.related_order_no or "").strip(),
+            platform_order_no=order_no,
             reason=(f.remark or f.transaction_type or "支付宝流水自动归类"),
-            direct_compensation=_q2(f.amount),
+            direct_compensation=amount,
+            out_platform_total=amount,
             processed_at=when,
             alipay_flow_no=f.transaction_no,
             status="auto",

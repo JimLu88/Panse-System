@@ -21,6 +21,7 @@ import {
   Modal,
   Popconfirm,
   Segmented,
+  Select,
   Space,
   Table,
   Tag,
@@ -35,14 +36,19 @@ import ResponsiveTable from '../components/ResponsiveTable';
 import { StatusCard, type StatusTone } from '../components/MobileCards';
 import {
   AfterSalesItem,
+  AfterSalesPaymentLink,
   DisassemblyLogRow,
   confirmReturnInbound,
+  confirmAfterSalesPaymentLink,
   createReturn,
   disassembleProduct,
   fetchAfterSales,
+  fetchAfterSalesPaymentLinks,
   listDisassemblyLogs,
   markReturnDamaged,
   markReturnReceived,
+  rejectAfterSalesPaymentLink,
+  scanAfterSalesPaymentLinks,
   undoDisassembly,
   updateAfterSales,
 } from '../api/client';
@@ -100,6 +106,9 @@ export default function AfterSalesPage() {
   // 拆BOM 改为按单品行内操作: 记录目标行, 双重确认后才打开执行表单
   const [disFor, setDisFor] = useState<AfterSalesItem | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [paymentConfirmFor, setPaymentConfirmFor] = useState<AfterSalesPaymentLink | null>(null);
+  const [paymentOrderNo, setPaymentOrderNo] = useState('');
+  const [paymentCategory, setPaymentCategory] = useState('');
 
   const confirmDisassemble = (r: AfterSalesItem) => {
     Modal.confirm({
@@ -133,6 +142,49 @@ export default function AfterSalesPage() {
     queryKey: ['aftersales'],
     queryFn: () => fetchAfterSales(),
     refetchInterval: 30000,
+  });
+
+  const { data: paymentLinkData } = useQuery({
+    queryKey: ['aftersales-payment-links', 'proposed'],
+    queryFn: () => fetchAfterSalesPaymentLinks('proposed'),
+    refetchInterval: 30000,
+  });
+  const paymentLinks = paymentLinkData?.rows ?? [];
+
+  const refreshPaymentViews = () => {
+    qc.invalidateQueries({ queryKey: ['aftersales-payment-links'] });
+    qc.invalidateQueries({ queryKey: ['aftersales'] });
+    qc.invalidateQueries({ queryKey: ['dashboard'] });
+    qc.invalidateQueries({ queryKey: ['per-order-reconcile'] });
+  };
+  const scanPaymentMut = useMutation({
+    mutationFn: () => scanAfterSalesPaymentLinks('2026-07-01', new Date().toISOString().slice(0, 10), false),
+    onSuccess: (r: any) => {
+      message.success(`已建 ${r.created ?? 0} 条候选，未改任何财务金额`);
+      refreshPaymentViews();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '扫描失败'),
+  });
+  const confirmPaymentMut = useMutation({
+    mutationFn: (v: { row: AfterSalesPaymentLink; orderNo: string; category: string }) => confirmAfterSalesPaymentLink(v.row.id, {
+      expected_version: v.row.version,
+      order_no: v.orderNo.trim(),
+      category: v.category,
+      note: '在售后页核对原流水、订单和用途后确认',
+    }),
+    onSuccess: () => {
+      message.success('已联动写入售后、财务和逐单核对');
+      setPaymentConfirmFor(null);
+      refreshPaymentViews();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '确认失败'),
+  });
+  const rejectPaymentMut = useMutation({
+    mutationFn: (r: AfterSalesPaymentLink) => rejectAfterSalesPaymentLink(
+      r.id, r.version, '已核对：不应计入该售后',
+    ),
+    onSuccess: () => { message.success('已排除，原流水保留'); refreshPaymentViews(); },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '排除失败'),
   });
 
   const createMut = useMutation({
@@ -179,6 +231,110 @@ export default function AfterSalesPage() {
         message="退货 / 售后（含售后金额统计 · 原「营销与经营 → 售后」已并入此处，统一在这里看，不再分开）"
         description="① 创建退货 + 填快递单号 → ② 系统追踪快递, 签收后弹窗待确认 → ③ 检查完好 → 整产品入库 (不拆 BOM); 损坏 → 不入库, 留警告"
       />
+      <Card
+        size="small"
+        title={`个人支付宝售后待匹配（${paymentLinks.length}）`}
+        extra={
+          <Popconfirm
+            title="只扫描并建候选，不改财务金额"
+            onConfirm={() => scanPaymentMut.mutate()}
+          >
+            <Button loading={scanPaymentMut.isPending}>扫描 7 月至今流水</Button>
+          </Popconfirm>
+        }
+      >
+        <Alert
+          type="warning" showIcon style={{ marginBottom: 10 }}
+          message="只有订单唯一才可确认；送装/直达可能是正常安装费，不会自动当退款"
+        />
+        <Table<AfterSalesPaymentLink>
+          size="small" rowKey="id" dataSource={paymentLinks}
+          pagination={{ pageSize: 20, showSizeChanger: true }}
+          scroll={{ x: 1050 }}
+          columns={[
+            { title: '时间', width: 105, render: (_, r) => r.flow?.time?.slice(0, 10) ?? '—' },
+            { title: '金额', dataIndex: 'allocated_amount', width: 85, align: 'right',
+              render: (v: number) => <b>¥{Number(v).toFixed(2)}</b> },
+            { title: '流水备注', width: 250, ellipsis: true,
+              render: (_, r) => <Tooltip title={r.flow?.remark}>{r.flow?.remark || '—'}</Tooltip> },
+            { title: '建议类型', dataIndex: 'category_label', width: 120,
+              render: (v: string) => <Tag color="blue">{v}</Tag> },
+            { title: '候选订单', width: 245,
+              render: (_, r) => r.order ? (
+                <div><b>{r.order.customer_name || '未填客户'}</b> · {r.order.order_no}<br />
+                  <Typography.Text type="secondary" ellipsis>{r.order.product_name}</Typography.Text></div>
+              ) : <Tag color="orange">无唯一订单</Tag> },
+            { title: '判定', dataIndex: 'decision_note', width: 240, ellipsis: true,
+              render: (v: string) => <Tooltip title={v}>{v || '—'}</Tooltip> },
+            { title: '操作', fixed: 'right', width: 145,
+              render: (_, r) => <Space>
+                <Button
+                  size="small" type="primary"
+                  onClick={() => {
+                    setPaymentConfirmFor(r);
+                    setPaymentOrderNo(r.order?.order_no ?? '');
+                    setPaymentCategory(r.category);
+                  }}
+                >
+                  核对
+                </Button>
+                <Popconfirm title="确认这笔不应计入该售后？" onConfirm={() => rejectPaymentMut.mutate(r)}>
+                  <Button size="small">排除</Button>
+                </Popconfirm>
+              </Space> },
+          ]}
+        />
+      </Card>
+      <Modal
+        open={paymentConfirmFor != null}
+        title="确认个人支付宝售后归属"
+        okText="确认并联动入账"
+        cancelText="取消"
+        okButtonProps={{
+          disabled: !paymentOrderNo.trim() || !paymentCategory,
+          loading: confirmPaymentMut.isPending,
+        }}
+        onCancel={() => setPaymentConfirmFor(null)}
+        onOk={() => paymentConfirmFor && confirmPaymentMut.mutate({
+          row: paymentConfirmFor,
+          orderNo: paymentOrderNo,
+          category: paymentCategory,
+        })}
+      >
+        <Alert
+          type="warning" showIcon style={{ marginBottom: 12 }}
+          message="请核对真实 ERP 订单号和用途；送装、维修、退回可能与正常履约或万师傅重复。"
+        />
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text>原备注：{paymentConfirmFor?.flow?.remark || '—'}</Typography.Text>
+          <Typography.Text>支出金额：¥{Number(paymentConfirmFor?.allocated_amount ?? 0).toFixed(2)}</Typography.Text>
+          <Input
+            value={paymentOrderNo}
+            onChange={(e) => setPaymentOrderNo(e.target.value)}
+            placeholder="输入 ERP 中真实存在的订单号"
+          />
+          <Select
+            value={paymentCategory}
+            style={{ width: '100%' }}
+            onChange={setPaymentCategory}
+            options={[
+              { value: 'price_difference', label: '差价退补' },
+              { value: 'review_refund', label: '晒图/好评返现' },
+              { value: 'customer_compensation', label: '客户赔付' },
+              { value: 'repair_service', label: '售后维修' },
+              { value: 'onsite_service', label: '上门/送装服务' },
+              { value: 'return_service', label: '退回/返厂服务' },
+              { value: 'misc_after_sales', label: '其他售后' },
+            ]}
+          />
+          {paymentConfirmFor?.wanshifu_order && (
+            <Alert
+              type="info" showIcon
+              message={`发现万师傅单 ${paymentConfirmFor.wanshifu_order.order_no}，确认前请排除重复记账`}
+            />
+          )}
+        </Space>
+      </Modal>
       <Segmented
         value={viewMode}
         onChange={(v) => setViewMode(v as 'curated' | 'full')}

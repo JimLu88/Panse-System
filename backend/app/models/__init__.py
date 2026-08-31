@@ -45,6 +45,7 @@ from app.models.system_health import SystemHealthLog
 from app.models.import_job import ImportJob
 from app.models.import_file import ImportedFile
 from app.models.prepay_ledger import PrepayLedger
+from app.models.aftersales_payment import AfterSalesPaymentLink
 from app.models.settlement import OrderSettlement
 from app.models.factory_recon_item import FactoryReconItem
 from app.models.factory_settlement import FactorySettlementPayment, FactorySupplierAlias
@@ -165,6 +166,7 @@ __all__ = [
     "ImportJob",
     "ImportedFile",
     "PrepayLedger",
+    "AfterSalesPaymentLink",
     "OrderSettlement",
     "FactoryReconItem",
     "FactorySettlementPayment",

@@ -141,6 +141,7 @@ def test_order_detail_includes_factory_order_no(db_session):
 
 def test_create_aftersales_from_flows(db_session):
     """amount<0 + related_order_no + 售后类备注 → 建售后记录。"""
+    _order(db_session, "TBK999")
     # 普通售后备注流水
     _alipay(db_session, "AS001", -88, related="TBK999", recon_type=None)
     # 添加备注标识售后
@@ -159,6 +160,7 @@ def test_create_aftersales_from_flows(db_session):
 
 def test_aftersales_flow_not_taken_by_purchases(db_session):
     """已建售后记录的流水号不应再被 create_purchases 抢走。"""
+    _order(db_session, "TBK998")
     _alipay(db_session, "AS002", -100, related="TBK998")
     f = db_session.query(AlipayFlow).filter_by(transaction_no="AS002").one()
     f.remark = "退款"
@@ -170,6 +172,18 @@ def test_aftersales_flow_not_taken_by_purchases(db_session):
     from app.models.order import PartPurchase
     pp = db_session.query(PartPurchase).filter_by(alipay_flow_no="AS002").first()
     assert pp is None, "售后流水不应被采购抢走"
+
+
+def test_aftersales_flow_without_real_order_is_not_created(db_session):
+    """空订单号/不存在订单不得生成孤儿售后。"""
+    _alipay(db_session, "AS-EMPTY", -9, related="")
+    _alipay(db_session, "AS-MISSING", -10, related="NOT-IN-ERP")
+    for no in ("AS-EMPTY", "AS-MISSING"):
+        db_session.query(AlipayFlow).filter_by(transaction_no=no).one().remark = "客户差价补偿"
+    db_session.flush()
+
+    assert alipay_flow_router_service.create_aftersales_from_flows(db_session) == 0
+    assert db_session.query(AfterSales).count() == 0
 
 
 # ─────────────────────────────── Gap D ───────────────────────────────────────

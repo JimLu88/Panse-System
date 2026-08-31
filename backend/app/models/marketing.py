@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -114,6 +114,9 @@ class AfterSales(Base, TimestampMixin):
     customer_satisfaction: Mapped[Optional[str]] = mapped_column(String(32))
     taobao_backend_note: Mapped[Optional[str]] = mapped_column(Text)   # 淘宝后台标注 (表 18 导入)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # True 表示这行的金额由 after_sales_payment_links 唯一维护；
+    # 人工售后行默认 False，关联账不得覆盖其原有金额。
+    payment_link_managed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class WoodLoss(Base, TimestampMixin):
