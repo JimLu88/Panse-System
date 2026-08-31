@@ -248,6 +248,54 @@ def product_sku_slot_stage(db: Session, payload: dict, *, timeout_s: int = 240) 
     return {**result, "job_id": job["job"]}
 
 
+def read_warehouse_product_price(
+        db: Session, *, target: bool, timeout_s: int = 300) -> dict:
+    """Read the exact in-stock product row and 14-SKU editor manifest."""
+    started = _post(
+        db, "/api/product-sku/warehouse-price-readback",
+        {"target": bool(target)}, timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {"ok": False,
+                "error": started.get("error", "取数服务(:8500)未响应"),
+                "platform_product_write": False}
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if final.get("status") in ("error", "failed") and not result:
+        return {"ok": False,
+                "error": final.get("error") or "warehouse_product_price_readback_failed",
+                "web_agent_job_id": job_id, "platform_product_write": False}
+    result["web_agent_job_id"] = job_id
+    return result
+
+
+def correct_warehouse_product_price(
+        db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
+    """Run the fixed one-SKU warehouse-preserving price correction once."""
+    started = _post(
+        db, "/api/product-sku/warehouse-price-correction",
+        dict(payload), timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {"ok": False,
+                "error": started.get("error", "取数服务(:8500)未响应"),
+                "submitted": None, "platform_product_write": None}
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if final.get("status") in ("error", "failed") and not result:
+        return {"ok": False,
+                "error": final.get("error") or "warehouse_product_price_job_failed",
+                "submitted": None, "web_agent_job_id": job_id,
+                "platform_product_write": None}
+    result["web_agent_job_id"] = job_id
+    if result.get("need_scan"):
+        return {"ok": False, "need_scan": True,
+                "error": result.get("error") or "淘宝登录态已失效",
+                "submitted": False, "web_agent_job_id": job_id,
+                "execution_boundary": result.get("execution_boundary")}
+    return result
+
+
 def publish_plan7_existing_super_reduce_drafts(
         db: Session, *, item_ids: list[str], sku_count: int,
         timeout_s: int = 180) -> dict:
@@ -580,6 +628,28 @@ def supplement_plan7_single_discount(
             "web_agent_job_id": job_id,
             "execution_boundary": result.get("execution_boundary"),
         }
+    return result
+
+
+def correct_plan7_small_promo(
+        db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
+    """Run the fixed two-item / 20-SKU existing-activity correction once."""
+    started = _post(
+        db, "/api/single-item-discount/plan7-small-promo-correction",
+        payload, timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {"ok": False,
+                "error": started.get("error", "取数服务(:8500)未响应"),
+                "submitted": None}
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    result["web_agent_job_id"] = job_id
+    if result.get("need_scan"):
+        return {"ok": False, "need_scan": True,
+                "error": result.get("error") or "淘宝登录态已失效",
+                "submitted": False, "web_agent_job_id": job_id,
+                "execution_boundary": result.get("execution_boundary")}
     return result
 
 

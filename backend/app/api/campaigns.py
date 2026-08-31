@@ -223,6 +223,40 @@ class CampaignPlan7DiscountSupplementIn(BaseModel):
     end_at: str
 
 
+class CampaignPlan7SmallPromoCorrectionIn(BaseModel):
+    """Immutable identity for the fixed two-item / 20-SKU correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    activity_ids: list[str] = Field(min_length=3, max_length=3)
+    target_activity_id: str = Field(pattern=r"^\d+$")
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    current_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_snapshot_id: int = Field(ge=1)
+    source_snapshot_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    start_at: str
+    end_at: str
+
+
+class CampaignWarehouseProductPriceCorrectionIn(BaseModel):
+    """Immutable identity for one warehouse-preserving SKU price correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str = Field(pattern=r"^\d+$")
+    sku_id: str = Field(pattern=r"^\d+$")
+    expected_title: str
+    expected_product_state: str
+    expected_old_price: str = Field(pattern=r"^\d+(?:\.\d{2})$")
+    target_price: str = Field(pattern=r"^\d+(?:\.\d{2})$")
+    expected_quantity: str = Field(pattern=r"^\d+$")
+    baseline_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -854,6 +888,59 @@ def supplement_super_reduce_plan7_single_discount(
             "plan7_discount_supplement_activity_identity_drift",
             "plan7_discount_supplement_readback_scope_drift",
             "plan7_discount_supplement_platform_state_not_allowed",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/correct-super-reduce-plan7-small-promo")
+def correct_super_reduce_plan7_small_promo(
+        body: CampaignPlan7SmallPromoCorrectionIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Correct only the fixed 20 deductions to ERP small-promo targets."""
+    from app.services import campaign_plan7_small_promo_correction_service
+
+    result = campaign_plan7_small_promo_correction_service.execute(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "plan7_small_promo_request_not_allowed",
+            "plan7_small_promo_plan_identity_drift",
+            "plan7_small_promo_source_snapshot_drift",
+            "plan7_small_promo_source_snapshot_scope_drift",
+            "plan7_small_promo_erp_manifest_drift",
+            "plan7_small_promo_forbidden_accessory_missing",
+            "plan7_small_promo_forbidden_accessory_identity_drift",
+            "plan7_small_promo_activity_identity_drift",
+            "plan7_small_promo_platform_state_drift",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/correct-warehouse-product-sku-price")
+def correct_warehouse_product_sku_price(
+        body: CampaignWarehouseProductPriceCorrectionIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Correct SKU 6060112621275 from 1500 to 1420 and keep it in stock."""
+    from app.services import campaign_warehouse_product_price_correction_service
+
+    result = campaign_warehouse_product_price_correction_service.execute(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "warehouse_product_price_request_not_allowed",
+            "warehouse_product_price_plan_identity_drift",
+            "warehouse_product_price_readback_drift",
+            "warehouse_product_price_readback_boundary_violation",
         }:
             code = 422
         raise HTTPException(code, detail=result)
