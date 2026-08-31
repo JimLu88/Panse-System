@@ -25,6 +25,7 @@ from app.models.order import Order
 
 PERSONAL_ACCOUNT = "主力号"
 ALLOCATION_FULL = "full"
+FIELD_CHANGE_SOURCE = "alipay_link"  # field_changes.source 最大 16 字符
 LINK_STATES = frozenset({"proposed", "confirmed", "rejected", "voided"})
 ACCOUNTING_TARGETS = frozenset({"aftersales", "order_install"})
 
@@ -464,7 +465,7 @@ def _record_order_install_change(
     from app.services import field_change_service
     field_change_service.record(
         db, table="orders", pk=order.order_no, field=field, old=old, new=new,
-        actor=actor, source="personal_alipay_link",
+        actor=actor, source=FIELD_CHANGE_SOURCE,
         row_label=f"订单 {order.order_no}",
         field_label={"install_fee": "安装费", "actual_install": "实际安装费"}[field],
     )

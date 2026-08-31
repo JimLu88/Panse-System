@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from app.models.aftersales_payment import AfterSalesPaymentLink
+from app.models.field_change import FieldChange
 from app.models.finance import AlipayFlow, WanshifuOrder
 from app.models.marketing import AfterSales
 from app.models.order import Order
@@ -138,6 +139,10 @@ def test_confirm_order_install_updates_order_without_aftersales_and_voids(db_ses
     assert flow.reconciliation_status == "matched"
     assert flow.reconciliation_type == "install"
     assert db_session.query(AfterSales).filter(AfterSales.alipay_flow_no == flow.transaction_no).count() == 0
+    changes = db_session.query(FieldChange).filter(FieldChange.row_pk == order.order_no).all()
+    assert {row.field for row in changes} == {"install_fee", "actual_install"}
+    assert {row.source for row in changes} == {"alipay_link"}
+    assert all(len(row.source) <= 16 for row in changes)
 
     svc.void(db_session, link.id, expected_version=2, actor="admin", decision_note="测试回撤")
     assert order.install_fee is None
