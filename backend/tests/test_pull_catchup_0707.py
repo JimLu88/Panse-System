@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from hashlib import sha256
 import json
+from pathlib import Path
 import threading
 from types import SimpleNamespace
 
@@ -1144,7 +1145,26 @@ def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):
             "result": {"ok": True},
         },
     )
-    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": 0, "pending": 0})
+    ingest_calls: list[dict] = []
+
+    def _run_ingest(_db, **kwargs):
+        ingest_calls.append(kwargs)
+        if kwargs.get("only_paths"):
+            return {
+                "scanned": 1,
+                "imported": 1,
+                "skipped_known": 0,
+                "errors": 0,
+                "pending": 0,
+                "files": [{
+                    "path": "2026-08-31/alipay/主力/main-flow.xlsx",
+                    "category": "alipay",
+                    "status": "imported",
+                }],
+            }
+        return {"scanned": 50, "errors": 0, "pending": 0, "files": []}
+
+    monkeypatch.setattr(ai, "run_ingest", _run_ingest)
     state: dict = {}
     monkeypatch.setattr(ai, "_load_json", lambda _db, _key: dict(state))
     monkeypatch.setattr(
@@ -1168,6 +1188,78 @@ def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):
     assert recovered == [
         ("flow_pull", "扫码后主力号流水已下载并完成入库"),
     ]
+    assert ingest_calls[0] == {"only_paths": ["main-flow.xlsx"]}
+    assert ingest_calls[1] == {}
+
+
+def test_wechat_bill_timeout_screenshot_is_not_parsed_as_workbook():
+    assert ai._classify(Path("2026-08-31/聚合账单/wechat_bill_income_timeout.png")) == "other"
+    assert ai._classify(Path("2026-08-31/聚合账单/wechat_bill.xlsx")) == "settlement"
+
+
+def test_main_flow_current_import_ignores_historical_global_failures(monkeypatch):
+    dummy = _DummyDb()
+    saved_values: dict[str, str] = {}
+    recovered: list[str] = []
+    artifacts = iter([{}, {"main-flow.xlsx": (123, 456)}])
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(ai, "get_pending_scans", lambda _db: [ai.MAIN_ALIPAY_FLOW_TASK])
+    monkeypatch.setattr(ai, "get_scan_results", lambda _db: {})
+    monkeypatch.setattr(ai, "_task_run_variables", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(ai, "_main_alipay_artifacts", lambda: next(artifacts))
+    monkeypatch.setattr(
+        settings_service,
+        "set_value",
+        lambda _db, key, value, **_kwargs: saved_values.update({key: value}),
+    )
+    monkeypatch.setattr(
+        web_agent_service, "run_task", lambda *_args, **_kwargs: {"job": "job-main"},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "wait_job",
+        lambda *_args, **_kwargs: {"status": "done", "result": {"ok": True}},
+    )
+
+    def _run_ingest(_db, **kwargs):
+        if kwargs.get("only_paths"):
+            return {
+                "scanned": 1,
+                "imported": 1,
+                "errors": 0,
+                "pending": 0,
+                "files": [{
+                    "path": "2026-08-31/alipay/主力/main-flow.xlsx",
+                    "category": "alipay",
+                    "status": "imported",
+                }],
+            }
+        return {"scanned": 921, "errors": 3, "pending": 3, "files": []}
+
+    monkeypatch.setattr(ai, "run_ingest", _run_ingest)
+    state: dict = {}
+    monkeypatch.setattr(ai, "_load_json", lambda _db, _key: dict(state))
+    monkeypatch.setattr(ai, "_save_json", lambda _db, _key, value: state.update(value))
+    monkeypatch.setattr(
+        "app.services.automation_pipeline_service.record_success",
+        lambda _db, name, **_kwargs: recovered.append(name),
+    )
+
+    result = ai.start_pending_scans(dummy)
+
+    assert result["started"] is True
+    assert json.loads(saved_values[ai.KEY_PENDING_SCAN]) == []
+    scan = json.loads(saved_values[ai.KEY_SCAN_RESULTS])[ai.MAIN_ALIPAY_FLOW_TASK]
+    assert scan["status"] == "success"
+    assert scan["ingest"] == {
+        "scanned": 1,
+        "imported": 1,
+        "skipped_known": 0,
+        "pending": 0,
+        "errors": 0,
+    }
+    assert recovered == ["flow_pull"]
 
 
 def test_main_flow_download_does_not_close_retry_when_ingest_fails(monkeypatch):
@@ -1200,11 +1292,12 @@ def test_main_flow_download_does_not_close_retry_when_ingest_fails(monkeypatch):
         "wait_job",
         lambda *_args, **_kwargs: {"status": "done", "result": {"ok": True}},
     )
-    monkeypatch.setattr(
-        ai,
-        "run_ingest",
-        lambda _db: {"errors": 1, "pending": 0},
-    )
+    def _failed_ingest(_db, **kwargs):
+        if kwargs.get("only_paths"):
+            return {"scanned": 1, "errors": 1, "pending": 0, "files": []}
+        return {"scanned": 921, "errors": 0, "pending": 0, "files": []}
+
+    monkeypatch.setattr(ai, "run_ingest", _failed_ingest)
     monkeypatch.setattr(
         "app.services.automation_pipeline_service.record_success",
         lambda _db, name, **_kwargs: recovered.append(name),

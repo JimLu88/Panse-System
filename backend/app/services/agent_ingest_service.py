@@ -207,6 +207,46 @@ def _main_alipay_artifacts() -> dict[str, tuple[int, int]]:
     return out
 
 
+def _changed_main_alipay_artifacts(
+    before: dict[str, tuple[int, int]] | None,
+    after: dict[str, tuple[int, int]] | None = None,
+) -> list[str]:
+    """Return only artifacts created or replaced by the current scan run.
+
+    The shared Agent output directory also contains historical Alipay exports.
+    A current login recovery must never inherit those files' import failures.
+    """
+    current = after if after is not None else _main_alipay_artifacts()
+    previous = before or {}
+    return sorted(
+        path for path, signature in current.items()
+        if previous.get(path) != signature
+    )
+
+
+def _main_alipay_ingest_failure(result: dict | None) -> str | None:
+    """Validate the scoped import result for one main-account export."""
+    payload = result or {}
+    errors = int(payload.get("errors") or 0)
+    pending = int(payload.get("pending") or 0)
+    if errors or pending:
+        return (
+            "主力号流水文件已下载，但未完成入库："
+            f"失败 {errors} 份，待处理 {pending} 份"
+        )
+    if int(payload.get("scanned") or 0) < 1:
+        return "主力号流水文件已下载，但本次文件清单未匹配到可入库文件"
+    imported_rows = [
+        item for item in (payload.get("files") or [])
+        if item.get("category") == "alipay"
+        and item.get("status") == "imported"
+        and _is_main_alipay_path(Path(str(item.get("path") or "")))
+    ]
+    if not imported_rows:
+        return "主力号流水文件已下载，但本次文件没有主力号成功入库证据"
+    return None
+
+
 def _job_downloads(job_result: dict) -> list[str]:
     """Normalize Web-Agent artifacts across direct and tiered task results."""
     candidates: list = list(job_result.get("downloads") or [])
@@ -382,7 +422,11 @@ def start_pending_scans(db: Session) -> dict:
                     downloads = _job_downloads(job_result)
                     no_data = bool(job_result.get("no_data"))
                     if tid == MAIN_ALIPAY_FLOW_TASK:
-                        has_artifact = _main_alipay_artifacts() != artifacts_before
+                        # Use the exact filesystem delta as the immutable
+                        # current-run manifest.  The Web-Agent download field
+                        # is not populated consistently for login recovery.
+                        downloads = _changed_main_alipay_artifacts(artifacts_before)
+                        has_artifact = bool(downloads)
                     elif tid == "taobao_orders" or tid in FINANCE_EXPORT_TASKS:
                         has_artifact = bool(downloads) or no_data
                     else:
@@ -427,6 +471,12 @@ def start_pending_scans(db: Session) -> dict:
                         "at": datetime.now().isoformat(timespec="seconds"),
                         "reason": failure["reason"],
                     }
+            main_alipay_ingest_result = None
+            if MAIN_ALIPAY_FLOW_TASK in done:
+                main_alipay_ingest_result = run_ingest(
+                    d,
+                    only_paths=done_artifacts.get(MAIN_ALIPAY_FLOW_TASK) or [],
+                )
             ingest_result = run_ingest(d)   # 扫到的余额截图/淘宝报表一并导入
             order_ingest_result = None
             if "taobao_orders" in done:
@@ -436,22 +486,26 @@ def start_pending_scans(db: Session) -> dict:
                     artifact_roles=done_artifact_roles.get("taobao_orders") or {},
                     order_batch_id=order_batch,
                 )
-            if (MAIN_ALIPAY_FLOW_TASK in done
-                    and (ingest_result.get("errors") or ingest_result.get("pending"))):
-                # A browser download is not business success until the new
-                # artifact can be parsed and stored.  Keep the exact import
-                # failure instead of closing the retry chain on a false green.
-                reason = (
-                    "主力号流水文件已下载，但未完成入库："
-                    f"失败 {int(ingest_result.get('errors') or 0)} 份，"
-                    f"待处理 {int(ingest_result.get('pending') or 0)} 份"
-                )
+            main_alipay_failure = (
+                _main_alipay_ingest_failure(main_alipay_ingest_result)
+                if MAIN_ALIPAY_FLOW_TASK in done else None
+            )
+            if MAIN_ALIPAY_FLOW_TASK in done and main_alipay_failure:
+                # Judge only the exact file(s) created by this recovery run.
+                # Historical failures remain auditable in the broad ingest,
+                # but cannot turn a successfully imported current file red.
+                reason = main_alipay_failure
                 done.remove(MAIN_ALIPAY_FLOW_TASK)
                 failures.append({"task": MAIN_ALIPAY_FLOW_TASK, "reason": reason})
                 scan_results[MAIN_ALIPAY_FLOW_TASK] = {
                     "status": "failed",
                     "at": datetime.now().isoformat(timespec="seconds"),
                     "reason": reason,
+                }
+            elif MAIN_ALIPAY_FLOW_TASK in done:
+                scan_results[MAIN_ALIPAY_FLOW_TASK]["ingest"] = {
+                    key: int((main_alipay_ingest_result or {}).get(key) or 0)
+                    for key in ("scanned", "imported", "skipped_known", "pending", "errors")
                 }
             batch_artifacts = [
                 Path(str(path).replace("\\", "/")).name
@@ -841,7 +895,14 @@ def _classify(rel: Path) -> str:
     if "taobao" in parts:
         return "taobao_report"
     if "聚合账单" in rel.parts:
-        return "settlement"
+        # Timeout/login screenshots are diagnostic evidence, not bill
+        # workbooks.  Treating a PNG as settlement input raised BadZipFile and
+        # polluted every later broad ingest with a false finance error.
+        return (
+            "settlement"
+            if rel.suffix.lower() in {".xlsx", ".xls", ".csv", ".zip"}
+            else "other"
+        )
     if "wanxiangtai" in parts or "ads" in parts:
         return "promotion"
     if "wanshifu" in parts:
