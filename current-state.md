@@ -10,6 +10,10 @@
   proves the main workstation has the repaired source markers, then delegates
   to the same exact item-scoped calibration.  It still closes before product
   save and cannot withdraw an activity or submit a campaign.
+- The follow-up recognition modal is handled only by the separately gated
+  `scripts/campaign_stage_lift_desk_sku_slot_unsaved_apply_nas.ps1`.  It allows
+  one exact `在当前规格后添加` click after the one-option guard and still
+  closes the browser without saving the product.
 
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
