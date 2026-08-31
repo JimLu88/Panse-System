@@ -16,8 +16,12 @@
   通知。01 唯一正式脚本为
   `scripts/campaign_supplement_plan7_single_discount_nas.ps1`；维护任务不得执行该脚本。
 - 现场只读探针已证明目标抽屉真实路径是“新增商品”→“批量导入”→官方上传区，最终按钮
-  是“确认修改”。探针全程 0 选择、0 上传、0 提交、0 平台写入；正式补报入口已实现并
-  通过测试，但维护任务没有执行最终业务命令。
+  是“确认修改”。随后正式 attempt `78838fdc2a7a5ac3a9c2380b` 已得到官方 4 成功、
+  0 失败终态，并由只读快照 `14` 逐 SKU 完成回读；attempt 已是 `completed`、
+  `automatic_retry_allowed=false`。一次性脚本
+  `scripts/campaign_supplement_plan7_single_discount_nas.ps1` 已永久禁用，严禁再次补报。
+  ERP 直接入口在发现该 completed attempt 后也固定返回 HTTP 409，不生成文件、不访问
+  Web-Agent；Web-Agent 写入口同样在解析文件或打开浏览器前返回 409。
 
 ## 2026-09-01 计划7三项改时 V3 只读收口
 
@@ -26,13 +30,15 @@
 - 原 job1 预检证明三条业务身份：固定活动名、ID、自选商品活动、SKU级、减钱、创建时间
   以及原导入状态；原整行签名同时包含派生提示“即将到期”。提交后截图中活动
   `143939511827` 的时间已变为 9 月 1 日至 9 月 5 日，派生提示变为“进行中”，固定业务
-  字段与导入状态未见变化。其余两条仍必须由正式 V3 逐 ID 只读回读。
+  字段与导入状态未见变化。V3 已逐 ID 回读三条活动，均为精确新档期、进行中且固定
+  业务字段无差异；attempt 已为 `completed/readback_verified`，计划结束时间已同步。
 - 唯一收口入口为
   `POST /api/campaigns/closeout-super-reduce-plan7-discount-times-v3` 和
   `scripts/campaign_closeout_plan7_discount_times_v3_nas.ps1`。它固定绑定外部 request
   `f5d44ce64b90`、内部 request、attempt、job2 和三项 confirmed ID；Web-Agent 只搜索和
   回读，不打开编辑器。只有三条新时间精确且固定业务字段无差异时，ERP 才把原 attempt
-  原位改为 `completed/readback_verified` 并同步计划结束时间；否则保持 `unknown`。
+  原位改为 `completed/readback_verified` 并同步计划结束时间；当前已经完成。Web-Agent
+  旧 `preflight/commit` 写路径已永久退役，仅保留该无写入 `readback` 能力。
 
 ## 2026-09-01 计划7三项单品立减原位改时入口
 

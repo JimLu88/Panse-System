@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime
 import hashlib
+from pathlib import Path
 
 from app.models.campaign import CampaignEvidenceSnapshot, CampaignExecutionAttempt, CampaignPlan
 from app import dependencies
@@ -155,6 +156,14 @@ def test_supplement_claims_once_and_verifies_four_exact_rows(
     assert snapshot.evidence_type == "plan7_discount_supplement_readback"
     assert snapshot.scope_sha256 == svc.SCOPE_SHA256
 
+    replay = svc.execute_plan7_discount_supplement(
+        db_session, request_payload=svc.request_payload())
+    assert replay["error"] == (
+        "plan7_discount_supplement_retired_after_success")
+    assert replay["attempt_id"] == attempt.id
+    assert replay["execution_boundary"]["platform_write"] is False
+    assert len(writes) == 1
+
 
 def test_terminal_failure_consumes_claim_and_blocks_second_call(
         db_session, monkeypatch):
@@ -242,3 +251,15 @@ def test_official_service_route_and_cli_are_bound_to_fixed_scope():
     assert len(payload["rows"]) == 4
     assert svc.FORBIDDEN_PLACEHOLDER_SKU_ID not in {
         row["sku_id"] for row in payload["rows"]}
+
+
+def test_consumed_operator_wrapper_is_permanently_disabled():
+    wrapper = (
+        Path(__file__).resolve().parents[2]
+        / "scripts" / "campaign_supplement_plan7_single_discount_nas.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "throw '该脚本已永久禁用" in wrapper
+    assert "78838fdc2a7a5ac3a9c2380b" in wrapper
+    assert "4 成功 0 失败" in wrapper
+    assert "证据快照 14" in wrapper

@@ -351,27 +351,24 @@ def execute_plan7_discount_supplement(db: Session, *, request_payload: dict) -> 
     plan_error = _validate_plan(plan)
     if plan_error:
         return plan_error
-    target_xlsx, xlsx_error = _build_target_xlsx(db, plan)
-    if xlsx_error:
-        return xlsx_error
-
     existing = _existing_attempt(db)
     if existing:
         if existing.state == "completed":
-            return {
-                "ok": True,
-                "idempotent_replay": True,
-                "attempt_id": existing.id,
-                "state": existing.state,
-                "result_summary": existing.result_summary,
-                "execution_boundary": _boundary(),
-            }
+            return _fail(
+                "plan7_discount_supplement_retired_after_success",
+                attempt_id=existing.id,
+                attempt_state=existing.state,
+                last_step=existing.last_step,
+            )
         return _fail(
             "plan7_discount_supplement_attempt_already_claimed_no_retry",
             attempt_id=existing.id,
             attempt_state=existing.state,
             platform_write=existing.platform_write_observed,
         )
+    target_xlsx, xlsx_error = _build_target_xlsx(db, plan)
+    if xlsx_error:
+        return xlsx_error
 
     db.commit()
     pre_read = _platform_read(db, plan)

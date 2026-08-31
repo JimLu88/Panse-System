@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+throw '该脚本已永久禁用：attempt 78838fdc2a7a5ac3a9c2380b 已完成，官方终态 4 成功 0 失败，逐 SKU 回读证据快照 14 已完成；严禁再次补报。'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'
 if (-not (Test-Path -LiteralPath $ssh)) { throw "找不到 Git SSH: $ssh" }
