@@ -1,5 +1,30 @@
 # Current state — logistics bill product analytics
 
+## 2026-08-31 campaign unattended price and SKU-slot foundation
+
+- Historical no-sales registration no longer pre-excludes a product. Every new
+  campaign starts from the complete current ERP in-sale scope; an exact
+  current-campaign no-sales terminal is isolated to that workflow and does not
+  alarm or suppress the next campaign.
+- Fresh platform price-line conflicts now share one audited resolver. Ordinary
+  SKUs may receive at most CNY 2.00 combined correction; larger differences
+  request a clean physical SKU slot. Explicit custom SKUs use an immutable
+  first-managed ERP baseline and may never produce a final buyer price below
+  20% of that baseline.
+- Migration `0146` adds append-only logical-to-physical SKU slots and one-shot
+  mutation attempts. Old Taobao SKU IDs never change meaning; cooling slots
+  become reusable only after exact fresh platform evidence, never merely after
+  elapsed time.
+- The lift-desk pilot is fixed to item `793202812082`, logical SKU
+  `PPS2441004051311`. The Web-Agent can inspect the exact editor, download the
+  official template and transiently stage `130cm 带高台（备用1）` with physical
+  code `PPS2441004051311B1`, then closes without clicking `提交宝贝信息`.
+  A saved product mutation and any campaign withdrawal remain task-01 business
+  actions after the one-time visual calibration; maintenance did not execute
+  them.
+- Full design and adversarial review:
+  `docs/活动报名无人值守与SKU备用槽实施计划_20260830.md`.
+
 Last updated: 2026-08-30 (Asia/Shanghai)
 
 ## 2026-08-30 campaign automation failure-history closeout

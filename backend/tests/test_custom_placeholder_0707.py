@@ -29,22 +29,21 @@ def test_recompute_skips_placeholder():
     assert sku.daily_price == D("20000")
 
 
-def test_signup_export_placeholder_is_9zhe(db_session):
+def test_signup_export_placeholder_below_permanent_floor_is_excluded(db_session):
     _seed_ph(db_session, 20000)
     buf, _ = build_promo_signup_upload_xlsx(db_session, "big")
     ws = openpyxl.load_workbook(BytesIO(buf.getvalue()))["商品SKU导入列表"]
     rows = [(ws.cell(r, 2).value, ws.cell(r, 3).value)
             for r in range(4, ws.max_row + 1) if ws.cell(r, 2).value]
-    assert len(rows) == 1 and rows[0][0] == "SK1"
-    assert abs(float(rows[0][1]) - 500.0) < 0.01                # 20000×0.9 再封500顶(2026-07-16固化)
+    assert rows == []  # 500叠加官方优惠后远低于首次基准20000的20%，必须阻断。
 
 
-def test_signup_618_also_9zhe(db_session):
-    _seed_ph(db_session, 20000)
+def test_signup_placeholder_above_twenty_percent_floor_is_kept(db_session):
+    _seed_ph(db_session, 2000)
     buf, _ = build_promo_signup_upload_xlsx(db_session, "big618")
     ws = openpyxl.load_workbook(BytesIO(buf.getvalue()))["商品SKU导入列表"]
     vals = [ws.cell(r, 3).value for r in range(4, ws.max_row + 1) if ws.cell(r, 2).value]
-    assert abs(float(vals[0]) - 500.0) < 0.01                  # 占位×0.9后再封500顶(2026-07-16固化: 治新品促销管控价卡整品)
+    assert abs(float(vals[0]) - 500.0) < 0.01
 
 
 def test_single_discount_placeholder_is_skipped(db_session):

@@ -43,6 +43,7 @@ services:
     # 也避免热重载在大导入/文件变动时卡死。改代码后点「拉最新代码+重建」生效。
     command: >
       sh -c "alembic upgrade head &&
+             python -m app.cli.campaign_seed_sku_slots &&
              exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-panse}:${POSTGRES_PASSWORD:-panse_dev_pw}@db:5432/${POSTGRES_DB:-panse_erp}

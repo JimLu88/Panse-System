@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Optional
+from decimal import Decimal
 
 from sqlalchemy import (Boolean, JSON, Date, DateTime, Integer, LargeBinary,
-                        String, Text, UniqueConstraint)
+                        Numeric, String, Text, UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -139,6 +140,55 @@ class CampaignExecutionAttempt(Base, TimestampMixin):
             "workflow_key", "operation", "scope_sha256",
             name="uq_campaign_execution_workflow_operation_scope",
         ),
+    )
+
+
+class CampaignSkuSlot(Base, TimestampMixin):
+    """One immutable physical Taobao SKU identity in a logical ERP SKU pool."""
+
+    __tablename__ = "campaign_sku_slots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    taobao_item_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    taobao_sku_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    physical_slot_code: Mapped[str] = mapped_column(String(96), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="active", index=True)
+    attribute_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    baseline_daily_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    custom_min_final_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    floor_evidence: Mapped[Optional[dict]] = mapped_column(JSON)
+    cooling_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    last_workflow_key: Mapped[Optional[str]] = mapped_column(String(128))
+    active_from: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    active_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("sku_code", "physical_slot_code",
+                         name="uq_campaign_sku_slot_logical_physical"),
+    )
+
+
+class CampaignSkuSlotAttempt(Base, TimestampMixin):
+    """One-shot mutation claim for an exact item/SKU-slot manifest."""
+
+    __tablename__ = "campaign_sku_slot_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    workflow_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    taobao_item_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sku_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_slot_id: Mapped[Optional[int]] = mapped_column(Integer)
+    target_slot_id: Mapped[Optional[int]] = mapped_column(Integer)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    write_claimed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
+    result_summary: Mapped[Optional[dict]] = mapped_column(JSON)
+
+    __table_args__ = (
+        UniqueConstraint("workflow_key", "sku_code",
+                         name="uq_campaign_sku_slot_attempt_workflow_sku"),
     )
 
 

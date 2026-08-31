@@ -132,7 +132,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
-def test_signup_rows_exclude_registered_no_sales_before_platform(db_session):
+def test_signup_rows_retry_registered_no_sales_before_platform(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
         daily=1200, big=800)
@@ -141,9 +141,9 @@ def test_signup_rows_exclude_registered_no_sales_before_platform(db_session):
 
     rows, stats = cs.build_signup_rows(db_session, plan)
 
-    assert rows == []
-    assert stats["excluded_no_sales_items"] == ["9209"]
-    assert stats["registered_no_sales_items_included"] == []
+    assert [row["taobao_item_id"] for row in rows] == ["9209"]
+    assert stats["excluded_no_sales_items"] == []
+    assert stats["registered_no_sales_items_included"] == ["9209"]
 
 
 def test_signup_shipping_days_authorization_is_exact():
@@ -333,9 +333,10 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
 
     result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
-    assert result["ok"] is False
-    assert result["step"] == "qualification_empty"
-    assert result["stats"]["excluded_no_sales_items"] == [
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009210"]
+    assert result["no_sales_item_ids"] == ["1000009209"]
+    assert result["stats"]["registered_no_sales_items_included"] == [
         "1000009209", "1000009210"]
 
 
@@ -532,10 +533,9 @@ def test_platform_qualification_keeps_coupon_failure_hard_when_internal_floor_ho
     monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
         "ok": True, "rows": [], "floor_refresh": {},
     })
-    hold_calls = iter(([], [{
+    monkeypatch.setattr(cs, "price_hold_items", lambda *args: [{
         "taobao_item_id": "1000009217", "skus": [],
-    }]))
-    monkeypatch.setattr(cs, "price_hold_items", lambda *args: next(hold_calls))
+    }])
     monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
         "ok": False,
         "validation": {
@@ -771,7 +771,8 @@ def test_super_reduce_low_price_uses_platform_exact_percent(db_session):
         daily=25, big=20.41)
     db_session.commit()
 
-    rows, stats = cs.build_discount_rows(db_session, plan)
+    rows, stats = cs.build_discount_rows(
+        db_session, plan, no_sales_items={"9304"})
 
     assert rows[0]["official"] == 2.5
     assert rows[0]["deduct"] == 1.48
@@ -845,7 +846,8 @@ def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
     db_session.commit()
     ns.add_no_sales(db_session, ["9304"])
 
-    rows, stats = cs.build_discount_rows(db_session, plan)
+    rows, stats = cs.build_discount_rows(
+        db_session, plan, no_sales_items={"9304"})
 
     assert len(rows) == 1
     assert rows[0]["kind"] == "nosales"
@@ -1020,7 +1022,7 @@ def test_terminal_signup_updates_explicit_active_item_scope(db_session):
     assert cs.official_scope_for_plan(plan)["active_items"] == {"700000000002"}
 
 
-def test_preflight_blocks_nosales_without_official_scope(db_session):
+def test_preflight_historical_nosales_does_not_require_official_scope(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDD004", "PPSDD00401", "9309", "73071", daily=3000, big=2500)
     db_session.commit()
@@ -1028,8 +1030,8 @@ def test_preflight_blocks_nosales_without_official_scope(db_session):
 
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
 
-    assert checks["R15"]["level"] == "error"
-    assert "未记录官方立减" in checks["R15"]["items"][0]["errors"][0]
+    assert checks["R15"]["level"] == "pass"
+    assert checks["R15"]["items"][0]["no_sales_items"] == []
 
 
 def test_placeholder_signup_blocks_high_live_price_without_expiry_confirmation(db_session):
@@ -1224,16 +1226,10 @@ def test_discount_price_hold_when_platform_coupon_after_exceeds_history_line(db_
     assert rows == []                                         # R2: 报名资格线冲突 → 整品不出行
     assert stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9305"
     reason = stats["excluded_price_hold_items"][0]["skus"][0]["reasons"][0]
-    assert reason["type"] == "coupon_floor"
+    assert reason["type"] == "sku_slot_required"
     assert reason["taobao_sku_id"] == "73031"
-    assert reason["erp_signup_price"] == 3000.0
-    assert reason["official_rate"] == 0.12
-    assert reason["official_deduction"] == 360.0
-    assert reason["platform_coupon_after"] == 2000.0
-    assert reason["platform_history_line"] == 1990.0
-    assert reason["difference"] == 10.0
-    assert reason["planned_single_item_discount"] == 640.0
-    assert reason["single_item_discount_included_by_platform"] is True
+    assert reason["required_total_concession"] == 10.0
+    assert reason["action"] == "use_clean_sku_slot"
 
 
 def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
@@ -1278,14 +1274,14 @@ def test_preflight_outputs_r0_to_r21(db_session):
     assert by_rule["R2"]["items"][0]["skus"][0]["sku_code"] == "PPSPC00101"
     assert by_rule["R3"]["level"] == "error"
     assert by_rule["R3"]["items"][0]["taobao_item_id"] == "9402"
-    assert by_rule["R6"]["level"] == "warn" and "9404" in by_rule["R6"]["items"]
+    assert by_rule["R6"]["level"] == "info" and "9404" in by_rule["R6"]["items"]
     assert by_rule["R9"]["items"] == [{"official_ceil": True}]
     assert by_rule["R11"]["level"] == "warn" and by_rule["R12"]["level"] == "warn"
     assert by_rule["R13"]["level"] == "pass"
     assert by_rule["R20"]["level"] == "pass"
     assert by_rule["R21"]["level"] == "pass"
     assert by_rule["R14"]["level"] == "warn"
-    assert by_rule["R15"]["level"] == "error"
+    assert by_rule["R15"]["level"] == "pass"
     assert by_rule["R16"]["level"] == "pass"
     assert by_rule["R17"]["level"] == "pass"
 
