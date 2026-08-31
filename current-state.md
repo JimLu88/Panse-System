@@ -25,8 +25,9 @@
 - Task 01's credential-free one-time calibration entry is
   `scripts/campaign_stage_lift_desk_sku_slot_nas.ps1`. It uses the encrypted
   Web-Agent token inside ERP, retains the screenshot in the normal Agent output
-  directory and returns `platform_product_write=false`; it cannot save or
-  withdraw anything.
+  directory and returns `platform_product_write=false` plus the unsaved target
+  row. The first calibration does not fill the proposed physical merchant code;
+  it exists to obtain the one user visual check before enabling any saved edit.
 - Full design and adversarial review:
   `docs/活动报名无人值守与SKU备用槽实施计划_20260830.md`.
 
