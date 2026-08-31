@@ -18,6 +18,9 @@
   `scripts/campaign_stage_lift_desk_sku_slot_recognition_wait_nas.ps1`; it
   additionally proves the 90-second same-modal, no-click recognition wait is
   present before delegating to the exact calibration.
+- Because QianNiu rebuilds that dialog DOM, the superseding one-time entry is
+  `scripts/campaign_stage_lift_desk_sku_slot_dialog_rebind_nas.ps1`.  It proves
+  fresh per-poll dialog lookup and the bounded zero-dialog transition grace.
 
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
