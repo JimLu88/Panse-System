@@ -234,6 +234,20 @@ def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
             "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
 
 
+def product_sku_slot_stage(db: Session, payload: dict, *, timeout_s: int = 240) -> dict:
+    """Transiently stage one exact append-only SKU option; never save product."""
+    job = _post(db, "/api/product-sku/slot-stage", dict(payload), timeout=30)
+    if not job.get("ok") or not job.get("job"):
+        return {"ok": False, "error": job.get("error", "Web-Agent未响应"),
+                "platform_product_write": False}
+    final = wait_job(db, job["job"], timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if final.get("status") in ("error", "failed") and not result:
+        return {"ok": False, "error": final.get("error") or "sku_slot_stage_failed",
+                "job_id": job["job"], "platform_product_write": False}
+    return {**result, "job_id": job["job"]}
+
+
 def publish_plan7_existing_super_reduce_drafts(
         db: Session, *, item_ids: list[str], sku_count: int,
         timeout_s: int = 180) -> dict:
