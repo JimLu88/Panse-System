@@ -529,6 +529,32 @@ def audit_plan7_single_discount(
     return result
 
 
+def update_plan7_single_discount_times(
+        db: Session, *, payload: dict, timeout_s: int = 900) -> dict:
+    """Run the exact plan-7 time-update preflight or one-shot commit job."""
+    started = _post(
+        db, "/api/single-item-discount/plan7-time-update",
+        payload, timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {
+            "ok": False,
+            "error": started.get("error", "取数服务(:8500)未响应"),
+        }
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    result["web_agent_job_id"] = job_id
+    if result.get("need_scan"):
+        return {
+            "ok": False,
+            "need_scan": True,
+            "error": result.get("error") or "淘宝登录态已失效",
+            "web_agent_job_id": job_id,
+            "execution_boundary": result.get("execution_boundary"),
+        }
+    return result
+
+
 def withdraw_super_reduce_items(db: Session, item_ids: list[str], *,
                                 phase: str = "stage", timeout_s: int = 900) -> dict:
     """Exact row-scoped withdrawal from the long-running Super Reduce activity."""

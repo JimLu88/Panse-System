@@ -18,7 +18,7 @@ from app.services import campaign_service, web_agent_service
 WORKFLOW_KEY = "campaign:super-reduce:2026-09-01"
 PLAN_ID = 7
 EXPECTED_SCOPE_SHA256 = (
-    "599fa440ba4f7e42aab4dd39423fa807ec85d4964a8df5169303ffb9c0517a18"
+    "38c967e5a08acd378ff6c4778494f450613926a9cf32e7ee51b51a1d81b75d8f"
 )
 EXEMPT_ITEM_ID = "805268708396"
 
@@ -163,8 +163,8 @@ def audit_plan7_single_discount(
                 "execution_boundary": {**boundary, "platform_read": False}}
     scope = _scope_rows(db, plan)
     digest = scope_sha256(scope)
-    if (digest != EXPECTED_SCOPE_SHA256 or len(scope) != 388
-            or len({row["item_id"] for row in scope}) != 54
+    if (digest != EXPECTED_SCOPE_SHA256 or len(scope) != 392
+            or len({row["item_id"] for row in scope}) != 55
             or any(row["item_id"] == EXEMPT_ITEM_ID for row in scope)):
         return {
             "ok": False, "error": "plan7_discount_audit_scope_drift",

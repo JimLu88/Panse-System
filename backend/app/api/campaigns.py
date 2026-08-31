@@ -116,6 +116,20 @@ class CampaignPlan7DiscountAuditIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7DiscountTimeUpdateIn(BaseModel):
+    """Exact CAS input for the approved three-activity time-only update."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    activity_ids: list[str] = Field(min_length=3, max_length=3)
+    expected_start_at: str
+    expected_end_at: str
+    target_start_at: str
+    target_end_at: str
+
+
 class CampaignPlan7DiscountCorrectionIn(BaseModel):
     """Immutable CAS input for the exact four-row plan-7 correction."""
 
@@ -574,6 +588,29 @@ def audit_super_reduce_plan7_discount(
     if not result.get("ok"):
         error = result.get("error")
         code = 404 if error == "workflow_not_found" else 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/update-super-reduce-plan7-discount-times")
+def update_super_reduce_plan7_discount_times(
+        body: CampaignPlan7DiscountTimeUpdateIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """CAS-read and update only the three approved activity time windows once."""
+    from app.services import campaign_plan7_time_update_service
+
+    result = campaign_plan7_time_update_service.update_plan7_single_discount_times(
+        db, request_payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "plan7_discount_time_update_request_not_allowed",
+            "plan7_discount_time_update_plan_identity_drift",
+            "plan7_discount_time_update_scope_drift",
+        }:
+            code = 422
         raise HTTPException(code, detail=result)
     return result
 

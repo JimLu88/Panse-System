@@ -1,5 +1,13 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedStartAt,
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedEndAt,
+    [Parameter(Mandatory = $true)]
+    [string]$TargetStartAt,
+    [Parameter(Mandatory = $true)]
+    [string]$TargetEndAt,
     [string]$SshHost = '15068803006@DS923plus',
     [int]$SshPort = 2222,
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
@@ -13,10 +21,14 @@ if (-not (Test-Path -LiteralPath $ssh)) { throw "找不到 Git SSH: $ssh" }
 $payload = [ordered]@{
     workflow_key = 'campaign:super-reduce:2026-09-01'
     plan_id = 7
-    expected_scope_sha256 = '38c967e5a08acd378ff6c4778494f450613926a9cf32e7ee51b51a1d81b75d8f'
+    activity_ids = @('143780562424', '143936811502', '143939511827')
+    expected_start_at = $ExpectedStartAt
+    expected_end_at = $ExpectedEndAt
+    target_start_at = $TargetStartAt
+    target_end_at = $TargetEndAt
 }
 $raw = $payload | ConvertTo-Json -Compress
-$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_audit_plan7_single_discount'
+$remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_update_plan7_discount_times'
 $previousOutputEncoding = $OutputEncoding
 $nativePreferenceExists = Test-Path Variable:PSNativeCommandUseErrorActionPreference
 if ($nativePreferenceExists) {
@@ -40,7 +52,7 @@ try {
                 if ($detail.error) { $diagnostic = "; error=$($detail.error)" }
             } catch { $diagnostic = '; API 已返回响应 JSON（见上方原文）' }
         }
-        throw "计划7单品立减只读核验失败，退出码 $exitCode$diagnostic"
+        throw "计划7三活动原位改时失败，退出码 $exitCode$diagnostic"
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding

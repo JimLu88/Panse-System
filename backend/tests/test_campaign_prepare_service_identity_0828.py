@@ -34,6 +34,62 @@ from app.models.settings import SystemSetting
 from app.services import settings_service
 from app.services import campaign_discount_correction_service
 from app.services import campaign_discount_identity_recovery_service
+from app.services import campaign_plan7_time_update_service
+
+
+def test_plan7_time_update_endpoint_uses_narrow_service_identity(monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    calls = []
+
+    def fake_update(_db, *, request_payload):
+        calls.append(request_payload)
+        return {
+            "ok": True,
+            "attempt_state": "completed",
+            "execution_boundary": {
+                "platform_write": True,
+                "price_change": False,
+                "sku_change": False,
+            },
+        }
+
+    payload = {
+        "workflow_key": campaign_plan7_time_update_service.WORKFLOW_KEY,
+        "plan_id": 7,
+        "activity_ids": list(campaign_plan7_time_update_service.ACTIVITY_IDS),
+        "expected_start_at": campaign_plan7_time_update_service.EXPECTED_START_AT,
+        "expected_end_at": campaign_plan7_time_update_service.EXPECTED_END_AT,
+        "target_start_at": campaign_plan7_time_update_service.TARGET_START_AT,
+        "target_end_at": campaign_plan7_time_update_service.TARGET_END_AT,
+    }
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setattr(
+        campaign_plan7_time_update_service,
+        "update_plan7_single_discount_times", fake_update)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/update-super-reduce-plan7-discount-times",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        assert response.status_code == 200, response.text
+        assert calls == [payload]
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 TOKEN = "campaign-prepare-only-test-token"
@@ -310,6 +366,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/correct-super-reduce-plan7-discount"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/update-super-reduce-plan7-discount-times"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,

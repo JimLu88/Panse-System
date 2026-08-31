@@ -32,10 +32,10 @@ def _plan() -> CampaignPlan:
 
 def _scope() -> list[dict[str, str]]:
     return [{
-        "item_id": str(100000000000 + (index % 54)),
+        "item_id": str(100000000000 + (index % 55)),
         "sku_id": str(200000000000 + index),
         "expected_deduct": f"{index + 1:.2f}",
-    } for index in range(388)]
+    } for index in range(392)]
 
 
 def test_readonly_audit_persists_complete_rows_and_raw_artifact(
@@ -62,8 +62,8 @@ def test_readonly_audit_persists_complete_rows_and_raw_artifact(
             "web_agent_job_id": "job9",
             "rows": evidence_rows,
             "platform_summary": {
-                "expected_rows": 388,
-                "classifications": {"correct_effective": 388},
+                "expected_rows": 392,
+                "classifications": {"correct_effective": 392},
             },
             "artifact": {
                 "kind": "canonical_visible_readback_json",
@@ -85,7 +85,7 @@ def test_readonly_audit_persists_complete_rows_and_raw_artifact(
     assert result["execution_boundary"]["platform_write"] is False
     saved = db_session.query(CampaignEvidenceSnapshot).one()
     assert saved.web_agent_job_id == "job9"
-    assert len(saved.rows) == 388
+    assert len(saved.rows) == 392
     assert saved.artifact_blob == raw
     assert saved.artifact_sha256 == hashlib.sha256(raw).hexdigest()
 
