@@ -1,5 +1,15 @@
 # Current state — logistics bill product analytics
 
+## 2026-08-31 lift-desk visual checkpoint ready
+
+- The exact unsaved calibration preserved 12 existing options and created one
+  unsaved `130cm 带高台（备用1）` row, making 13 options in the editor preview.
+- No target merchant code was filled and no product save, activity withdrawal
+  or campaign action occurred.  The screenshot is
+  `D:\AI\畔色ERP系统\Web-Agent程序\data\output\_upload_tmp\product_sku_slot_stage_793202812082.png`.
+- The one requested user visual confirmation is now the only gate before
+  implementing final field copy and one-shot save support.
+
 ## 2026-08-31 lift-desk template-15 retry gate
 
 - QianNiu expanded the exact lift-desk SKU option template from one column to
