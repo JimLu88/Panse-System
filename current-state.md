@@ -25,6 +25,10 @@
   `scripts/campaign_stage_lift_desk_sku_slot_topmost_dialog_nas.ps1`.  It also
   proves hidden/covered/nested dialog auditing and refuses two independently
   interactable dialogs.
+- The current superseding entry is
+  `scripts/campaign_stage_lift_desk_sku_slot_semantic_close_nas.ps1`.  It also
+  proves the top-chrome semantic close control is separated from the exact two
+  footer business actions.
 
 ## 2026-08-31 campaign unattended price and SKU-slot foundation
 
