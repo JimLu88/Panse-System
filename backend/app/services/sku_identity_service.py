@@ -89,7 +89,7 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
             current.latest_evidence_source = evidence_source
             current.latest_evidence_sha256 = evidence_sha256
             refreshed += 1
-            disposition = "erp_backfill_merchant_code_corrected"
+            disposition = "backfill_code_corrected"
         elif current.identity_sha256 != digest:
             current.conflict_detected = True
             conflicts += 1

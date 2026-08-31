@@ -104,4 +104,4 @@ def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept(
     assert result["conflicts"] == 0 and result["refreshed"] == 1
     assert row.merchant_code == "PPS2441004051311"
     assert [x.merchant_code for x in history] == ["PPS24410040513", "PPS2441004051311"]
-    assert history[-1].disposition == "erp_backfill_merchant_code_corrected"
+    assert history[-1].disposition == "backfill_code_corrected"
