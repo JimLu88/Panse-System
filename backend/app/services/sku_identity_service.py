@@ -71,7 +71,6 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
             inserted += 1
         elif (current.identity_sha256 != digest
               and current.latest_evidence_source.startswith("erp_database_backfill")
-              and current.merchant_code == current.product_code
               and meaning["merchant_code"] == meaning["sku_code"]
               and all(getattr(current, field) == meaning[field] for field in (
                   "taobao_item_id", "taobao_sku_id", "sku_spec", "sku_code",
@@ -88,6 +87,7 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
             current.latest_daily_price = raw.get("daily_price")
             current.latest_evidence_source = evidence_source
             current.latest_evidence_sha256 = evidence_sha256
+            current.conflict_detected = False
             refreshed += 1
             disposition = "backfill_code_corrected"
         elif current.identity_sha256 != digest:

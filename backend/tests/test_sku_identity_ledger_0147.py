@@ -88,7 +88,7 @@ def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept(
     db = _db()
     old = {
         "taobao_item_id": "793202812082", "taobao_sku_id": "6241447059625",
-        "merchant_code": "PPS24410040513", "sku_spec": "130cm 带高台",
+        "merchant_code": "legacy-import-code", "sku_spec": "130cm 带高台",
         "sku_code": "PPS2441004051311", "product_code": "PPS24410040513",
     }
     sku_identity_service.observe(
@@ -103,5 +103,5 @@ def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept(
         SkuIdentityObservation.id)).scalars().all()
     assert result["conflicts"] == 0 and result["refreshed"] == 1
     assert row.merchant_code == "PPS2441004051311"
-    assert [x.merchant_code for x in history] == ["PPS24410040513", "PPS2441004051311"]
+    assert [x.merchant_code for x in history] == ["legacy-import-code", "PPS2441004051311"]
     assert history[-1].disposition == "backfill_code_corrected"
