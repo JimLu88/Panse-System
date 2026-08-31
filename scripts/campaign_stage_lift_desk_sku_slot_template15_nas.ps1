@@ -6,9 +6,17 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$agentSource = (Resolve-Path -LiteralPath (
-    Join-Path $PSScriptRoot '..\..\..\Web-Agent程序\app\engine\uploader.py'
-) -ErrorAction Stop).Path
+$agentCandidates = @(
+    (Join-Path $PSScriptRoot '..\..\Web-Agent程序\app\engine\uploader.py'),
+    (Join-Path $PSScriptRoot '..\..\..\Web-Agent程序\app\engine\uploader.py')
+)
+$agentSource = $agentCandidates |
+    Where-Object { Test-Path -LiteralPath $_ } |
+    Select-Object -First 1
+if (-not $agentSource) {
+    throw '找不到畔色 ERP 项目内的主力 Web-Agent 源码'
+}
+$agentSource = (Resolve-Path -LiteralPath $agentSource -ErrorAction Stop).Path
 $sourceText = Get-Content -LiteralPath $agentSource -Raw
 foreach ($marker in @(
     'sku_template_duplicate_header',
