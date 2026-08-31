@@ -321,11 +321,17 @@ def _terminal_exact(result: dict) -> bool:
     terminal = result.get("official_terminal") or result.get("final_import") or {}
     boundary = result.get("execution_boundary") or {}
     trigger = result.get("trigger") or {}
+    submit = result.get("platform_submit") or {}
+    validation = result.get("validation") or {}
     return (
         result.get("ok") is True
         and result.get("submitted") is True
         and trigger.get("activity_id") == TARGET_ACTIVITY_ID
         and trigger.get("action") == "添加商品"
+        and submit.get("attempted") is True
+        and submit.get("control") == "确认修改"
+        and validation.get("ok") == 4
+        and validation.get("failed") == 0
         and boundary.get("platform_write") is True
         and terminal.get("state") == "complete"
         and terminal.get("ok") == 4
