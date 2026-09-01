@@ -965,33 +965,6 @@ def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
             excluded_custom_placeholder_sku_pairs(db, plan)}
 
 
-def _official_custom_code_pairs(
-        records: list[dict], *, item_ids: set[str], selected_sku_ids: set[str],
-) -> set[tuple[str, str]]:
-    """Recognize extra official rows whose SKU merchant code is explicitly custom.
-
-    Some legacy QianNiu rows use a bare SKU merchant code such as ``97`` and
-    have no corresponding PricingSkuPromo mapping.  The shared SKU convention
-    still classifies suffixes 90-99 as custom.  This rule applies only to extra
-    rows inside the exact requested item scope and never overrides an explicitly
-    selected custom SKU.
-    """
-    from app.services import sku_utils
-
-    pairs = set()
-    for record in records:
-        item_id = str(record.get("item_id") or "").strip()
-        sku_id = str(record.get("sku_id") or "").strip()
-        merchant_code = str(record.get("merchant_code") or "").strip()
-        if (
-            item_id in item_ids and sku_id.isdigit()
-            and sku_id not in selected_sku_ids
-            and sku_utils.is_custom_sku_code(merchant_code)
-        ):
-            pairs.add((item_id, sku_id))
-    return pairs
-
-
 def _campaign_item_exclusions_for_plan(
         db: Session, plan, mapped_pairs: list[tuple], *,
         include_candidate_unavailable: bool = True,
@@ -4098,7 +4071,8 @@ def _official_product_scope_guard(
 
 def _refresh_official_product_sku_identity(
         db: Session, pending_rows: list[dict], *, plan=None,
-        export_recovery: dict | None = None) -> dict:
+        export_recovery: dict | None = None,
+        additional_excluded_pairs: set[tuple[str, str]] | None = None) -> dict:
     """Read the official current product export and require exact SKU sets.
 
     This is the last read-only guard before the one-shot write claim.  It
@@ -4144,9 +4118,7 @@ def _refresh_official_product_sku_identity(
     excluded_pairs = set()
     if plan is not None:
         excluded_pairs = excluded_custom_placeholder_sku_pairs(db, plan)
-        excluded_pairs.update(_official_custom_code_pairs(
-            records, item_ids=set(item_ids),
-            selected_sku_ids=custom_placeholder_sku_allowlist(plan)))
+    excluded_pairs.update(additional_excluded_pairs or set())
     scope_guard = _official_product_scope_guard(
         pending_rows, records, excluded_pairs)
     if not scope_guard["ok"]:
@@ -4924,6 +4896,10 @@ def push_signup(
             or prepared_official_product_identity.get("checked_items") != 6
             or prepared_official_product_identity.get("checked_skus")
             != campaign_plan8_signup_recovery_service.EXPECTED_PENDING_ROW_COUNT
+            or prepared_official_product_identity.get("official_skus")
+            != campaign_plan8_signup_recovery_service.EXPECTED_OFFICIAL_SKU_COUNT
+            or prepared_official_product_identity.get("excluded_custom_skus")
+            != campaign_plan8_signup_recovery_service.EXPECTED_EXCLUDED_CUSTOM_SKU_COUNT
         ):
             return {
                 "ok": False,

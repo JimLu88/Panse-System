@@ -206,18 +206,6 @@ def test_official_product_scope_rejects_target_merchant_code_drift():
     }]
 
 
-def test_official_custom_code_pairs_recognize_bare_97_only_in_exact_scope():
-    records = [
-        {"item_id": "1001", "sku_id": "2001", "merchant_code": "97"},
-        {"item_id": "1001", "sku_id": "2002", "merchant_code": "89"},
-        {"item_id": "9009", "sku_id": "2003", "merchant_code": "99"},
-        {"item_id": "1001", "sku_id": "2004", "merchant_code": "98"},
-    ]
-    result = campaign_service._official_custom_code_pairs(
-        records, item_ids={"1001"}, selected_sku_ids={"2004"})
-    assert result == {("1001", "2001")}
-
-
 def _patch_read_gates(monkeypatch, *, current: dict | None = None):
     rows = _signup_rows()
     monkeypatch.setattr(
@@ -252,6 +240,7 @@ def _patch_read_gates(monkeypatch, *, current: dict | None = None):
         campaign_service, "_refresh_official_product_sku_identity",
         lambda *_a, **_k: {
             "ok": True, "checked_items": 6, "checked_skus": 52,
+            "official_skus": 78, "excluded_custom_skus": 26,
             "ledger_refresh": {"conflicts": []}, "ledger_gate": {"ok": True},
         })
 
@@ -260,7 +249,17 @@ def test_recovery_route_has_narrow_machine_identity():
     assert dependencies.CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH == (
         "/api/campaigns/recover-super88-plan8-signup")
     assert (dependencies.CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH
-            in dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
+             in dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
+
+
+def test_plan8_exact_official_custom_exclusions_are_frozen():
+    assert len(recovery.EXPECTED_OFFICIAL_EXCLUDED_CUSTOM_PAIRS) == 26
+    assert {
+        ("1036279566778", "6234601898881"),
+        ("1036279566778", "6234601898883"),
+        ("1036279566778", "6234601898885"),
+        ("1036279566778", "6234601898887"),
+    } <= recovery.EXPECTED_OFFICIAL_EXCLUDED_CUSTOM_PAIRS
 
 
 def test_plan8_signup_recovery_runs_once_and_replay_never_refreshes_or_writes(

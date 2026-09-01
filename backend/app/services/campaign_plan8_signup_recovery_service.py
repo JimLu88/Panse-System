@@ -63,6 +63,35 @@ EXPECTED_OFFICIAL_RECORD_ITEM_IDS = (
 )
 EXPECTED_FULL_ROW_COUNT = 53
 EXPECTED_PENDING_ROW_COUNT = 52
+EXPECTED_OFFICIAL_SKU_COUNT = 78
+EXPECTED_EXCLUDED_CUSTOM_SKU_COUNT = 26
+EXPECTED_OFFICIAL_EXCLUDED_CUSTOM_PAIRS = {
+    ("1036279566778", sku_id) for sku_id in {
+        "6234601898868", "6234601898869", "6234601898870", "6234601898871",
+        "6234601898881", "6234601898883", "6234601898885", "6234601898887",
+    }
+} | {
+    ("1036312802226", sku_id) for sku_id in {
+        "6068820148476", "6218230362901", "6218230362902",
+    }
+} | {
+    ("1074244132390", sku_id) for sku_id in {
+        "6287431318354", "6287431318356", "6287431318358", "6287431318360",
+        "6287431318361", "6287431318362", "6287431318363", "6287431318364",
+    }
+} | {
+    ("837902729785", sku_id) for sku_id in {
+        "6004764276985", "6076746217857",
+    }
+} | {
+    ("841201084787", sku_id) for sku_id in {
+        "6047448121203", "6047448121205", "6240794599103",
+    }
+} | {
+    ("917179577721", sku_id) for sku_id in {
+        "6075878504283", "6107353122531",
+    }
+}
 EXPECTED_OFFICIAL_PRODUCT_EXPORT_RECOVERY = {
     "id": "329309563",
     "sourceFileName": "2215699812811_edit_custom_1788289509612",
@@ -463,11 +492,15 @@ def recover_plan8_signup(
 
     official_identity = campaign_service._refresh_official_product_sku_identity(
         db, pending_rows, plan=plan,
-        export_recovery=EXPECTED_OFFICIAL_PRODUCT_EXPORT_RECOVERY)
+        export_recovery=EXPECTED_OFFICIAL_PRODUCT_EXPORT_RECOVERY,
+        additional_excluded_pairs=EXPECTED_OFFICIAL_EXCLUDED_CUSTOM_PAIRS)
     if (
         not official_identity.get("ok")
         or official_identity.get("checked_items") != 6
         or official_identity.get("checked_skus") != EXPECTED_PENDING_ROW_COUNT
+        or official_identity.get("official_skus") != EXPECTED_OFFICIAL_SKU_COUNT
+        or official_identity.get("excluded_custom_skus")
+        != EXPECTED_EXCLUDED_CUSTOM_SKU_COUNT
     ):
         return _fail(
             "plan8_signup_recovery_official_sku_identity_blocked",
