@@ -650,6 +650,27 @@ def correct_plan7_small_promo(
     return result
 
 
+def correct_five_price(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """Run one exact phase of the reviewed five-item correction."""
+    started = _post(
+        db, "/api/campaign/five-price-correction", payload, timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {"ok": False,
+                "error": started.get("error", "取数服务(:8500)未响应"),
+                "submitted": None}
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    result["web_agent_job_id"] = job_id
+    if result.get("need_scan"):
+        return {"ok": False, "need_scan": True,
+                "error": result.get("error") or "淘宝登录态已失效",
+                "submitted": False, "web_agent_job_id": job_id,
+                "execution_boundary": result.get("execution_boundary")}
+    return result
+
+
 def withdraw_super_reduce_items(db: Session, item_ids: list[str], *,
                                 phase: str = "stage", timeout_s: int = 900) -> dict:
     """Exact row-scoped withdrawal from the long-running Super Reduce activity."""

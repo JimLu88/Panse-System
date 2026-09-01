@@ -257,6 +257,18 @@ class CampaignWarehouseProductPriceCorrectionIn(BaseModel):
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignFivePriceCorrectionIn(BaseModel):
+    """Exact one-shot phase for the reviewed five-item correction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    phase: str = Field(pattern=r"^(single_discount|super_reduce)$")
+    manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_export_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -941,6 +953,28 @@ def correct_warehouse_product_sku_price(
             "warehouse_product_price_plan_identity_drift",
             "warehouse_product_price_readback_drift",
             "warehouse_product_price_readback_boundary_violation",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/correct-five-price-issues")
+def correct_five_price_issues(
+        body: CampaignFivePriceCorrectionIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Run one no-retry exact phase; never touch the zero-sales item."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.execute(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "five_price_request_not_allowed",
+            "five_price_plan_identity_drift",
         }:
             code = 422
         raise HTTPException(code, detail=result)
