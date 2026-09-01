@@ -211,6 +211,23 @@ def test_terminal_no_sales_is_absent_from_later_rows_holds_targets_and_recon(
     }]) == []
 
 
+def test_explicit_terminal_no_sales_scope_never_builds_fallback_discount(
+        db_session):
+    plan = _plan(db_session)
+    item_id = "991880813"
+    _sku(
+        db_session, product_code="PPSNOSALES", sku_code="PPSNOSALES11",
+        item_id=item_id, sku_id="881880813",
+    )
+
+    rows, stats = campaign.build_discount_rows(
+        db_session, plan, no_sales_items={item_id})
+
+    assert rows == []
+    assert stats["excluded_terminal_no_sales_items"] == [item_id]
+    assert no_sales_service.get_no_sales(db_session) == set()
+
+
 def test_local_zero_sales_observation_does_not_write_terminal_registry(db_session):
     _sku(
         db_session, product_code="PPSLOCAL", sku_code="PPSLOCAL11",

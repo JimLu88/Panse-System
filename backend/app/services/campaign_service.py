@@ -1550,8 +1550,10 @@ def build_discount_rows(
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
     live_activity_prices = current_activity_prices_for_plan(plan)
-    nosales = set(no_sales_items or set())
-    terminal_no_sales = no_sales_service.get_no_sales(db)
+    terminal_no_sales = no_sales_service.get_no_sales(db) | {
+        str(item_id or "").strip() for item_id in (no_sales_items or set())
+        if str(item_id or "").strip()
+    }
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
     price_analysis = price_resolution_analysis(db, plan)
@@ -1656,17 +1658,7 @@ def build_discount_rows(
                     "daily_price": float(daily),
                     "activity_price": float(base),
                 })
-            if item_id in nosales:
-                official = Decimal("0")
-                if _official_applies(item_id, official_scope):
-                    low_price_exact = base < Decimal("100")
-                    official = official_deduction(
-                        base, lev, ceil_on and not low_price_exact)
-                    if low_price_exact:
-                        stats["official_low_price_exact"] += 1
-                core = _nosales_discount_row(
-                    s, p, stats, tier, official=official, base_price=base)
-            elif use_resolution:
+            if use_resolution:
                 if base < Decimal("100"):
                     stats["official_low_price_exact"] += 1
                 deduct = _d(resolution.get("single_discount")) or Decimal("0")

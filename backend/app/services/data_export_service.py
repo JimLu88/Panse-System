@@ -1483,11 +1483,11 @@ def build_promo_signup_daily_upload_xlsx(db: Session):
     """★88VIP大促·【日常价法 / B法】批量报名表 (2026-07-16 用户拍板: 88VIP 会叠单品立减)。
     与 build_promo_signup_upload_xlsx 用同一【大促报名】模板 promo_signup_sku.xlsx(商品ID/SKUID/活动价/
     库存/发货时间/官方立减折扣/官方立减金额), 走同一 promo_signup 页导入; ★唯一区别: 活动价填【日常价】
-    (真SKU) / 报名价A(占位), 【绝不填报名价A给真SKU】。
+    (真SKU)；该旧导出入口无计划级精确白名单，定制/占位SKU默认排除。
     根因: 88VIP大促活动内置 12% 让利, 且我们已挂 big档单品立减(7-17 20:00~7-19)叠加。若真SKU活动价填
     报名价A(=大促到手÷0.88), 到手 = A×0.88 − big_deduct = 大促到手 − big_deduct = 砸穿(2026-07-13 事故
     重演)。填日常价: 到手 = 日常价×0.88 − big_deduct = 大促到手 ✓。F/G(官方立减折扣/金额)留空, 平台按
-    活动内置 12% 自动算。占位/半套商品同 collect_signup_rows 剔除。返回 (BytesIO, stats)。"""
+    活动内置 12% 自动算。报名行与 campaign_service.build_signup_rows 同源。返回 (BytesIO, stats)。"""
     # This legacy entry has no CampaignPlan marker. Unnamed custom/placeholder
     # SKU IDs are therefore omitted by the governed builder below.
     import io as _io
