@@ -1174,6 +1174,21 @@ def refresh_alipay_balances(db: Session) -> list[dict]:
                 "error": "余利宝净转入估算为负，保留原余额并等待人工核对",
                 "estimate": estimate.get("balance"),
             })
+        elif estimate.get("reason") == "missing_opening_checkpoint":
+            out.append({
+                "account": yulibao_service.YULIBAO_ACCOUNT_NAME,
+                "error": "余利宝缺少可靠期初余额，已保留原余额，禁止把残缺流水从零累计",
+                "reason": "missing_opening_checkpoint",
+                "source_count": estimate.get("count"),
+                "source_from": str(estimate.get("earliest_date")),
+                "source_to": str(estimate.get("as_of_date")),
+            })
+        elif estimate.get("reason") != "no_yulibao_flows":
+            out.append({
+                "account": yulibao_service.YULIBAO_ACCOUNT_NAME,
+                "error": "余利宝余额估算失败，已保留原余额",
+                "reason": estimate.get("reason") or "unknown",
+            })
     db.commit()
     return out
 

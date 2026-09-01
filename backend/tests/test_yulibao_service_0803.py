@@ -28,6 +28,12 @@ def test_estimate_yulibao_net_asset_and_ignore_yuebao(db_session):
     _flow(db_session, amount="3000", no="Y3", remark="余利宝赎回，转出到支付宝")
     _flow(db_session, amount="1.23", no="Y4", remark="余利宝收益发放")
     _flow(db_session, amount="-999", no="OTHER", remark="余额宝-基金申购，支付宝转入")
+    yulibao_service.set_manual_checkpoint(
+        db_session,
+        balance=Decimal("0"),
+        as_of_date=datetime(2026, 7, 30).date(),
+        note="已确认此前未启用余利宝",
+    )
 
     result = yulibao_service.estimate_from_flows(db_session)
 
@@ -42,6 +48,11 @@ def test_refresh_adds_standard_and_yulibao_without_double_count(monkeypatch, db_
     _flow(db_session, amount="-7297.87", no="Y1", remark="余利宝-基金申购，支付宝转入",
           ts=datetime(2026, 7, 31, 22, 0))
     _flow(db_session, amount="-8795.92", no="Y2", remark="余利宝-基金申购，支付宝转入")
+    yulibao_service.set_manual_checkpoint(
+        db_session,
+        balance=Decimal("0"),
+        as_of_date=datetime(2026, 7, 30).date(),
+    )
 
     monkeypatch.setattr(
         agent_ingest_service.web_agent_service,
@@ -81,6 +92,11 @@ def test_refresh_adds_standard_and_yulibao_without_double_count(monkeypatch, db_
 
 def test_negative_estimate_does_not_overwrite_existing_balance(monkeypatch, db_session):
     _flow(db_session, amount="100", no="Y1", remark="余利宝赎回，转出到支付宝")
+    yulibao_service.set_manual_checkpoint(
+        db_session,
+        balance=Decimal("0"),
+        as_of_date=datetime(2026, 7, 31).date(),
+    )
     db_session.add(AccountBalance(
         account_name="支付宝-企业账号-余利宝",
         period_year=2026,
@@ -108,6 +124,46 @@ def test_negative_estimate_does_not_overwrite_existing_balance(monkeypatch, db_s
 
     assert stored.closing_balance == Decimal("50")
     assert any("估算为负" in row.get("error", "") for row in result)
+
+
+def test_missing_checkpoint_does_not_publish_partial_balance(monkeypatch, db_session):
+    _flow(db_session, amount="-80", no="Y1", remark="余利宝-基金申购，支付宝转入")
+    db_session.add(AccountBalance(
+        account_name="支付宝-企业账号-余利宝",
+        period_year=2026,
+        period_month=8,
+        opening_balance=Decimal("0"),
+        closing_balance=Decimal("500"),
+    ))
+    db_session.commit()
+
+    monkeypatch.setattr(
+        agent_ingest_service.web_agent_service,
+        "alipay_accounts",
+        lambda db: [{"id": "enterprise", "name": "企业号"}],
+    )
+    monkeypatch.setattr(
+        agent_ingest_service.web_agent_service,
+        "alipay_balance",
+        lambda db, account_id: {"ok": False, "msg": "offline"},
+    )
+
+    result = agent_ingest_service.refresh_alipay_balances(db_session)
+    estimate = yulibao_service.estimate_from_flows(db_session)
+    stored = db_session.query(AccountBalance).filter_by(
+        account_name="支付宝-企业账号-余利宝"
+    ).one()
+
+    assert estimate["ok"] is False
+    assert estimate["reason"] == "missing_opening_checkpoint"
+    assert estimate["balance"] is None
+    assert estimate["count"] == 1
+    assert stored.closing_balance == Decimal("500")
+    assert any(
+        row.get("reason") == "missing_opening_checkpoint"
+        and "保留原余额" in row.get("error", "")
+        for row in result
+    )
 
 
 def test_manual_checkpoint_only_adds_later_flows(db_session):

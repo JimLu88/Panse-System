@@ -178,9 +178,34 @@ def estimate_from_flows(db: Session, *, source_account: str = "企业号") -> di
             "as_of_date": None,
         }
 
-    total = Decimal(str(checkpoint["balance"])) if checkpoint else Decimal("0")
+    # A funds statement can begin in the middle of an account's lifetime.  In
+    # that case summing the visible YuLiBao rows from zero yields a plausible
+    # but incomplete asset balance.  Never publish that partial number as a
+    # successful estimate: a confirmed end-of-day checkpoint is the boundary
+    # that proves the opening balance is complete.
+    if not checkpoint:
+        dated_rows = [flow for flow in rows if flow.transaction_time is not None]
+        latest_date = (
+            max(flow.transaction_time.date() for flow in dated_rows)
+            if dated_rows else None
+        )
+        earliest_date = (
+            min(flow.transaction_time.date() for flow in dated_rows)
+            if dated_rows else None
+        )
+        return {
+            "ok": False,
+            "source_account": source_account,
+            "reason": "missing_opening_checkpoint",
+            "balance": None,
+            "count": len(rows),
+            "earliest_date": earliest_date,
+            "as_of_date": latest_date,
+        }
+
+    total = Decimal(str(checkpoint["balance"]))
     categories: dict[str, int] = {}
-    latest_date: date | None = checkpoint["as_of_date"] if checkpoint else None
+    latest_date: date | None = checkpoint["as_of_date"]
     for flow in rows:
         delta, category = _contribution(flow)
         total += delta
@@ -257,8 +282,6 @@ def upsert_estimated_balance(
         + (
             f"以人工确认的{estimate['checkpoint']['as_of_date']}余额"
             f"{estimate['checkpoint']['balance']}元为基准，"
-            if estimate.get("checkpoint") else
-            "按企业号资金账单从零累计，"
         )
         + "叠加之后的余利宝申购/赎回/收益净额；"
         f"本段共{estimate['count']}笔，统计至{as_of}；"
