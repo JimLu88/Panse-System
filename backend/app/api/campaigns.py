@@ -106,6 +106,22 @@ class CampaignPlan8ExecuteIn(BaseModel):
     expected_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan8SignupRecoveryIn(BaseModel):
+    """Exact CAS input for the signup-only recovery after partial execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    expected_original_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_original_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_full_signup_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_pending_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
     """Exact read-only delayed verification for the submitted plan-7 attempt."""
 
@@ -725,6 +741,37 @@ def execute_super88_plan8(
         if error in {
                 "plan8_execute_request_not_allowed",
                 "plan8_identity_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-signup")
+def recover_super88_plan8_signup(
+        body: CampaignPlan8SignupRecoveryIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover only the six pending plan-8 items after discount completion."""
+    from app.services import campaign_plan8_signup_recovery_service
+
+    result = campaign_plan8_signup_recovery_service.recover_plan8_signup(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        expected_original_attempt_id=body.expected_original_attempt_id,
+        expected_original_scope_sha256=body.expected_original_scope_sha256,
+        expected_full_signup_scope_sha256=body.expected_full_signup_scope_sha256,
+        expected_pending_scope_sha256=body.expected_pending_scope_sha256,
+        expected_policy_sha256=body.expected_policy_sha256,
+        expected_candidate_sha256=body.expected_candidate_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "plan8_signup_recovery_request_not_allowed",
+                "plan8_signup_recovery_identity_not_allowed"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result

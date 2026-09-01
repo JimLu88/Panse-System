@@ -4701,6 +4701,8 @@ def push_signup(
         reuse_fresh_plan_evidence: bool = False,
         exact_item_scope: Optional[set[str]] = None,
         allow_terminal_no_sales_fallback: bool = True,
+        prepared_current_activity: Optional[dict] = None,
+        prepared_official_product_identity: Optional[dict] = None,
 ) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     只允许活动自动化程序调用；失败记录事实并停在 alarmed，绝不自动改价或重试。"""
@@ -4717,8 +4719,11 @@ def push_signup(
         })
     allowed_source = execution_source in {
         "campaign_automation", "campaign_super_reduce_plan7_resume",
+        "campaign_super88_plan8_signup_recovery",
     }
     resume_source = execution_source == "campaign_super_reduce_plan7_resume"
+    plan8_recovery_source = (
+        execution_source == "campaign_super88_plan8_signup_recovery")
     if not allowed_source:
         return {
             "ok": False,
@@ -4745,6 +4750,40 @@ def push_signup(
             "automatic_retry": False,
             "ai_may_adjust_or_resubmit": False,
         }
+    if plan8_recovery_source:
+        from app.services import campaign_plan8_signup_recovery_service
+
+        prepared_ok, prepared_detail = (
+            campaign_plan8_signup_recovery_service
+            .validate_prepared_current_activity(prepared_current_activity or {})
+        )
+        if (
+            getattr(plan, "status", None) != "resume_executing"
+            or getattr(plan, "id", None) != 8
+            or getattr(plan, "workflow_key", None)
+            != campaign_plan8_signup_recovery_service.WORKFLOW_KEY
+            or getattr(plan, "campaign_type", None) != "big88"
+            or not reuse_fresh_plan_evidence
+            or exact_item_scope
+            != campaign_plan8_signup_recovery_service.EXPECTED_PENDING_ITEM_IDS
+            or policy.get("_sha256")
+            != campaign_plan8_signup_recovery_service.EXPECTED_POLICY_SHA256
+            or not prepared_ok
+            or not isinstance(prepared_official_product_identity, dict)
+            or not prepared_official_product_identity.get("ok")
+            or prepared_official_product_identity.get("checked_items") != 6
+            or prepared_official_product_identity.get("checked_skus")
+            != campaign_plan8_signup_recovery_service.EXPECTED_PENDING_ROW_COUNT
+        ):
+            return {
+                "ok": False,
+                "step": "plan8_signup_recovery_policy_guard",
+                "error": "计划8只补报名恢复上下文不完整，拒绝进入平台写入",
+                "prepared_current_activity": prepared_detail,
+                "requires_user_decision": True,
+                "automatic_retry": False,
+                "ai_may_adjust_or_resubmit": False,
+            }
     if getattr(plan, "status", None) == "alarmed":
         return {
             "ok": False,
@@ -4756,9 +4795,9 @@ def push_signup(
         }
 
     # Ordinary automation performs a current-state export before final
-    # preflight.  The one approved plan-7 recovery instead reuses the already
-    # persisted, plan-scoped fresh evidence.  Its wrapper has an exact row hash,
-    # evidence-age and CAS guard; no second pre-submit platform read is allowed.
+    # preflight. Plan 7 reuses stored plan-scoped evidence; the plan-8 signup
+    # recovery reuses the exact current export returned by its read-first
+    # wrapper. Neither recovery launches a second pre-submit campaign export.
     if resume_source:
         current = {
             "ok": True,
@@ -4770,6 +4809,8 @@ def push_signup(
             },
             "export_evidence": None,
         }
+    elif plan8_recovery_source:
+        current = prepared_current_activity
     else:
         current = refresh_floor_evidence_from_current_activity(db, plan)
         if not current.get("ok"):
@@ -5049,7 +5090,11 @@ def push_signup(
             "stats": stats,
         })
 
-    official_identity = _refresh_official_product_sku_identity(db, pending)
+    official_identity = (
+        prepared_official_product_identity
+        if plan8_recovery_source
+        else _refresh_official_product_sku_identity(db, pending)
+    )
     stats["official_product_sku_identity"] = official_identity
     if not official_identity.get("ok"):
         retryable = campaign_execution_service.failure_is_retryable_prewrite(
