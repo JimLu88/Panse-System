@@ -332,6 +332,65 @@ def mark_lift_desk_draft_save_result(db: Session, *, result: dict) -> dict:
     }
 
 
+def mark_lift_desk_draft_readback_result(db: Session, *, result: dict) -> dict:
+    """Close an unknown save result using a later, strictly read-only proof."""
+    row = db.execute(select(SkuPhysicalSlotProposal).where(
+        SkuPhysicalSlotProposal.target_merchant_code == LIFT_DESK_PROPOSAL[
+            "target_merchant_code"]
+    ).with_for_update()).scalar_one()
+    readback = dict(result.get("readback") or {})
+    verified = bool(
+        result.get("ok") and result.get("draft_saved")
+        and result.get("listed") is False
+        and result.get("campaign_status") == "not_submitted"
+        and result.get("read_only") is True
+        and result.get("platform_product_write") is False
+        and readback.get("ok")
+        and readback.get("item_id") == LIFT_DESK_PROPOSAL["taobao_item_id"]
+        and readback.get("target_merchant_code")
+        == LIFT_DESK_PROPOSAL["target_merchant_code"]
+        and readback.get("option_count") == 13
+        and readback.get("sku_row_count") == 13
+        and readback.get("diff") == []
+        and readback.get("rendered_missing") == []
+        and readback.get("input_value_missing") == []
+        and readback.get("invalid_rows") == []
+    )
+    if verified:
+        row.lifecycle_state = "saved_draft_verified"
+        row.product_create_status = "created_in_platform_draft"
+        row.product_save_status = "saved_draft_verified"
+        row.campaign_signup_status = "not_submitted"
+        row.evidence_source = "web_agent_platform_draft_readback"
+    proposed = dict(row.proposed_fields or {})
+    proposed["draft_readback"] = {
+        "verified": verified,
+        "read_only": result.get("read_only") is True,
+        "platform_product_write": result.get("platform_product_write") is True,
+        "submission_action": result.get("submission_action") is True,
+        "error": _clean(result.get("error")),
+        "job_id": _clean(result.get("job_id")),
+        "readback": readback,
+    }
+    row.proposed_fields = proposed
+    row.evidence_sha256 = _hash({
+        "proposal_id": row.id,
+        "state": row.lifecycle_state,
+        "draft_save": proposed.get("draft_save"),
+        "draft_readback": proposed["draft_readback"],
+        "campaign_signup_status": row.campaign_signup_status,
+    })
+    db.flush()
+    return {
+        "id": row.id, "verified": verified, "state": row.lifecycle_state,
+        "product_create_status": row.product_create_status,
+        "product_save_status": row.product_save_status,
+        "campaign_signup_status": row.campaign_signup_status,
+        "automatic_retry_allowed": False,
+        "evidence_sha256": row.evidence_sha256,
+    }
+
+
 def query(db: Session, *, item_id: str | None = None, merchant_code: str | None = None) -> dict:
     stmt = select(SkuIdentity).order_by(SkuIdentity.taobao_item_id, SkuIdentity.taobao_sku_id)
     if item_id:
