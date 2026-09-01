@@ -19,6 +19,9 @@ def _verified_result(*, platform_write=True):
             "option_count": 13,
             "sku_row_count": 13,
             "diff": [],
+            "rendered_missing": [],
+            "input_value_missing": [],
+            "invalid_rows": [],
         },
     }
 

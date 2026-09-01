@@ -272,17 +272,34 @@ def mark_lift_desk_stage_failed(db: Session, *, result: dict) -> dict:
             "failure": failure, "evidence_sha256": row.evidence_sha256}
 
 
-def mark_lift_desk_draft_save_result(db: Session, *, result: dict) -> dict:
+def mark_lift_desk_draft_save_result(
+        db: Session, *, result: dict,
+        required_recovery_identity: dict | None = None) -> dict:
     """Persist verified draft-save, pre-write failure, or no-retry unknown state."""
     row = db.execute(select(SkuPhysicalSlotProposal).where(
         SkuPhysicalSlotProposal.target_merchant_code == LIFT_DESK_PROPOSAL[
             "target_merchant_code"]
     ).with_for_update()).scalar_one()
     readback = dict(result.get("readback") or {})
-    verified = bool(result.get("ok") and result.get("draft_saved")
-                    and result.get("listed") is False
-                    and result.get("campaign_status") == "not_submitted"
-                    and readback.get("ok"))
+    recovery = dict(result.get("draft_recovery") or {})
+    recovery_exact = (required_recovery_identity is None or all(
+        recovery.get(key) == value
+        for key, value in required_recovery_identity.items()))
+    verified = bool(
+        result.get("ok") and result.get("draft_saved")
+        and result.get("listed") is False
+        and result.get("campaign_status") == "not_submitted"
+        and readback.get("ok")
+        and readback.get("item_id") == LIFT_DESK_PROPOSAL["taobao_item_id"]
+        and readback.get("target_merchant_code")
+        == LIFT_DESK_PROPOSAL["target_merchant_code"]
+        and readback.get("option_count") == 13
+        and readback.get("sku_row_count") == 13
+        and readback.get("diff") == []
+        and readback.get("rendered_missing") == []
+        and readback.get("input_value_missing") == []
+        and readback.get("invalid_rows") == []
+        and recovery_exact)
     platform_write = result.get("platform_product_write") is True
     no_retry = result.get("automatic_retry_allowed") is False
     if verified:
@@ -312,6 +329,8 @@ def mark_lift_desk_draft_save_result(db: Session, *, result: dict) -> dict:
         "error": _clean(result.get("error")),
         "job_id": _clean(result.get("job_id")),
         "readback": readback,
+        "draft_recovery": recovery,
+        "required_recovery_identity": required_recovery_identity,
         "claim_path": _clean(result.get("claim_path")),
     }
     row.proposed_fields = proposed

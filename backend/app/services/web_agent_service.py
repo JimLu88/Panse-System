@@ -281,6 +281,22 @@ def product_sku_slot_draft_readback(
     return {**result, "job_id": job["job"]}
 
 
+def product_sku_slot_draft_recover(
+        db: Session, payload: dict, *, timeout_s: int = 600) -> dict:
+    """Repair the one exact existing platform draft without publishing it."""
+    job = _post(db, "/api/product-sku/slot-draft-recover", dict(payload), timeout=30)
+    if not job.get("ok") or not job.get("job"):
+        return {"ok": False, "error": job.get("error", "Web-Agent未响应"),
+                "platform_product_write": False}
+    final = wait_job(db, job["job"], timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if final.get("status") in ("error", "failed") and not result:
+        return {"ok": False,
+                "error": final.get("error") or "sku_slot_draft_recovery_failed",
+                "job_id": job["job"], "platform_product_write": False}
+    return {**result, "job_id": job["job"]}
+
+
 def read_warehouse_product_price(
         db: Session, *, target: bool, timeout_s: int = 300) -> dict:
     """Read the exact in-stock product row and 14-SKU editor manifest."""
