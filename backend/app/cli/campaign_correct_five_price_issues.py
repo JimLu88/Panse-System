@@ -1,37 +1,62 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
-from urllib import request
+from urllib import error, request
 
+from app.database import SessionLocal
+from app.dependencies import CAMPAIGN_PREPARE_SERVICE_SETTING
 from app.services import campaign_five_price_correction_service as service
+from app.services import settings_service
+
+
+_URL = "http://127.0.0.1:8000/api/campaigns/correct-five-price-issues"
+
+
+def _service_token() -> str:
+    with SessionLocal() as db:
+        token = settings_service.get(
+            db, CAMPAIGN_PREPARE_SERVICE_SETTING, env_fallback=False)
+    if not token:
+        raise RuntimeError("活动准备服务身份未配置")
+    return token
+
+
+def call_api(*, token: str, phase: str) -> tuple[int, bytes]:
+    req = request.Request(
+        _URL, data=json.dumps(service.request_payload(phase),
+                              ensure_ascii=False,
+                              separators=(",", ":")).encode("utf-8"),
+        method="POST", headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "X-API-Key": token,
+            "User-Agent": "panse-five-price-correction-cli/1",
+        })
+    try:
+        with request.build_opener(request.ProxyHandler({})).open(
+                req, timeout=2500) as response:
+            return int(response.status), response.read()
+    except error.HTTPError as exc:
+        return int(exc.code), exc.read()
 
 
 def main() -> int:
     phase = str(sys.argv[1] if len(sys.argv) > 1 else "").strip()
     try:
-        payload = service.request_payload(phase)
+        service.request_payload(phase)
     except ValueError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
-    token = os.environ.get("PANSE_CAMPAIGN_PREPARE_TOKEN", "").strip()
-    if not token:
-        print(json.dumps({"ok": False, "error": "service_token_missing"}, ensure_ascii=False))
-        return 2
-    req = request.Request(
-        "http://127.0.0.1:8000/api/campaigns/correct-five-price-issues",
-        data=json.dumps(payload).encode(), method="POST",
-        headers={"Authorization": f"Bearer {token}",
-                 "Content-Type": "application/json"})
     try:
-        with request.urlopen(req, timeout=2500) as response:
-            body = json.loads(response.read().decode())
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False))
-        return 1
-    print(json.dumps(body, ensure_ascii=False))
-    return 0 if body.get("ok") else 1
+        status, body = call_api(token=_service_token(), phase=phase)
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
+              file=sys.stderr)
+        return 2
+    sys.stdout.buffer.write(body)
+    if body and not body.endswith(b"\n"):
+        sys.stdout.buffer.write(b"\n")
+    return 0 if 200 <= status < 300 else 1
 
 
 if __name__ == "__main__":
