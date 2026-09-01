@@ -47,7 +47,13 @@ def _seed_original(db) -> None:
         automatic_retry_allowed=False,
         result_summary={
             "discount": {"ok": True, "submitted": True, "job": "job3"},
-            "signup": None,
+            "signup": {
+                "ok": False,
+                "step": "current_state_export",
+                "error": "候选商品价格证据读取失败",
+                "automatic_retry": False,
+                "execution_receipt": {"submitted": False},
+            },
         },
     ))
     db.commit()

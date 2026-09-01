@@ -112,6 +112,8 @@ def _original_attempt_allowed(attempt: CampaignExecutionAttempt | None) -> bool:
         return False
     summary = attempt.result_summary or {}
     discount = summary.get("discount") or {}
+    signup = summary.get("signup") or {}
+    signup_receipt = signup.get("execution_receipt") or {}
     return bool(
         attempt.plan_id == PLAN_ID
         and attempt.workflow_key == WORKFLOW_KEY
@@ -122,7 +124,16 @@ def _original_attempt_allowed(attempt: CampaignExecutionAttempt | None) -> bool:
         and attempt.platform_write_observed is True
         and discount.get("ok") is True
         and discount.get("submitted") is True
-        and summary.get("signup") is None
+        # The original orchestrator did enter push_signup, but that call
+        # stopped at its read-only current-state export before creating the
+        # inner signup attempt, workbook or platform-write claim.
+        and signup.get("ok") is False
+        and signup.get("step") == "current_state_export"
+        and signup.get("submitted") is not True
+        and signup.get("job") is None
+        and signup.get("execution_attempt_id") is None
+        and signup_receipt.get("submitted") is False
+        and signup.get("automatic_retry") is False
     )
 
 
