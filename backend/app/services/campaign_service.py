@@ -1255,7 +1255,6 @@ def build_signup_rows(
     返回 (rows, stats); 行 = {taobao_item_id, taobao_sku_id, sku_code, price, is_placeholder, remark}。"""
     from app.services import (
         campaign_policy_service,
-        campaign_sku_slot_service,
         delisted_sku_service,
         no_sales_service,
     )
@@ -1296,6 +1295,7 @@ def build_signup_rows(
              "placeholder_candidate_sku_ids": [],
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
+             "placeholder_price_preserved_by_official_floor": [],
              "custom_floor_guard_items": [],
              "custom_placeholder_sku_allowlist": sorted(
                  custom_placeholder_sku_allowlist(plan)),
@@ -1363,33 +1363,33 @@ def build_signup_rows(
             generated = _d(row["price"]) or Decimal("0")
             pair = next((candidate for candidate in pairs
                          if candidate[0].sku_code == row["sku_code"]), None)
-            baseline = (
-                campaign_sku_slot_service.immutable_baseline(
-                    db, sku_code=row["sku_code"], item_id=item_id,
-                    taobao_sku_id=sid)
+            coupon_floor = (
+                _d(getattr(pair[1], "coupon_floor_price", None))
                 if pair else None
-            )
-            custom_floor = (
-                (baseline * Decimal("0.20")).quantize(_CENT)
-                if baseline is not None else None
             )
             official = official_deduction(
                 generated, lev, generated >= Decimal("100"))
             generated_final = (generated - official).quantize(_CENT)
-            if custom_floor is None or generated_final < custom_floor:
+            if coupon_floor is None or coupon_floor <= 0 or generated_final > coupon_floor:
+                reason = (
+                    "custom_coupon_floor_missing"
+                    if coupon_floor is None or coupon_floor <= 0 else
+                    "custom_coupon_after_above_official_floor"
+                )
                 stats["custom_floor_guard_items"].append({
                     "taobao_item_id": item_id,
                     "taobao_sku_id": sid,
                     "sku_code": row["sku_code"],
-                    "original_custom_price": float(baseline) if baseline is not None else None,
-                    "minimum_final_price": float(custom_floor) if custom_floor is not None else None,
+                    "official_coupon_floor_price": (
+                        float(coupon_floor) if coupon_floor is not None else None),
                     "generated_final_price": float(generated_final),
+                    "reason": reason,
                 })
                 blocked_placeholders.append({
                     "taobao_item_id": item_id,
                     "taobao_sku_id": sid,
                     "sku_code": row["sku_code"],
-                    "reason": "custom_final_below_20_percent_baseline",
+                    "reason": reason,
                 })
                 continue
             live_price = placeholder_live_prices.get(sid)
@@ -1407,6 +1407,22 @@ def build_signup_rows(
                 stats["placeholder_missing_live_price"].append(detail)
                 continue
             if live_price > generated:
+                live_official = official_deduction(
+                    live_price, lev, live_price >= Decimal("100"))
+                live_final = (live_price - live_official).quantize(_CENT)
+                if (coupon_floor is not None and coupon_floor > 0
+                        and live_final <= coupon_floor):
+                    row["price"] = float(live_price)
+                    row["remark"] = "平台当前定制活动价经官方券后线核验可保留"
+                    stats["placeholder_price_preserved_by_official_floor"].append({
+                        "taobao_item_id": item_id,
+                        "taobao_sku_id": sid,
+                        "sku_code": row["sku_code"],
+                        "activity_price": float(live_price),
+                        "official_coupon_after": float(live_final),
+                        "official_coupon_floor_price": float(coupon_floor),
+                    })
+                    continue
                 detail = {
                     "taobao_item_id": item_id,
                     "taobao_sku_id": sid,
@@ -3950,12 +3966,29 @@ def refresh_floor_evidence_from_current_activity(
             "job_id": exported.get("job_id"),
             "detail": exported.get("detail"),
         }
-    live_rows = campaign_recon_service.parse_activity_items_export(
-        exported["xlsx_bytes"],
-        include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
-    )
     floor_rows = campaign_recon_service.parse_activity_floor_evidence_export(
         exported["xlsx_bytes"])
+    export_evidence = {
+        "filename": exported.get("filename"),
+        "size": len(exported["xlsx_bytes"]),
+        "sha256": hashlib.sha256(exported["xlsx_bytes"]).hexdigest(),
+        "job_id": exported.get("job_id"),
+        "identity": identity,
+    }
+    resolution = campaign_recon_service.resolve_current_activity_records(
+        floor_rows,
+        include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
+    )
+    export_evidence["marketing_records"] = resolution["marketing_records"]
+    if not resolution["ok"]:
+        return {
+            "ok": False,
+            "step": "current_activity_marketing_record_resolution",
+            "error": "multiple_effective_marketing_records",
+            "ambiguities": resolution["ambiguities"],
+            "export_evidence": export_evidence,
+        }
+    live_rows = resolution["rows"]
     refresh = campaign_price_floor_service.record_activity_export(
         db,
         floor_rows,
@@ -4049,18 +4082,29 @@ def refresh_floor_evidence_from_current_activity(
             "execution_boundary": candidate_result.get("execution_boundary"),
         } if candidate_result else None),
         "placeholder_price_refresh": placeholder_refresh,
-        "export_evidence": {
-            "filename": exported.get("filename"),
-            "size": len(exported["xlsx_bytes"]),
-            "sha256": hashlib.sha256(exported["xlsx_bytes"]).hexdigest(),
-            "job_id": exported.get("job_id"),
-            "identity": identity,
-        },
+        "export_evidence": export_evidence,
     }
 
 
-def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dict:
-    """Require every real SKU from the submitted scope to have the exact P price.
+def _campaign_requires_active_state(plan, *, now: datetime | None = None) -> bool:
+    """Whether the plan is currently inside its configured activity window."""
+    start = getattr(plan, "start_at", None)
+    end = getattr(plan, "end_at", None)
+    if not isinstance(start, datetime) or not isinstance(end, datetime):
+        return False
+    if now is None:
+        now = datetime.now(start.tzinfo) if start.tzinfo else datetime.now()
+    if start.tzinfo is None and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    elif start.tzinfo is not None and now.tzinfo is None:
+        now = now.replace(tzinfo=start.tzinfo)
+    return start <= now <= end
+
+
+def _verify_signup_rows(
+        expected_rows: list[dict], live_rows: list[dict], *,
+        require_active: bool = False) -> dict:
+    """Require every submitted SKU to pass current official row verification.
 
     Platform operation feedback is only an import receipt.  A product can still
     be labelled ``活动中`` because one legacy/custom SKU survived while newly
@@ -4072,25 +4116,40 @@ def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dic
 
     live_by_pair: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for row in live_rows:
-        if row.get("status") not in ACTIVITY_IN_CAMPAIGN_STATUSES:
+        allowed_statuses = (
+            ("活动中",) if require_active else ACTIVITY_IN_CAMPAIGN_STATUSES)
+        if row.get("status") not in allowed_statuses:
             continue
         pair = (str(row.get("item_id") or ""), str(row.get("sku_id") or ""))
         live_by_pair[pair].append(row)
 
     failures: list[dict] = []
-    checked = 0
+    checked_standard = 0
+    checked_custom = 0
+    failed_standard = 0
+    failed_custom = 0
     for expected in expected_rows:
-        if expected.get("is_placeholder"):
-            continue
-        checked += 1
+        is_custom = bool(expected.get("is_placeholder"))
+        if is_custom:
+            checked_custom += 1
+        else:
+            checked_standard += 1
         item_id = str(expected.get("taobao_item_id") or "")
         sku_id = str(expected.get("taobao_sku_id") or "")
         price = float(expected["price"])
         candidates = live_by_pair.get((item_id, sku_id), [])
-        if any(
-            row.get("activity_price") is not None
+        exact_price_candidates = [
+            row for row in candidates
+            if row.get("activity_price") is not None
             and abs(float(row["activity_price"]) - price) <= 0.005
-            for row in candidates
+        ]
+        if not is_custom and exact_price_candidates:
+            continue
+        if is_custom and any(
+            row.get("coupon_after") is not None
+            and row.get("min_coupon_line") is not None
+            and float(row["coupon_after"]) <= float(row["min_coupon_line"]) + 0.005
+            for row in exact_price_candidates
         ):
             continue
         paused_candidates = [
@@ -4105,6 +4164,10 @@ def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dic
             and abs(float(row["activity_price"]) - price) <= 0.005
         ]
         if paused_exact:
+            if is_custom:
+                failed_custom += 1
+            else:
+                failed_standard += 1
             failures.append({
                 "item_id": item_id,
                 "sku_id": sku_id,
@@ -4116,7 +4179,28 @@ def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dic
                 "error": "活动价已导入但商品仍为暂停",
             })
             continue
-        failures.append({
+        scheduled_candidates = [
+            row for row in live_rows
+            if require_active and row.get("status") == "已发布设定"
+            and str(row.get("item_id") or "") == item_id
+            and str(row.get("sku_id") or "") == sku_id
+        ]
+        if scheduled_candidates:
+            if is_custom:
+                failed_custom += 1
+            else:
+                failed_standard += 1
+            failures.append({
+                "item_id": item_id,
+                "sku_id": sku_id,
+                "expected_activity_price": price,
+                "actual_activity_prices": [
+                    row.get("activity_price") for row in scheduled_candidates],
+                "actual_statuses": ["已发布设定"],
+                "error": "活动窗口内商品仍为已发布设定，尚未实际活动中",
+            })
+            continue
+        failure = {
             "item_id": item_id,
             "sku_id": sku_id,
             "expected_activity_price": price,
@@ -4124,13 +4208,42 @@ def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dic
                 row.get("activity_price") for row in candidates
             ],
             "error": "活动中记录缺失" if not candidates else "活动价为空或不一致",
-        })
+        }
+        if is_custom and exact_price_candidates:
+            failure.update({
+                "minimum_coupon_lines": [
+                    row.get("min_coupon_line") for row in exact_price_candidates],
+                "coupon_after_prices": [
+                    row.get("coupon_after") for row in exact_price_candidates],
+                "error": "定制SKU活动普惠券后价缺失或高于官方要求",
+            })
+        if is_custom:
+            failed_custom += 1
+        else:
+            failed_standard += 1
+        failures.append(failure)
     return {
         "ok": not failures,
-        "checked_real_skus": checked,
-        "failed_real_skus": len(failures),
+        # Compatibility fields retain their original meaning: non-placeholder
+        # physical SKUs only.  New total/custom fields make the expanded gate explicit.
+        "checked_real_skus": checked_standard,
+        "failed_real_skus": failed_standard,
+        "checked_total_skus": checked_standard + checked_custom,
+        "failed_total_skus": failed_standard + failed_custom,
+        "checked_custom_skus": checked_custom,
+        "failed_custom_skus": failed_custom,
+        "require_active": require_active,
         "failures": failures,
     }
+
+
+def _verify_signup_rows_for_plan(
+        expected_rows: list[dict], live_rows: list[dict], plan) -> dict:
+    """Keep legacy two-argument verification hooks outside active windows."""
+    if _campaign_requires_active_state(plan):
+        return _verify_signup_rows(
+            expected_rows, live_rows, require_active=True)
+    return _verify_signup_rows(expected_rows, live_rows)
 
 
 def _classify_final_signup(
@@ -4712,7 +4825,7 @@ def push_signup(
     stats["pending_items"] = sorted(pending_items)
     stats["pending_rows"] = len(pending)
     if not pending:
-        verification = _verify_signup_rows(rows, live_rows)
+        verification = _verify_signup_rows_for_plan(rows, live_rows, plan)
         if not verification.get("ok"):
             return _stop_signup(db, plan, {
                 "step": "already_registered_sku_verification",
@@ -4912,8 +5025,8 @@ def push_signup(
         row for row in pending
         if str(row.get("taobao_item_id") or "") in accepted_ids
     ]
-    verification = _verify_signup_rows(
-        accepted_rows, post_submit.get("rows") or [])
+    verification = _verify_signup_rows_for_plan(
+        accepted_rows, post_submit.get("rows") or [], plan)
     res["post_submit_verification"] = verification
     if not verification.get("ok"):
         campaign_execution_service.record_platform_terminal(

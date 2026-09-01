@@ -180,6 +180,90 @@ def parse_activity_items_export(xlsx_bytes: bytes, *,
     ]
 
 
+def resolve_current_activity_records(
+        records: list[dict], *, include_paused: bool = False) -> dict:
+    """Resolve one official current marketing record per item.
+
+    The enrolled export can retain withdrawn, failed and old marketing IDs next
+    to the current record.  Success is therefore proved only by one unique
+    ``活动中``/``已发布设定`` record.  A unique ``暂停`` record may be returned
+    to callers that need diagnostic evidence, but it is never marked successful.
+    Multiple effective marketing IDs are an ambiguity and must stop the caller.
+    """
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for row in records:
+        item_id = str(row.get("item_id") or "").strip()
+        marketing_id = str(row.get("marketing_id") or "").strip()
+        if not item_id:
+            continue
+        grouped.setdefault(item_id, {}).setdefault(marketing_id, []).append(row)
+
+    selected_rows: list[dict] = []
+    marketing_records: list[dict] = []
+    ambiguities: list[dict] = []
+    for item_id, by_marketing_id in sorted(grouped.items()):
+        item_records: list[dict] = []
+        effective: list[tuple[str, list[dict], str, str]] = []
+        paused: list[tuple[str, list[dict], str, str]] = []
+        for marketing_id, rows in sorted(by_marketing_id.items()):
+            statuses = sorted({str(row.get("status") or "").strip() for row in rows})
+            status = statuses[0] if len(statuses) == 1 else "|".join(statuses)
+            classifications = sorted({classify_activity_record_status(value)
+                                      for value in statuses})
+            classification = (
+                classifications[0] if len(classifications) == 1 else "mixed")
+            summary = {
+                "item_id": item_id,
+                "marketing_id": marketing_id,
+                "status": status,
+                "classification": classification,
+                "terminal_state": classification,
+                "sku_count": len({str(row.get("sku_id") or "") for row in rows}),
+                "selected": False,
+                "proves_enrollment": False,
+                "proves_active": False,
+                "proves_scheduled": False,
+            }
+            item_records.append(summary)
+            if classification in {"enrolled_active", "enrolled_scheduled"}:
+                effective.append((marketing_id, rows, status, classification))
+            elif classification == "enrolled_paused":
+                paused.append((marketing_id, rows, status, classification))
+
+        chosen = None
+        if len(effective) > 1:
+            ambiguities.append({
+                "item_id": item_id,
+                "error": "multiple_effective_marketing_records",
+                "marketing_ids": [entry[0] for entry in effective],
+            })
+        elif len(effective) == 1:
+            chosen = effective[0]
+        elif include_paused and len(paused) == 1:
+            chosen = paused[0]
+
+        if chosen is not None:
+            chosen_id, chosen_rows, _chosen_status, chosen_classification = chosen
+            selected_rows.extend(chosen_rows)
+            for summary in item_records:
+                if summary["marketing_id"] == chosen_id:
+                    summary["selected"] = True
+                    summary["proves_enrollment"] = chosen_classification in {
+                        "enrolled_active", "enrolled_scheduled"}
+                    summary["proves_active"] = (
+                        chosen_classification == "enrolled_active")
+                    summary["proves_scheduled"] = (
+                        chosen_classification == "enrolled_scheduled")
+        marketing_records.extend(item_records)
+
+    return {
+        "ok": not ambiguities,
+        "rows": selected_rows,
+        "marketing_records": marketing_records,
+        "ambiguities": ambiguities,
+    }
+
+
 def parse_activity_floor_evidence_export(xlsx_bytes: bytes) -> list[dict]:
     """读取当前平台导出内全部逐 SKU H/I 价格线，不把状态当作在场证明。
 

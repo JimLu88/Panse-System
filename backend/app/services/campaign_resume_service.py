@@ -446,8 +446,8 @@ def verify_super_reduce_plan7_post_submit(
             "detail": refreshed.get("detail"),
             "execution_boundary": boundary,
         }
-    verification = campaign_service._verify_signup_rows(
-        signup_rows, refreshed.get("rows") or [])
+    verification = campaign_service._verify_signup_rows_for_plan(
+        signup_rows, refreshed.get("rows") or [], plan)
     export_evidence = refreshed.get("export_evidence") or {}
     paused_only = bool(verification.get("failures")) and all(
         row.get("error") == "活动价已导入但商品仍为暂停"

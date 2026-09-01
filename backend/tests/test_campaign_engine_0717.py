@@ -114,7 +114,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     # 下架SKU (R4): 过滤且不破坏整品完整性
     _mk(db_session, "PPSSA001", "PPSSA00103", "9201", "72003", daily=1600)
     ds.add_delisted(db_session, ["72003"])
-    # 占位无线: 现行 500 < floor(1000×0.8/0.88)=909 → 500 + 备注
+    # 占位无线: 可生成保守候选，但缺官方券后线时整品必须停止
     _mk(db_session, "PPSSB001", "PPSSB00101", "9202", "72011", daily=2000)
     _mk(db_session, "PPSSB001", "PPSSB00190", "9202", "72091", daily=1000, placeholder=True)
     db_session.commit()
@@ -125,13 +125,16 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert by_sid["72001"]["price"] == 2827.5                 # 报名价 = 日常价 (铁则1)
     assert by_sid["72002"]["price"] == 1500.0
     assert by_sid["72090"]["price"] == 488.0                  # min(现行500, floor(线/0.88)=488)
-    assert by_sid["72091"]["price"] == 500.0                  # 无线 → 保守值封顶不生效, 现行500
-    assert by_sid["72091"]["remark"] and "0.8" in by_sid["72091"]["remark"]
-    assert stats["placeholder_no_line"] == [
-        {"sku_code": "PPSSB00190", "remark": by_sid["72091"]["remark"]}]
+    assert "72091" not in by_sid and "72011" not in by_sid
+    assert stats["placeholder_no_line"] == [{
+        "sku_code": "PPSSB00190",
+        "remark": "无券后线, 按日常价×0.8保守值封顶",
+    }]
+    assert stats["custom_floor_guard_items"][0]["reason"] == (
+        "custom_coupon_floor_missing")
     assert "72003" not in by_sid and stats["skipped_delisted"] == 1   # R4 过滤
     assert stats["incomplete_items"] == []                    # 下架不算缺 → 整品仍完整
-    assert stats["rows"] == len(rows) == 5
+    assert stats["rows"] == len(rows) == 3
 
 
 def test_signup_rows_quietly_skip_registered_terminal_no_sales(db_session):
@@ -2218,13 +2221,24 @@ def test_super_signup_row_verification_rejects_item_level_active_with_blank_new_
 
     assert result["ok"] is False
     assert result["checked_real_skus"] == 1
-    assert result["failures"] == [{
-        "item_id": "1047741358718",
-        "sku_id": "6291475451145",
-        "expected_activity_price": 6472.5,
-        "actual_activity_prices": [None],
-        "error": "活动价为空或不一致",
-    }]
+    assert result["checked_custom_skus"] == 1
+    assert result["checked_total_skus"] == 2
+    assert result["failures"] == [
+        {
+            "item_id": "1047741358718",
+            "sku_id": "6291475451145",
+            "expected_activity_price": 6472.5,
+            "actual_activity_prices": [None],
+            "error": "活动价为空或不一致",
+        },
+        {
+            "item_id": "1047741358718",
+            "sku_id": "6241061986676",
+            "expected_activity_price": 388.0,
+            "actual_activity_prices": [397.0],
+            "error": "活动价为空或不一致",
+        },
+    ]
 
 
 def test_super_signup_row_verification_accepts_any_exact_active_marketing_record():
