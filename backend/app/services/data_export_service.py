@@ -1488,6 +1488,8 @@ def build_promo_signup_daily_upload_xlsx(db: Session):
     报名价A(=大促到手÷0.88), 到手 = A×0.88 − big_deduct = 大促到手 − big_deduct = 砸穿(2026-07-13 事故
     重演)。填日常价: 到手 = 日常价×0.88 − big_deduct = 大促到手 ✓。F/G(官方立减折扣/金额)留空, 平台按
     活动内置 12% 自动算。占位/半套商品同 collect_signup_rows 剔除。返回 (BytesIO, stats)。"""
+    # This legacy entry has no CampaignPlan marker. Unnamed custom/placeholder
+    # SKU IDs are therefore omitted by the governed builder below.
     import io as _io
     from pathlib import Path
     import openpyxl
@@ -1498,31 +1500,22 @@ def build_promo_signup_daily_upload_xlsx(db: Session):
     if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    # 收集器做整商品完整性+坏价剔除; A 只用于【占位价】与【完整性判定】, 真SKU 活动价取【日常价】。
-    entries, stats = collect_signup_rows(db, "report_price")
+    from types import SimpleNamespace
+    from app.services import campaign_service
+
+    # This legacy entry has no plan remark, so its exact custom/placeholder
+    # allowlist is empty and therefore fails closed.
+    entries, stats = campaign_service.build_signup_rows(
+        db, SimpleNamespace(campaign_type="big88"))
     stats["tier"] = "big88"
     r = 4
-    skipped_no_daily = 0
-    for s, p, A in entries:
-        if getattr(s, "is_custom_placeholder", False):
-            act_price = float(A) if A is not None else None        # 占位 = 报名价A(×0.9→500顶→floor)
-        else:
-            act_price = float(s.daily_price) if s.daily_price else None   # ★真SKU活动价 = 日常价
-        if act_price is None or act_price <= 0:
-            skipped_no_daily += 1
-            continue
-        ids = []
-        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            if _sid and str(_sid) not in ids:
-                ids.append(str(_sid))
-        for skuid in ids:
-            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
-            ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
-            ws.cell(r, 3, act_price).number_format = "0.00"            # ★活动价 = 日常价(不是A!)
-            # D库存 / E发货时间 / F官方立减折扣 / G官方立减金额 → 全部留空(平台按活动内置12%算)
-            r += 1
+    for row in entries:
+        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        ws.cell(r, 2, str(row["taobao_sku_id"])).number_format = "@"
+        ws.cell(r, 3, float(row["price"])).number_format = "0.00"
+        # D-G remain blank; the platform applies the campaign's built-in rate.
+        r += 1
     stats["rows"] = r - 4
-    stats["skipped_no_daily"] = skipped_no_daily
 
     out = _io.BytesIO()
     wb.save(out)

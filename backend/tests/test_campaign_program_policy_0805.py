@@ -59,9 +59,9 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
     assert policy["final_price_gate"]["automatic_small_conflict_max_yuan_inclusive"] == 2.00
     scope = policy["scope_and_idempotency"]
-    assert scope["exclude_no_sales_items_from_campaign_signup"] is False
-    assert scope["registered_no_sales_is_advisory_only"] is True
-    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is True
+    assert scope["exclude_no_sales_items_from_campaign_signup"] is True
+    assert scope["registered_no_sales_is_advisory_only"] is False
+    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is False
     assert scope["sku_rotation_enabled"] == "controlled_new_slot_pool_only"
     assert scope["qualification_before_discount_and_final_signup"] is False
     assert policy["execution"]["platform_write_probe_enabled"] is False
@@ -150,7 +150,10 @@ def test_line_concession_rejects_more_than_one_yuan(db_session):
 
 def test_named_custom_sku_concession_can_exceed_one_yuan(db_session):
     plan = _plan(db_session)
-    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    plan.remark = (
+        "custom_line_concession_authorized=881880805:33.00; "
+        "custom_placeholder_sku_allowlist=881880805"
+    )
     _sku(db_session, sku_name="樱桃木定制（咨询客服）", sku_code="PPS_POLICY99")
 
     signup, _ = campaign_service.build_signup_rows(db_session, plan)
@@ -173,7 +176,10 @@ def test_named_custom_sku_concession_can_exceed_one_yuan(db_session):
 
 def test_custom_sku_concession_marker_is_ignored_for_normal_sku(db_session):
     plan = _plan(db_session)
-    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    plan.remark = (
+        "custom_line_concession_authorized=881880805:33.00; "
+        "custom_placeholder_sku_allowlist=881880805"
+    )
     _sku(db_session)
 
     discounts, stats = campaign_service.build_discount_rows(db_session, plan)
@@ -197,7 +203,10 @@ def test_custom_words_in_name_never_reclassify_normal_sku(db_session):
 
 def test_named_custom_sku_concession_clears_matching_coupon_floor_hold(db_session):
     plan = _plan(db_session)
-    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    plan.remark = (
+        "custom_line_concession_authorized=881880805:33.00; "
+        "custom_placeholder_sku_allowlist=881880805"
+    )
     _sku(db_session, sku_name="定制", sku_code="PPS_POLICY99")
     campaign_price_floor_service.record_activity_export(
         db_session,

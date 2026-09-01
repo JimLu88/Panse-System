@@ -159,6 +159,7 @@ def test_verify_campaign_title():
 
 def test_reconcile_verdicts_alarm_and_report(db_session, monkeypatch):
     plan = _plan(db_session, title="88VIP周期购活动")
+    plan.remark = "custom_placeholder_sku_allowlist=81009"
     _mk(db_session, "PPSRA001", "PPSRA00101", "9601", "81001", daily=2827.5, big=1979.59)
     _mk(db_session, "PPSRB001", "PPSRB00101", "9602", "81002", daily=2000, big=1600, line=1599.5)
     _mk(db_session, "PPSRC001", "PPSRC00101", "9603", "81003", daily=1000, big=700)
@@ -324,6 +325,7 @@ def test_super_reconcile_treats_future_paused_rows_as_pending_not_missing(
 def test_reconcile_preserves_platform_accepted_active_placeholder_price(
         db_session, monkeypatch):
     plan = _plan(db_session, title="超级立减长期活动")
+    plan.remark = "custom_placeholder_sku_allowlist=82023"
     plan.campaign_type = "super_reduce"
     plan.tier = "mid"
     _mk(db_session, "PPSPLACE2", "PPSPLACE299", "1000009623", "82023",
@@ -354,6 +356,7 @@ def test_reconcile_preserves_platform_accepted_active_placeholder_price(
 def test_reconcile_does_not_grandfather_future_paused_placeholder_mismatch(
         db_session, monkeypatch):
     plan = _plan(db_session, title="超级立减长期活动")
+    plan.remark = "custom_placeholder_sku_allowlist=82024"
     plan.campaign_type = "super_reduce"
     plan.tier = "mid"
     _mk(db_session, "PPSPLACE3", "PPSPLACE399", "1000009624", "82024",

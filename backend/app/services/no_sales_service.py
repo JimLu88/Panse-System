@@ -2,10 +2,10 @@
 
 存 system_settings 键 `no_sales_item_ids` = JSON [taobao_item_id, ...] (商品维度——
 平台动销校验是商品级"近60天销量≥1")。
-- 来源①: 报名回执"动销不达标"自动登记(自愈);
-- 来源②: 每场平台重检通过后自动移除；
+- 唯一新增来源: 报名终态逐商品确认"近60天销量不达标"后登记；
+- 本地订单聚合只作观察，不得写入本登记；平台后续明确通过可移除；
 - 历史登记是活动报名硬排除依据；登记商品不进入官方活动报名表；
-- 登记商品只走同期单品立减兜底，恢复动销后需经明确转正流程移除登记。
+- 登记商品不生成兜底立减、不自动重试、不进入未解决清单。
 
 镜像 delisted_sku_service 的存储与自愈模式。
 """
@@ -90,12 +90,12 @@ def _save(db: Session, ids: set[str]) -> None:
     from app.services import settings_service
     settings_service.set_value(
         db, _KEY, json.dumps(sorted(ids), ensure_ascii=False),
-        description="无动销报名硬排除(只走同期单品立减；恢复动销后显式转正)")
+        description="平台终态近60天零销量硬排除(无报名/兜底立减/自动重试)")
     db.commit()
 
 
 def add_no_sales(db: Session, item_ids: Iterable[str]) -> set[str]:
-    """登记无动销商品(并集)。返回登记后的全集。无变化不写库。"""
+    """登记平台终态确认的无动销商品(并集)。无变化不写库。"""
     cur = get_no_sales(db)
     new = cur | _normalize_item_ids(item_ids)
     if new != cur:

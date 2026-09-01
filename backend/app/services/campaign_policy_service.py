@@ -90,8 +90,8 @@ def require_policy() -> dict[str, Any]:
             is not False):
         raise RuntimeError("活动报名规则未锁定逐批终态回查或失败禁止重试，已停止")
     if execution.get("on_failure") != (
-            "current_workflow_no_sales_only_is_quietly_isolated_"
-            "all_other_failures_stop_and_alarm"):
+            "platform_terminal_no_sales_is_recorded_and_quietly_excluded_"
+            "from_later_campaigns_all_other_failures_stop_and_alarm"):
         raise RuntimeError("活动报名失败处理未锁定为无动销静默隔离、其余停止告警，已停止")
     if (execution.get("automatic_campaign_withdrawal_enabled") is not False
             or execution.get("withdrawal_requires_current_explicit_item_list_authorization") is not True):
@@ -110,9 +110,9 @@ def require_policy() -> dict[str, Any]:
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":
         raise RuntimeError("活动报名规则未锁定价格线证据缺失/过期即上传前阻塞，已停止")
     if (gates.get("pre_submit_mode") != "local_read_only_evidence_preflight"
-            or scope.get("exclude_no_sales_items_from_campaign_signup") is not False
-            or scope.get("registered_no_sales_is_advisory_only") is not True
-            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not True
+            or scope.get("exclude_no_sales_items_from_campaign_signup") is not True
+            or scope.get("registered_no_sales_is_advisory_only") is not False
+            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not False
             or scope.get("qualification_before_discount_and_final_signup") is not False
             or scope.get("platform_qualification_source")
             != "the_single_final_signup_terminal_record"):
@@ -126,8 +126,14 @@ def require_policy() -> dict[str, Any]:
                 "cooling_to_clean_requires_fresh_exact_platform_history_clear_evidence"
             ) is not True):
         raise RuntimeError("活动报名规则未锁定受控新备用槽或仍允许旧SKU身份平移，已停止")
-    if scope.get("no_sales_only_failure_action") != "keep_out_of_campaign_and_use_single_item_discount":
-        raise RuntimeError("活动报名规则未锁定无动销仅失败的单品立减兜底，已停止")
+    if scope.get("no_sales_only_failure_action") != (
+            "record_terminal_fact_and_quietly_exclude_from_later_campaigns_"
+            "without_signup_discount_retry_or_unresolved"):
+        raise RuntimeError("活动报名规则未锁定平台终态无动销静默排除，已停止")
+    if pricing.get("custom_placeholder_sku_handling") != (
+            "fail_closed_exact_taobao_sku_id_allowlist_only; "
+            "no_item_level_or_boolean_expansion"):
+        raise RuntimeError("活动报名规则未锁定定制/占位SKU精确白名单，已停止")
     if (scope.get("custom_placeholder_safe_cap_without_live_price")
             != "block_and_report; current_plan_authorization_never_replaces_missing_platform_evidence"):
         raise RuntimeError("活动报名规则未锁定占位SKU缺平台现价时停止，已停止")

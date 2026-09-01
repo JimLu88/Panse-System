@@ -160,7 +160,7 @@ def test_plan7_resume_rejects_plan8_scope_drift_and_stale_evidence(
     assert plan.status == "alarmed"
 
 
-def test_resume_push_skips_pre_submit_refresh_and_disables_no_sales_fallback(
+def test_resume_push_skips_pre_submit_refresh_and_quietly_closes_no_sales(
         db_session, monkeypatch):
     plan = _plan()
     plan.status = "resume_executing"
@@ -223,11 +223,19 @@ def test_resume_push_skips_pre_submit_refresh_and_disables_no_sales_fallback(
         allow_terminal_no_sales_fallback=False,
     )
 
-    assert result["ok"] is False
-    assert result["step"] == "terminal_no_sales_requires_new_decision"
-    assert refresh_calls == []
+    assert result["ok"] is True
+    assert result["terminal_no_sales_exclusion"] == {
+        "item_ids": ["797294092429"],
+        "signup_rows": 0,
+        "fallback_discount_rows": 0,
+        "automatic_retry": False,
+        "unresolved": False,
+    }
+    # The guarded resume still skips the pre-submit refresh; this single call
+    # is the mandatory post-terminal readback.
+    assert refresh_calls == [True]
     assert discount_calls == []
-    assert plan.status == "alarmed"
+    assert plan.status == "signup_pushed"
 
 
 def test_resume_push_internal_guard_rejects_plan8(db_session, monkeypatch):

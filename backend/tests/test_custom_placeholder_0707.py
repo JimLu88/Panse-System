@@ -38,12 +38,13 @@ def test_signup_export_placeholder_below_permanent_floor_is_excluded(db_session)
     assert rows == []  # 500叠加官方优惠后远低于首次基准20000的20%，必须阻断。
 
 
-def test_signup_placeholder_above_twenty_percent_floor_is_kept(db_session):
+def test_signup_placeholder_above_twenty_percent_floor_is_still_excluded_by_default(
+        db_session):
     _seed_ph(db_session, 2000)
     buf, _ = build_promo_signup_upload_xlsx(db_session, "big618")
     ws = openpyxl.load_workbook(BytesIO(buf.getvalue()))["商品SKU导入列表"]
     vals = [ws.cell(r, 3).value for r in range(4, ws.max_row + 1) if ws.cell(r, 2).value]
-    assert abs(float(vals[0]) - 500.0) < 0.01
+    assert vals == []
 
 
 def test_single_discount_placeholder_is_skipped(db_session):

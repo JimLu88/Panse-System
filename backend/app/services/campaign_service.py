@@ -756,6 +756,34 @@ def authorized_custom_line_concessions(plan) -> dict[str, Decimal]:
     return out
 
 
+def custom_placeholder_sku_allowlist(plan) -> set[str]:
+    """Return the exact Taobao SKU IDs allowed for custom-price handling.
+
+    The marker is deliberately fail-closed.  It accepts only a comma-separated
+    list of 4-20 digit SKU IDs.  A blank value, a boolean, an item-level token,
+    or one malformed member disables the entire marker instead of partially
+    widening custom/placeholder handling.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*custom_placeholder_sku_allowlist\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return set()
+    raw = matched.group(1).strip()
+    if not raw:
+        return set()
+    values = [value.strip() for value in raw.split(",")]
+    if (not values
+            or any(not re.fullmatch(r"\d{4,20}", value) for value in values)):
+        return set()
+    return set(values)
+
+
 def _is_explicit_custom_price_sku(s) -> bool:
     """Narrow data guard; product names never infer a custom price class."""
     from app.services import sku_utils
@@ -764,6 +792,47 @@ def _is_explicit_custom_price_sku(s) -> bool:
         return True
     return sku_utils.is_custom_sku_code(
         getattr(s, "sku_code", None), getattr(s, "product_code", None))
+
+
+def _custom_placeholder_sku_is_selected(plan, s, sku_id: object) -> bool:
+    """Normal SKUs are always selected; custom/placeholder SKUs need exact ID."""
+    return (
+        not _is_explicit_custom_price_sku(s)
+        or str(sku_id or "").strip() in custom_placeholder_sku_allowlist(plan)
+    )
+
+
+def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
+    """Exact mapped custom/placeholder SKU IDs silently outside this plan."""
+    return {
+        str(sku_id)
+        for sku, promo in _mapped_pairs(db)
+        if _is_explicit_custom_price_sku(sku)
+        for sku_id in _expand_sku_ids(promo)
+        if not _custom_placeholder_sku_is_selected(plan, sku, sku_id)
+    }
+
+
+def _campaign_item_exclusions_for_plan(
+        db: Session, plan, mapped_pairs: list[tuple]) -> dict[str, dict]:
+    """Keep explicit item exclusions; let an exact SKU override derived-only ones."""
+    exclusions = campaign_item_exclusions(db, mapped_pairs)
+    selected = custom_placeholder_sku_allowlist(plan)
+    if not selected:
+        return exclusions
+    selected_items = {
+        str(getattr(promo, "taobao_item_id", "") or "").strip()
+        for sku, promo in mapped_pairs
+        if _is_explicit_custom_price_sku(sku)
+        and any(str(sku_id) in selected for sku_id in _expand_sku_ids(promo))
+    }
+    return {
+        item_id: detail for item_id, detail in exclusions.items()
+        if not (
+            detail.get("mode") == "derived_authoritative_field"
+            and item_id in selected_items
+        )
+    }
 
 
 def _authorized_concession_for_sku(plan, s, sku_id: str) -> tuple[Decimal, str | None]:
@@ -849,6 +918,7 @@ def price_resolution_analysis(db: Session, plan) -> dict:
         campaign_price_resolution_service,
         campaign_sku_slot_service,
         delisted_sku_service,
+        no_sales_service,
     )
 
     # The first managed ERP price becomes immutable slot metadata.  This is an
@@ -860,6 +930,7 @@ def price_resolution_analysis(db: Session, plan) -> dict:
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     delisted = delisted_sku_service.get_delisted(db)
+    terminal_no_sales = no_sales_service.get_no_sales(db)
     decisions: dict[str, dict] = {}
     by_item: dict[str, dict] = {}
     for s, p in _mapped_pairs(db):
@@ -868,7 +939,7 @@ def price_resolution_analysis(db: Session, plan) -> dict:
         if bool(getattr(s, "is_custom_placeholder", False)):
             continue
         item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
-        if not item_id:
+        if not item_id or item_id in terminal_no_sales:
             continue
         daily = _d(getattr(s, "daily_price", None))
         if daily is None or daily <= 0:
@@ -881,6 +952,8 @@ def price_resolution_analysis(db: Session, plan) -> dict:
         if erp_target is None or erp_target <= 0:
             continue
         for sid in _expand_sku_ids(p):
+            if not _custom_placeholder_sku_is_selected(plan, s, sid):
+                continue
             # A rotated/de-bound physical SKU is no longer part of the current
             # listing. Its historical floor evidence must not hold the whole
             # replacement item after the new SKU mapping has been confirmed.
@@ -978,8 +1051,8 @@ def price_hold_items(db: Session, plan) -> list[dict]:
 
 def group_by_sales(db: Session, days: int = 60) -> dict:
     """近{days}天淘宝订单(剔关闭单, 含刷单=平台视角)按 product_code→taobao_item_id 聚合
-    → {有动销/无动销}; 并与 no_sales_service 登记表同步: 新零动销自动登记;
-    已登记但出了单的只进 promote_candidates 提示转正, **不自动移除** (R6 单行道)。"""
+    → {有动销/无动销}; 本地订单观察只作提示，绝不写平台终态无动销登记。
+    已登记但出了单的只进 promote_candidates 提示转正, **不自动移除**。"""
     from datetime import date, timedelta
     from app.models.order import Order
     from app.services import no_sales_service
@@ -1018,12 +1091,14 @@ def group_by_sales(db: Session, days: int = 60) -> dict:
 
     registered = no_sales_service.get_no_sales(db)
     newly = sorted(set(inactive) - registered)
-    if newly:
-        no_sales_service.add_no_sales(db, newly)     # 新零动销自动登记
     promote = sorted(registered & set(active))       # 出单了 → 提示转正, 不自动移除
     return {"有动销": active, "无动销": inactive, "days": days,
-            "newly_registered": newly, "promote_candidates": promote,
-            "registered": sorted(no_sales_service.get_no_sales(db)),
+            # Kept as a compatibility view for existing exports/UI.  The name
+            # no longer implies a registry write; both fields are candidates
+            # inferred from local orders only.
+            "newly_registered": newly, "local_zero_sales_candidates": newly,
+            "promote_candidates": promote,
+            "registered": sorted(registered),
             "invalid_item_ids_ignored": sorted(invalid_item_ids),
             "registry_cleanup": registry_cleanup,
             "excluded_whole_items": list(whole_item_exclusions.values()),
@@ -1118,11 +1193,28 @@ def signup_price_for_sku(s, p, tier: str) -> tuple[Optional[float], Optional[str
     return (float(daily), None) if daily is not None and daily > 0 else (None, None)
 
 
-def _item_signup_rows(item_id: str, pairs: list, lev: Decimal, stats: dict) -> tuple[list, list]:
+def _item_signup_rows(
+        plan, item_id: str, pairs: list, lev: Decimal, stats: dict
+) -> tuple[list, list]:
     """单商品报名行收集: 返回 (rows, missing_sku_codes)。真SKU 报名价 = 日常价 (铁则1)。"""
     rows, missing = [], []
     for s, p in pairs:
         placeholder = bool(getattr(s, "is_custom_placeholder", False))
+        sku_ids = _expand_sku_ids(p)
+        selected_ids = [
+            sku_id for sku_id in sku_ids
+            if _custom_placeholder_sku_is_selected(plan, s, sku_id)
+        ]
+        if _is_explicit_custom_price_sku(s):
+            for sku_id in sorted(set(sku_ids) - set(selected_ids)):
+                stats["excluded_unselected_custom_placeholder_skus"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": str(sku_id),
+                    "sku_code": s.sku_code,
+                    "is_placeholder": placeholder,
+                })
+        if not selected_ids:
+            continue
         tier = next(k for k, v in TIER_LEVERAGE.items() if v == lev)
         price, remark = signup_price_for_sku(s, p, tier)
         if placeholder:
@@ -1131,7 +1223,7 @@ def _item_signup_rows(item_id: str, pairs: list, lev: Decimal, stats: dict) -> t
         if price is None or price <= 0:
             missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
             continue
-        for sid in _expand_sku_ids(p):
+        for sid in selected_ids:
             rows.append({"taobao_item_id": item_id, "taobao_sku_id": sid,
                          "sku_code": s.sku_code, "price": round(price, 2),
                          "is_placeholder": placeholder, "remark": remark})
@@ -1185,7 +1277,8 @@ def build_signup_rows(
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)
     mapped_pairs = _mapped_pairs(db)
-    whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
+    whole_item_exclusions = _campaign_item_exclusions_for_plan(
+        db, plan, mapped_pairs)
     official_scope = official_scope_for_plan(plan)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
@@ -1200,8 +1293,11 @@ def build_signup_rows(
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
              "custom_floor_guard_items": [],
+             "custom_placeholder_sku_allowlist": sorted(
+                 custom_placeholder_sku_allowlist(plan)),
+             "excluded_unselected_custom_placeholder_skus": [],
              "automatic_price_adjustments": price_analysis["adjustments"],
-             "registered_no_sales_items_included": [],
+             "excluded_terminal_no_sales_items": [],
              "excluded_whole_items": list(whole_item_exclusions.values()),
              "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0}
@@ -1211,13 +1307,19 @@ def build_signup_rows(
         if listed_codes is not None and (s.product_code or "") not in listed_codes:
             stats["skipped_not_erp_listed"] += 1
             continue
+        item_id = str(p.taobao_item_id or "").strip()
+        # A durable platform-terminal exclusion takes precedence over local
+        # mapping/price defects: later campaigns must stay quiet for this item.
+        if item_id in registered_no_sales:
+            stats["excluded_terminal_no_sales_items"].append(item_id)
+            continue
         if not p.taobao_sku_id:
             stats["skipped_no_skuid"] += 1
             continue
         if str(p.taobao_sku_id) in delisted:          # R4: 下架SKU不出报名行 (不进完整性统计)
             stats["skipped_delisted"] += 1
             continue
-        by_item[str(p.taobao_item_id).strip()].append((s, p))
+        by_item[item_id].append((s, p))
 
     rows: list[dict] = []
     for item_id, pairs in sorted(by_item.items()):
@@ -1229,16 +1331,11 @@ def build_signup_rows(
             continue
         if item_id in held_item_ids:
             continue
-        # Historical no-sales is not predictive.  Every campaign retries the
-        # complete ERP in-sale scope and classifies an exact platform no-sales
-        # failure only for that workflow.
-        if item_id in registered_no_sales:
-            stats["registered_no_sales_items_included"].append(item_id)
         if all((s.product_code or "") in bad_pc for s, _ in pairs):
             stats["skipped_bad_price_items"].append(item_id)      # 坏价整品排除
             stats["skipped_bad_price"] += len(pairs)
             continue
-        item_rows, missing = _item_signup_rows(item_id, pairs, lev, stats)
+        item_rows, missing = _item_signup_rows(plan, item_id, pairs, lev, stats)
         if missing:                                    # R3 整品完整性: 缺一个SKU=整品拒 → 整品剔除
             stats["incomplete_items"].append({
                 "taobao_item_id": item_id,
@@ -1341,6 +1438,12 @@ def build_signup_rows(
     stats["rows"] = len(rows)
     stats["placeholder_candidate_sku_ids"] = sorted(set(
         stats["placeholder_candidate_sku_ids"]))
+    stats["excluded_terminal_no_sales_items"] = sorted(set(
+        stats["excluded_terminal_no_sales_items"]))
+    stats["excluded_unselected_custom_placeholder_skus"] = sorted(
+        stats["excluded_unselected_custom_placeholder_skus"],
+        key=lambda row: (row["taobao_item_id"], row["taobao_sku_id"]),
+    )
     return rows, stats
 
 
@@ -1425,18 +1528,7 @@ def discount_for_sku(db: Session, s, p, tier: str,
     item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
     nosales = no_sales_items if no_sales_items is not None else no_sales_service.get_no_sales(db)
     if item_id and item_id in nosales:
-        # Generic pricing pages/downloads do not know the live activity scope.
-        # A blank is safer than publishing a deceptively precise discount amount.
-        if official_applies is None:
-            return None
-        official = Decimal("0")
-        if official_applies:
-            low_price_exact = daily < Decimal("100")
-            lev = TIER_LEVERAGE[tier]
-            ceil_on = True if tier != "mid" else official_ceil_enabled(db)
-            official = official_deduction(
-                daily, lev, ceil_on and not low_price_exact)
-        return _nosales_discount_row(s, p, stats, tier, official=official)
+        return None
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if tier != "mid" else official_ceil_enabled(db)
     return _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
@@ -1448,7 +1540,7 @@ def build_discount_rows(
     """单品立减 builder (spec §二):
       大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
       超级立减10%:            立减 = 日常 − ceil(日常×10%) − 中促到手 − 已授权微调
-      无动销(登记表):         立减 = 日常 − ERP中促到手, 占位不出行
+      平台终态无动销登记:     静默排除，不生成本场或后续场次兜底立减
     返回 (rows, stats); 行含 taobao_item_id/taobao_sku_id/sku_code/deduct/target_price/kind。"""
     from app.services import delisted_sku_service, no_sales_service
     from app.services.activity_preflight_service import bad_price_product_codes
@@ -1458,10 +1550,8 @@ def build_discount_rows(
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
     live_activity_prices = current_activity_prices_for_plan(plan)
-    # A historical no-sales registry never changes pre-submit price math.
-    # Only an exact terminal classification from this campaign may request the
-    # no-official-discount fallback by passing ``no_sales_items`` explicitly.
     nosales = set(no_sales_items or set())
+    terminal_no_sales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
     price_analysis = price_resolution_analysis(db, plan)
@@ -1470,7 +1560,8 @@ def build_discount_rows(
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)
     mapped_pairs = _mapped_pairs(db)
-    whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
+    whole_item_exclusions = _campaign_item_exclusions_for_plan(
+        db, plan, mapped_pairs)
     stats = {"tier": tier, "official_ceil": ceil_on, "rows": 0, "skipped_no_skuid": 0,
              "skipped_delisted": 0, "skipped_bad_price": 0, "skipped_placeholder": 0,
              "skipped_price_hold": 0, "excluded_price_hold_items": holds,
@@ -1479,6 +1570,10 @@ def build_discount_rows(
              "automatic_price_adjustments": price_analysis["adjustments"],
              "official_low_price_exact": 0,
              "live_activity_price_overrides": [],
+             "custom_placeholder_sku_allowlist": sorted(
+                 custom_placeholder_sku_allowlist(plan)),
+             "excluded_unselected_custom_placeholder_skus": [],
+             "excluded_terminal_no_sales_items": [],
              "excluded_whole_items": list(whole_item_exclusions.values()),
              "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0,
@@ -1494,6 +1589,13 @@ def build_discount_rows(
         if listed_codes is not None and (s.product_code or "") not in listed_codes:
             stats["skipped_not_erp_listed"] += 1
             continue
+        item_id = str(p.taobao_item_id or "").strip()
+        # Terminal no-sales is an item-level platform fact.  Do not turn a
+        # later stale SKU mapping, delist flag, or bad local price into noise.
+        if item_id in terminal_no_sales:
+            if item_id not in stats["excluded_terminal_no_sales_items"]:
+                stats["excluded_terminal_no_sales_items"].append(item_id)
+            continue
         if not p.taobao_sku_id:
             stats["skipped_no_skuid"] += 1
             continue
@@ -1504,13 +1606,20 @@ def build_discount_rows(
             stats["skipped_bad_price"] += 1
             continue
         if getattr(s, "is_custom_placeholder", False):   # 占位不出行 (spec §二.4)
+            for sid in _expand_sku_ids(p):
+                if not _custom_placeholder_sku_is_selected(plan, s, sid):
+                    stats["excluded_unselected_custom_placeholder_skus"].append({
+                        "taobao_item_id": item_id,
+                        "taobao_sku_id": str(sid),
+                        "sku_code": s.sku_code,
+                        "is_placeholder": True,
+                    })
             stats["skipped_placeholder"] += 1
             continue
         daily = _d(s.daily_price)
         if daily is None or daily <= 0:
             stats["skipped_no_daily"] += 1
             continue
-        item_id = str(p.taobao_item_id).strip()
         if item_id in whole_item_exclusions:
             continue
         if _super_reduce_plan_exempt_item(plan, item_id, official_scope):
@@ -1522,6 +1631,14 @@ def build_discount_rows(
             continue
         for sid in _expand_sku_ids(p):
             sid = str(sid)
+            if not _custom_placeholder_sku_is_selected(plan, s, sid):
+                stats["excluded_unselected_custom_placeholder_skus"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": s.sku_code,
+                    "is_placeholder": False,
+                })
+                continue
             resolution = price_resolutions.get(sid)
             resolved_signup = (
                 _d(resolution.get("signup_price"))
@@ -1610,6 +1727,12 @@ def build_discount_rows(
                 })
             rows.append(row)
     stats["rows"] = len(rows)
+    stats["excluded_terminal_no_sales_items"] = sorted(set(
+        stats["excluded_terminal_no_sales_items"]))
+    stats["excluded_unselected_custom_placeholder_skus"] = sorted(
+        stats["excluded_unselected_custom_placeholder_skus"],
+        key=lambda row: (row["taobao_item_id"], row["taobao_sku_id"]),
+    )
     return rows, stats
 
 
@@ -2151,9 +2274,9 @@ def preflight(
          "items": [{"skipped_delisted_signup": sstats["skipped_delisted"],
                     "skipped_delisted_discount": dstats["skipped_delisted"]}]},
         {"rule": "R6", "level": "info" if nosales else "pass",
-         "title": "历史无动销不预排除；本场仍全量报名并按平台终态单独归类",
+         "title": "平台终态近60天零销量已静默排除；本地订单观察不写登记",
          "items": nosales,
-         "included_signup_items": sstats.get("registered_no_sales_items_included") or []},
+         "excluded_signup_items": sstats.get("excluded_terminal_no_sales_items") or []},
         {"rule": "R9", "level": "pass",
          "title": "官方立减向上取整到元已内建 (10%场开关 campaign_official_ceil)",
          "items": [{"official_ceil": dstats["official_ceil"]}]},
@@ -2781,8 +2904,11 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
 def _learn_from_validation(db: Session, plan, validation) -> dict:
     """Record platform facts for diagnosis; never adjust price, scope or retry.
 
-    Delisted/no-sales facts keep their existing registries.  Exact platform
-    floor numbers are stored as evidence for a later *user-approved* program
+    Delisted facts keep their existing registry.  No-sales is recorded only by
+    :func:`_classify_final_signup` after exact terminal counts and failed-item
+    scope pass; this diagnostic hook must not promote a partial response.
+    Exact platform floor numbers are stored as evidence for a later
+    *user-approved* program
     run.  The current failed plan is still stopped and marked ``alarmed``.
     """
     if not validation:
@@ -2791,21 +2917,16 @@ def _learn_from_validation(db: Session, plan, validation) -> dict:
         from app.services import (
             campaign_price_floor_service,
             delisted_sku_service,
-            no_sales_service,
         )
         failed = validation.get("failed_items") if isinstance(validation, dict) else None
         ids = delisted_sku_service.extract_delisted_from_feedback(failed)
         if ids:
             delisted_sku_service.add_delisted(db, ids)
-        items = no_sales_service.extract_no_sales_only_from_feedback(failed)
-        if items:
-            no_sales_service.add_no_sales(db, items)
         floors = campaign_price_floor_service.record_failed_feedback(
             db, failed, source="campaign_signup_failed_feedback", plan=plan)
         return {
             "recorded": True,
             "delisted_sku_ids": sorted(ids),
-            "no_sales_item_ids": sorted(items),
             "price_floor_evidence": floors,
         }
     except Exception:  # noqa: BLE001 — 自愈失败不影响主流程
@@ -3641,9 +3762,10 @@ def _record_signup_execution_receipt(db: Session, plan, result: dict) -> dict:
         ),
         "fresh_export_sha256": post_export.get("sha256"),
         "per_sku_verification": verification,
-        "no_sales_fallback_ok": (
-            (result.get("no_sales_fallback") or {}).get("ok")
-            if isinstance(result.get("no_sales_fallback"), dict) else None
+        "terminal_no_sales_exclusion": (
+            result.get("terminal_no_sales_exclusion")
+            if isinstance(result.get("terminal_no_sales_exclusion"), dict)
+            else None
         ),
         "error": result.get("error"),
     }
@@ -4490,6 +4612,36 @@ def push_signup(
         stats["placeholder_hold_notification"] = _notify_placeholder_price_blocks(
             db, plan, placeholder_check.get("blocked_items") or [])
     if not rows:
+        quiet_exclusions = bool(
+            stats.get("excluded_terminal_no_sales_items")
+            or stats.get("excluded_unselected_custom_placeholder_skus")
+            or stats.get("excluded_whole_items")
+            or stats.get("excluded_official_exempt_items")
+        )
+        hard_generation_issue = bool(
+            stats.get("excluded_price_hold_items")
+            or stats.get("incomplete_items")
+            or stats.get("skipped_bad_price_items")
+            or stats.get("placeholder_missing_live_price")
+            or stats.get("placeholder_price_blocked_items")
+            or stats.get("custom_floor_guard_items")
+            or stats.get("skipped_no_skuid")
+        )
+        if quiet_exclusions and not hard_generation_issue:
+            plan.status = "reconciled"
+            db.commit()
+            result = {
+                "ok": True,
+                "no_change": True,
+                "quiet_exclusion": True,
+                "submitted": False,
+                "automatic_retry": False,
+                "message": "目标仅含已确认静默排除项，无报名行、立减行或平台重试",
+                "stats": stats,
+            }
+            result["execution_receipt"] = _record_signup_execution_receipt(
+                db, plan, result)
+            return result
         res = {
             "ok": False,
             "step": "price_eligibility_guard",
@@ -4730,43 +4882,17 @@ def push_signup(
         return _stop_signup(db, plan, res)
 
     no_sales_ids = set(classification.get("no_sales_item_ids") or [])
-    if no_sales_ids and not allow_terminal_no_sales_fallback:
-        fail_claimed_attempt(
-            "terminal_no_sales_requires_new_decision",
-            "terminal_no_sales_requires_new_decision",
-            {"no_sales_item_ids": sorted(no_sales_ids)},
-        )
-        res.update({
-            "ok": False,
-            "step": "terminal_no_sales_requires_new_decision",
-            "error": (
-                "平台把计划7目标商品判定为无动销；本次恢复只允许一次报名写入，"
-                "未自动创建或修改单品立减"
-            ),
-        })
-        return _stop_signup(db, plan, res)
     if no_sales_ids:
-        fallback = push_discount(
-            db, plan, phase="commit",
-            item_scope=no_sales_ids,
-            no_sales_items=no_sales_ids,
-            terminal_no_sales_fallback=True,
-            update_plan_status=False,
-        )
-        res["no_sales_fallback"] = fallback
-        if not fallback.get("ok"):
-            fail_claimed_attempt(
-                "terminal_no_sales_fallback",
-                str(fallback.get("error") or "terminal_no_sales_fallback_failed"),
-                {"fallback": fallback},
-            )
-            res.update({
-                "ok": False,
-                "step": "terminal_no_sales_fallback",
-                "error": fallback.get("error")
-                         or "平台判定无销量的商品自动转单品立减失败",
-            })
-            return _stop_signup(db, plan, res)
+        # The terminal is the only authority allowed to create this durable
+        # exclusion.  It consumes the one-shot attempt and creates no fallback
+        # discount, retry, or unresolved work item.
+        res["terminal_no_sales_exclusion"] = {
+            "item_ids": sorted(no_sales_ids),
+            "signup_rows": 0,
+            "fallback_discount_rows": 0,
+            "automatic_retry": False,
+            "unresolved": False,
+        }
 
     # The operation record proves submission; only a fresh, exact-ID export can
     # prove which SKU prices are actually present in this campaign.
@@ -4857,13 +4983,18 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
     from app.services import no_sales_service
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
-    nosales = no_sales_service.get_no_sales(db)
+    terminal_no_sales = no_sales_service.get_no_sales(db)
+    mapped_pairs = _mapped_pairs(db)
+    whole_item_exclusions = _campaign_item_exclusions_for_plan(
+        db, plan, mapped_pairs)
     out: dict[str, dict] = {}
-    for s, p in _mapped_pairs(db):
+    for s, p in mapped_pairs:
         if not p.taobao_sku_id:
             continue
         placeholder = bool(getattr(s, "is_custom_placeholder", False))
         item_id = str(p.taobao_item_id).strip()
+        if item_id in terminal_no_sales or item_id in whole_item_exclusions:
+            continue
         daily = float(s.daily_price) if s.daily_price else None
         if placeholder:
             price, _remark = _placeholder_signup_price(s, p, lev)
@@ -4871,14 +5002,7 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
                      "signup_price": price, "is_placeholder": True, "kind": "placeholder"}
         else:
             mid = mid_buyer_inplace(p)
-            if item_id in nosales:
-                if tier in ("big", "big618"):
-                    no_sales_target = _d(getattr(p, "big_buyer_price", None))
-                else:
-                    no_sales_target = mid.quantize(_CENT) if mid else None
-                target = float(no_sales_target) if no_sales_target else None
-                kind = "nosales"
-            elif tier == "mid":
+            if tier == "mid":
                 target, kind = (float(mid) if mid else None), "campaign"
             else:
                 big = _d(getattr(p, "big_buyer_price", None))
@@ -4888,5 +5012,7 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
                      "line": float(line) if line else None, "daily": daily,
                      "signup_price": daily, "is_placeholder": False, "kind": kind}
         for sid in _expand_sku_ids(p):
+            if not _custom_placeholder_sku_is_selected(plan, s, sid):
+                continue
             out[sid] = entry
     return out

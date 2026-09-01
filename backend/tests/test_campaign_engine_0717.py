@@ -77,7 +77,7 @@ def _order(db, no, pc, status="paid", days_ago=5, platform="淘宝"):
                  order_date=date.today() - timedelta(days=days_ago)))
 
 
-# ── ① 动销分组 + 登记表同步 ──────────────────────────────────────────────────
+# ── ① 动销分组 + 平台终态登记隔离 ────────────────────────────────────────────
 
 def test_group_by_sales_and_registry_sync(db_session):
     # ⚠编码数字主体必须互异: brand_variants 按 core_of(剥字母前缀后的数字) 归并跨品牌销量
@@ -95,15 +95,17 @@ def test_group_by_sales_and_registry_sync(db_session):
 
     assert g["有动销"] == ["9101", "9103"]
     assert g["无动销"] == ["9102"]
-    assert g["newly_registered"] == ["9102"]                  # 新零动销自动登记
+    assert g["newly_registered"] == ["9102"]                  # 本地观察提示，不写登记
     assert g["promote_candidates"] == ["9103"]                # 出单提示转正
-    assert set(g["registered"]) == {"9102", "9103"}           # ★不自动移除 (R6 单行道)
+    assert g["registered"] == ["9103"]                        # 只保留既有平台终态登记
+    assert ns.get_no_sales(db_session) == {"9103"}
 
 
 # ── ② 报名行 builder ─────────────────────────────────────────────────────────
 
 def test_signup_rows_price_placeholder_and_filters(db_session):
     plan = _plan(db_session, "big88")                          # lev = 0.12
+    plan.remark = "custom_placeholder_sku_allowlist=72090,72091"
     _mk(db_session, "PPSSA001", "PPSSA00101", "9201", "72001", daily=2827.5)
     _mk(db_session, "PPSSA001", "PPSSA00102", "9201", "72002", daily=1500)
     # 占位有线: 现行 = min(1000×0.9, 500) = 500; cap = floor(430/0.88) = 488 → 488
@@ -132,7 +134,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
-def test_signup_rows_retry_registered_no_sales_before_platform(db_session):
+def test_signup_rows_quietly_skip_registered_terminal_no_sales(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
         daily=1200, big=800)
@@ -141,9 +143,9 @@ def test_signup_rows_retry_registered_no_sales_before_platform(db_session):
 
     rows, stats = cs.build_signup_rows(db_session, plan)
 
-    assert [row["taobao_item_id"] for row in rows] == ["9209"]
+    assert rows == []
     assert stats["excluded_no_sales_items"] == []
-    assert stats["registered_no_sales_items_included"] == ["9209"]
+    assert stats["excluded_terminal_no_sales_items"] == ["9209"]
 
 
 def test_signup_shipping_days_authorization_is_exact():
@@ -194,7 +196,7 @@ def test_no_sales_registry_rejects_placeholder_and_junk_values(db_session):
     assert ns.get_no_sales(db_session) == {"12345678"}
 
 
-def test_final_signup_is_one_write_then_exact_no_sales_fallback_and_receipt(
+def test_final_signup_is_one_write_then_quiet_no_sales_exclusion_and_receipt(
         db_session, monkeypatch):
     from app.services import settings_service
 
@@ -273,15 +275,16 @@ def test_final_signup_is_one_write_then_exact_no_sales_fallback_and_receipt(
     assert result["ok"] is True
     assert writes == [("promo_signup", "commit")]
     assert len(export_calls) == 2
-    assert fallback_calls == [{
-        "phase": "commit",
-        "item_scope": {no_sales_id},
-        "no_sales_items": {no_sales_id},
-        "terminal_no_sales_fallback": True,
-        "update_plan_status": False,
-    }]
+    assert fallback_calls == []
     assert result["terminal_classification"]["accepted_item_ids"] == [accepted_id]
     assert result["terminal_classification"]["no_sales_item_ids"] == [no_sales_id]
+    assert result["terminal_no_sales_exclusion"] == {
+        "item_ids": [no_sales_id],
+        "signup_rows": 0,
+        "fallback_discount_rows": 0,
+        "automatic_retry": False,
+        "unresolved": False,
+    }
     assert result["post_submit_export_evidence"]["sha256"] == "sha-2"
     assert result["post_submit_verification"]["ok"] is True
     assert result["execution_receipt"]["job_id"] == "signup-job-1"
@@ -312,7 +315,7 @@ def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
     assert discount_stats["skipped_not_erp_listed"] == 2
 
 
-def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
+def test_legacy_qualification_probe_does_not_retry_registered_no_sales(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     plan.remark = "official_all_store=true; official_exempt_items=1000009999"
@@ -333,11 +336,8 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
 
     result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
-    assert result["ok"] is True
-    assert result["qualified_item_ids"] == ["1000009210"]
-    assert result["no_sales_item_ids"] == ["1000009209"]
-    assert result["stats"]["registered_no_sales_items_included"] == [
-        "1000009209", "1000009210"]
+    assert result["ok"] is False
+    assert result["error"] == "no_safe_listed_items_for_platform_qualification"
 
 
 def test_promo_qualification_uploads_authorized_shipping_days(
@@ -836,8 +836,7 @@ def test_discount_mid_ratio_and_ceil_switch(db_session):
     assert rows2[0]["deduct"] == 20.0                         # 995 − 99.5 − 875.5
 
 
-def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
-    """无动销大促场不报名，单品立减直接到 ERP 大促价 2650；占位不出行。"""
+def test_discount_terminal_nosales_is_quietly_skipped(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = "official_all_store=true; official_exempt_items=9304"
     _mk(db_session, "PPSDD001", "PPSDD00101", "9304", "73021", daily=3000, big=2650)
@@ -849,39 +848,34 @@ def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
     rows, stats = cs.build_discount_rows(
         db_session, plan, no_sales_items={"9304"})
 
-    assert len(rows) == 1
-    assert rows[0]["kind"] == "nosales"
-    assert rows[0]["target_price"] == 2650.0
-    assert rows[0]["deduct"] == 350.0                         # 3000 − 大促价2650
-    assert stats["skipped_placeholder"] == 1
+    assert rows == []
+    assert stats["excluded_terminal_no_sales_items"] == ["9304"]
 
 
-def test_discount_nosales_big_storewide_includes_official_discount(db_session):
+def test_discount_terminal_nosales_storewide_has_no_fallback(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = "official_all_store=true; official_exempt_items="
     _mk(db_session, "PPSDD002", "PPSDD00201", "9307", "73051", daily=3000, big=2000)
     db_session.commit()
     ns.add_no_sales(db_session, ["9307"])
 
-    rows, _stats = cs.build_discount_rows(db_session, plan)
+    rows, stats = cs.build_discount_rows(db_session, plan)
 
-    assert rows[0]["official"] == 360.0
-    assert rows[0]["target_price"] == 2000.0
-    assert rows[0]["deduct"] == 640.0
+    assert rows == []
+    assert stats["excluded_terminal_no_sales_items"] == ["9307"]
 
 
-def test_discount_nosales_super_reduce_uses_explicit_active_scope(db_session):
+def test_discount_terminal_nosales_super_reduce_has_no_fallback(db_session):
     plan = _plan(db_session, "super_reduce")
     plan.remark = "official_active_items=9308"
     _mk(db_session, "PPSDD003", "PPSDD00301", "9308", "73061", daily=3000, big=2500)
     db_session.commit()
     ns.add_no_sales(db_session, ["9308"])
 
-    rows, _stats = cs.build_discount_rows(db_session, plan)
+    rows, stats = cs.build_discount_rows(db_session, plan)
 
-    assert rows[0]["official"] == 300.0
-    assert rows[0]["target_price"] == 2575.0
-    assert rows[0]["deduct"] == 125.0
+    assert rows == []
+    assert stats["excluded_terminal_no_sales_items"] == ["9308"]
 
 
 def test_discount_uses_live_activity_price_after_platform_acceptance(db_session):
@@ -1038,7 +1032,8 @@ def test_placeholder_signup_blocks_high_live_price_without_expiry_confirmation(d
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
-        "placeholder_live_prices=73081:397"
+        "placeholder_live_prices=73081:397; "
+        "custom_placeholder_sku_allowlist=73081"
     )
     _mk(db_session, "PPSPH001", "PPSPH00199", "9310", "73081",
         daily=500, placeholder=True, line=250)
@@ -1066,7 +1061,8 @@ def test_placeholder_signup_uses_safe_cap_after_expiry_confirmation(db_session):
     plan.remark = (
         "official_active_items=9300; "
         "placeholder_live_prices=73082:397; "
-        "placeholder_price_protection_expired=true"
+        "placeholder_price_protection_expired=true; "
+        "custom_placeholder_sku_allowlist=73082"
     )
     _mk(db_session, "PPSPH003", "PPSPH00399", "9312", "73082",
         daily=500, placeholder=True, line=250)
@@ -1154,7 +1150,10 @@ def test_placeholder_price_block_notification_is_precise_and_deduped(
 
 def test_placeholder_signup_without_live_price_is_blocked(db_session):
     plan = _plan(db_session, "big88")
-    plan.remark = "official_active_items=9300"
+    plan.remark = (
+        "official_active_items=9300; "
+        "custom_placeholder_sku_allowlist=73091"
+    )
     _mk(db_session, "PPSPH002", "PPSPH00299", "9311", "73091",
         daily=500, placeholder=True, line=250)
     _mk(db_session, "PPSPH002", "PPSPH00201", "9311", "73090",
@@ -1171,7 +1170,8 @@ def test_placeholder_missing_live_price_stays_blocked_after_user_authorization(d
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
-        "placeholder_price_lowering_authorized=true"
+        "placeholder_price_lowering_authorized=true; "
+        "custom_placeholder_sku_allowlist=73092"
     )
     _mk(db_session, "PPSPH006", "PPSPH00699", "9315", "73092",
         daily=500, placeholder=True, line=250)
@@ -1195,7 +1195,8 @@ def test_placeholder_known_high_live_price_uses_safe_cap_after_user_authorizatio
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; placeholder_live_prices=73094:397; "
-        "placeholder_price_lowering_authorized=true"
+        "placeholder_price_lowering_authorized=true; "
+        "custom_placeholder_sku_allowlist=73094"
     )
     _mk(db_session, "PPSPH007", "PPSPH00799", "9316", "73094",
         daily=500, placeholder=True, line=250)

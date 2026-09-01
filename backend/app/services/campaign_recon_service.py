@@ -348,18 +348,24 @@ def _coverage(spec_map: dict, seen_sku_ids: set,
 def _compare_discounts(db: Session, plan, records: list[dict]) -> list[dict]:
     """c维度: 单品立减导出「优惠值」 vs builder 应填值 (差>1分即出入)。"""
     from app.services import campaign_service
+    from app.services import no_sales_service
     rows, _stats = campaign_service.build_discount_rows(db, plan)
     if campaign_service.platform_scope_present(plan):
-        allowed_items = (
-            campaign_service.platform_qualified_items(plan)
-            | campaign_service.platform_no_sales_items(plan)
-        )
+        allowed_items = campaign_service.platform_qualified_items(plan)
         rows = [
             row for row in rows
             if str(row.get("taobao_item_id") or "") in allowed_items
         ]
     expected = {r["taobao_sku_id"]: r["deduct"] for r in rows}
     expected_items = {str(r["taobao_item_id"]) for r in rows}
+    excluded_skus = campaign_service.excluded_custom_placeholder_sku_ids(
+        db, plan)
+    terminal_no_sales = no_sales_service.get_no_sales(db)
+    records = [
+        rec for rec in records
+        if str(rec.get("sku_id") or "") not in excluded_skus
+        and str(rec.get("item_id") or "") not in terminal_no_sales
+    ]
     scoped_records = (
         [rec for rec in records if str(rec.get("item_id") or "") in expected_items]
         if campaign_service.platform_scope_present(plan)
@@ -442,17 +448,36 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
         campaign_notification_service as notify_service,
         campaign_price_floor_service,
         campaign_service,
+        no_sales_service,
     )
     if not any((activity_bytes, discount_bytes, product_bytes)):
         return {"ok": False, "error": "未提供任何导出文件 (活动商品/单品立减/商品批量 至少一份)"}
 
     records: list[dict] = []
     live_activity_evidence = None
+    ignored_policy_sku_ids: list[str] = []
+    ignored_terminal_no_sales_items: list[str] = []
     if activity_bytes:
         records = parse_activity_items_export(
             activity_bytes,
             include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
         )
+        excluded_skus = campaign_service.excluded_custom_placeholder_sku_ids(
+            db, plan)
+        terminal_no_sales = no_sales_service.get_no_sales(db)
+        ignored_policy_sku_ids = sorted({
+            str(row.get("sku_id") or "") for row in records
+            if str(row.get("sku_id") or "") in excluded_skus
+        } - {""})
+        ignored_terminal_no_sales_items = sorted({
+            str(row.get("item_id") or "") for row in records
+            if str(row.get("item_id") or "") in terminal_no_sales
+        } - {""})
+        records = [
+            row for row in records
+            if str(row.get("sku_id") or "") not in excluded_skus
+            and str(row.get("item_id") or "") not in terminal_no_sales
+        ]
         active_records = [
             row for row in records
             if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
@@ -546,6 +571,10 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     summary["unexpected_active_records"] = unexpected_active_records
     summary["unexpected_active_items"] = unexpected_active_items
     summary["live_activity_evidence"] = live_activity_evidence
+    summary["ignored_unselected_custom_placeholder_sku_ids"] = (
+        ignored_policy_sku_ids)
+    summary["ignored_terminal_no_sales_items"] = (
+        ignored_terminal_no_sales_items)
     if unexpected_active_items:
         summary["hard_error_count"] += len(unexpected_active_items)
         summary["alarm"] = summary["hard_error_count"]
