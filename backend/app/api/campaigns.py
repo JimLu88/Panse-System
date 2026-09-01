@@ -95,6 +95,17 @@ class CampaignPlan7ResumeExecuteIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan8ExecuteIn(BaseModel):
+    """Exact CAS input for the approved September Super88 execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    expected_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
     """Exact read-only delayed verification for the submitted plan-7 attempt."""
 
@@ -687,6 +698,33 @@ def resume_super_reduce_plan7(
         if error in {
                 "resume_identity_not_allowed", "resume_request_not_allowed",
                 "resume_scope_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/execute-super88-plan8")
+def execute_super88_plan8(
+        body: CampaignPlan8ExecuteIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Execute exactly plan 8 once from fresh candidate-list evidence."""
+    from app.services import campaign_plan8_execute_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    result = campaign_plan8_execute_service.execute_plan8(
+        db,
+        workflow_key=workflow_key,
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        expected_candidate_sha256=body.expected_candidate_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "plan8_execute_request_not_allowed",
+                "plan8_identity_not_allowed"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result

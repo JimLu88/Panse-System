@@ -475,6 +475,7 @@ def refresh_evidence_and_prepare(
         "floor_refresh": refreshed.get("floor_refresh"),
         "candidate_floor_refresh": refreshed.get("candidate_floor_refresh"),
         "candidate_evidence": refreshed.get("candidate_evidence"),
+        "candidate_unavailable": refreshed.get("candidate_unavailable"),
         "placeholder_price_refresh": refreshed.get("placeholder_price_refresh"),
         "export_evidence": refreshed.get("export_evidence"),
         "gate_results": {

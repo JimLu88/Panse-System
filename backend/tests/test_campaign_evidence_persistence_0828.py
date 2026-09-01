@@ -75,6 +75,79 @@ def test_placeholder_prices_keep_only_current_candidate_skus(db_session):
         }
 
 
+def test_complete_candidate_omission_skips_only_the_whole_missing_item(
+        db_session):
+    plan = _plan(db_session)
+    plan.platform_sign_record_id = "3527841611"
+    db_session.commit()
+    identity = campaign_service.campaign_identity(plan)
+
+    recorded = campaign_service.record_candidate_unavailable_items(
+        db_session,
+        plan,
+        missing_scope={
+            "793202812082": {"6241447059625", "6241447059626"},
+            "1044450741007": {"6100000000001", "6100000000002"},
+        },
+        candidate_result={
+            "ok": True,
+            "records": [{"item_id": "1044450741007",
+                         "sku_id": "6100000000001"}],
+            "missing_sku_ids": [
+                "6241447059625", "6241447059626", "6100000000002"],
+            "requested_sku_count": 4,
+            "observed_sku_count": 1,
+            "candidate_items_scanned": 50,
+            "page_count": 6,
+            "sha256": "candidate-complete-sha",
+            "selection_guard": {"checked": 0, "zero_selected": True},
+            "execution_boundary": {"platform_write": False},
+        },
+        identity=identity,
+    )
+    db_session.commit()
+
+    exclusions = campaign_service.candidate_unavailable_items_for_plan(
+        db_session, plan)
+
+    assert recorded["items"] == ["793202812082"]
+    assert recorded["partial_missing_items"] == ["1044450741007"]
+    assert set(exclusions) == {"793202812082"}
+    assert exclusions["793202812082"]["mode"] == (
+        "plan_scoped_fresh_candidate_unavailable")
+    assert exclusions["793202812082"]["sku_ids"] == [
+        "6241447059625", "6241447059626"]
+
+
+def test_candidate_omission_requires_complete_zero_selection_proof(db_session):
+    plan = _plan(db_session)
+    plan.platform_sign_record_id = "3527841611"
+    db_session.commit()
+
+    result = campaign_service.record_candidate_unavailable_items(
+        db_session,
+        plan,
+        missing_scope={"793202812082": {"6241447059625"}},
+        candidate_result={
+            "ok": True,
+            "records": [],
+            "missing_sku_ids": ["6241447059625"],
+            "requested_sku_count": 1,
+            "observed_sku_count": 0,
+            "sha256": "candidate-incomplete-sha",
+            "selection_guard": {"checked": 1, "zero_selected": False},
+            "execution_boundary": {"platform_write": False},
+        },
+        identity=campaign_service.campaign_identity(plan),
+    )
+    db_session.commit()
+
+    assert result["complete"] is False
+    assert result["items"] == []
+    assert campaign_service.candidate_unavailable_items_for_plan(
+        db_session, plan) == {}
+
+
 def test_successful_refresh_commits_even_when_package_stays_blocked(
         tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'refresh.db'}", future=True)

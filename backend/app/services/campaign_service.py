@@ -47,6 +47,7 @@ LINE_CONCESSION_MAX_YUAN = Decimal("1")    # 贴线让幅 > 1 元 → 暂缓该�
 PLACEHOLDER_LINE_FALLBACK_RATIO = Decimal("0.8")   # 占位无券后线 → 日常×0.8 保守线(行备注标注)
 OFFICIAL_CEIL_KEY = "campaign_official_ceil"       # 10% 官方立减是否向上取整(待7-20实证), 默认真
 PLACEHOLDER_LIVE_PRICE_KEY_PREFIX = "campaign_placeholder_live_prices_v1_plan_"
+CANDIDATE_UNAVAILABLE_KEY_PREFIX = "campaign_candidate_unavailable_v1_plan_"
 _CENT = Decimal("0.01")
 # spec §四.1 说剔 closed; 本库订单状态机把交易关闭存成 cancelled → 两个都剔 (口径决定, 见交付说明)
 _CLOSED_STATUSES = ("closed", "cancelled")
@@ -329,6 +330,150 @@ def record_placeholder_live_prices(
         "candidate_count": len(candidates),
         "missing_sku_ids": sorted(candidates - set(observed)),
         "scope": key,
+    }
+
+
+def record_candidate_unavailable_items(
+        db: Session, plan, *, missing_scope: dict[str, set[str]],
+        candidate_result: dict | None, identity: dict) -> dict:
+    """Persist fresh, plan-scoped proof that whole items are not selectable.
+
+    A whole item is unavailable only when every requested SKU for that item is
+    absent from one completed, zero-selection candidate-list read. Partial
+    absence remains an R17 hard failure.
+    """
+    from app.services import settings_service
+
+    plan_id = str(getattr(plan, "id", "") or "").strip()
+    if not plan_id.isdigit():
+        return {"items": [], "partial_missing_items": [], "scope": None}
+    result = candidate_result if isinstance(candidate_result, dict) else {}
+    missing = {
+        str(value) for value in (result.get("missing_sku_ids") or [])
+        if str(value).isdigit()
+    }
+    observed = {
+        str(row.get("sku_id") or "").strip()
+        for row in (result.get("records") or []) if isinstance(row, dict)
+        if str(row.get("sku_id") or "").strip().isdigit()
+    }
+    requested = {
+        str(sku_id) for sku_ids in missing_scope.values() for sku_id in sku_ids
+        if str(sku_id).isdigit()
+    }
+    selection = result.get("selection_guard") or {}
+    complete = bool(
+        candidate_result is not None
+        and result.get("ok") is True
+        and result.get("sha256")
+        and int(result.get("requested_sku_count") or -1) == len(requested)
+        and int(result.get("observed_sku_count") or -1) == len(observed)
+        and requested == (observed | missing)
+        and not (observed & missing)
+        and selection.get("checked") == 0
+        and selection.get("zero_selected") is True
+        and (result.get("execution_boundary") or {}).get("platform_write") is False
+    )
+    unavailable: dict[str, list[str]] = {}
+    partial: dict[str, list[str]] = {}
+    if complete:
+        for item_id, sku_ids in sorted(missing_scope.items()):
+            exact = {str(sku_id) for sku_id in sku_ids if str(sku_id).isdigit()}
+            absent = exact & missing
+            if exact and absent == exact:
+                unavailable[str(item_id)] = sorted(exact)
+            elif absent:
+                partial[str(item_id)] = sorted(absent)
+    payload = {
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "sha256": str(result.get("sha256") or ""),
+        "identity": {
+            key: identity.get(key) for key in (
+                "campaign_title", "campaign_id", "united_activity_id",
+                "sign_record_id", "campaign_start", "campaign_end",
+                "official_rate", "platform_activity_mode",
+            )
+        },
+        "complete": complete,
+        "items": unavailable,
+        "partial_missing_items": partial,
+        "requested_sku_count": len(requested),
+        "observed_sku_count": len(observed),
+        "candidate_items_scanned": result.get("candidate_items_scanned"),
+        "page_count": result.get("page_count"),
+    }
+    key = f"{CANDIDATE_UNAVAILABLE_KEY_PREFIX}{plan_id}"
+    settings_service.set_value(
+        db, key,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":"), default=str),
+        description=f"淘宝活动计划{plan_id}本场不可报名整品只读证据",
+    )
+    db.flush()
+    return {
+        "items": sorted(unavailable),
+        "partial_missing_items": sorted(partial),
+        "complete": complete,
+        "sha256": payload["sha256"],
+        "observed_at": payload["observed_at"],
+        "scope": key,
+    }
+
+
+def candidate_unavailable_items_for_plan(db: Session, plan) -> dict[str, dict]:
+    """Return only fresh, exact-identity whole-item candidate omissions."""
+    from app.services import campaign_policy_service, settings_service
+
+    plan_id = str(getattr(plan, "id", "") or "").strip()
+    if not plan_id.isdigit():
+        return {}
+    raw = settings_service.get(
+        db, f"{CANDIDATE_UNAVAILABLE_KEY_PREFIX}{plan_id}",
+        env_fallback=False)
+    try:
+        payload = json.loads(raw) if raw else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("complete") is not True:
+        return {}
+    observed_at = str(payload.get("observed_at") or "")
+    try:
+        observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        age_hours = (
+            datetime.now(timezone.utc) - observed.astimezone(timezone.utc)
+        ).total_seconds() / 3600
+    except ValueError:
+        return {}
+    if age_hours < 0 or age_hours > campaign_policy_service.floor_evidence_max_age_hours():
+        return {}
+    current = campaign_identity(plan)
+    stored = payload.get("identity") or {}
+    identity_keys = (
+        "campaign_title", "campaign_id", "united_activity_id",
+        "sign_record_id", "campaign_start", "campaign_end",
+        "official_rate", "platform_activity_mode",
+    )
+    if any(str(stored.get(key) or "") != str(current.get(key) or "")
+           for key in identity_keys):
+        return {}
+    items = payload.get("items") or {}
+    if not isinstance(items, dict):
+        return {}
+    return {
+        str(item_id): {
+            "taobao_item_id": str(item_id),
+            "reason": "平台本场完整可报名商品清单未返回该商品全部在售SKU",
+            "source": "qianniu_selectable_item_list",
+            "mode": "plan_scoped_fresh_candidate_unavailable",
+            "sku_ids": sorted({str(sku_id) for sku_id in sku_ids}),
+            "evidence_sha256": payload.get("sha256"),
+            "observed_at": observed_at,
+            "age_hours": round(age_hours, 2),
+        }
+        for item_id, sku_ids in items.items()
+        if str(item_id).isdigit() and isinstance(sku_ids, list) and sku_ids
     }
 
 
@@ -817,6 +962,7 @@ def _campaign_item_exclusions_for_plan(
         db: Session, plan, mapped_pairs: list[tuple]) -> dict[str, dict]:
     """Keep explicit item exclusions; let an exact SKU override derived-only ones."""
     exclusions = campaign_item_exclusions(db, mapped_pairs)
+    exclusions.update(candidate_unavailable_items_for_plan(db, plan))
     selected = custom_placeholder_sku_allowlist(plan)
     if not selected:
         return exclusions
@@ -4009,6 +4155,7 @@ def refresh_floor_evidence_from_current_activity(
 
     candidate_result = None
     candidate_refresh = None
+    candidate_unavailable = None
     candidate_records: list[dict] = []
     if (missing_scope
             and identity["platform_activity_mode"] == "fixed_window"
@@ -4050,6 +4197,13 @@ def refresh_floor_evidence_from_current_activity(
                 plan=plan,
             )
         )
+    candidate_unavailable = record_candidate_unavailable_items(
+        db,
+        plan,
+        missing_scope=missing_scope,
+        candidate_result=candidate_result,
+        identity=identity,
+    )
 
     # Replace placeholder current-price observations from the union of the
     # enrolled export and the exact candidate response.  Missing candidates are
@@ -4081,6 +4235,7 @@ def refresh_floor_evidence_from_current_activity(
             "selection_guard": candidate_result.get("selection_guard"),
             "execution_boundary": candidate_result.get("execution_boundary"),
         } if candidate_result else None),
+        "candidate_unavailable": candidate_unavailable,
         "placeholder_price_refresh": placeholder_refresh,
         "export_evidence": export_evidence,
     }
