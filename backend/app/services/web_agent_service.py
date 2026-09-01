@@ -292,30 +292,6 @@ def correct_warehouse_product_price(
         },
     }
 
-    # Retired implementation retained below as unreachable audit history.
-    started = _post(
-        db, "/api/product-sku/warehouse-price-correction",
-        dict(payload), timeout=30)
-    job_id = started.get("job")
-    if not started.get("ok") or not job_id:
-        return {"ok": False,
-                "error": started.get("error", "取数服务(:8500)未响应"),
-                "submitted": None, "platform_product_write": None}
-    final = wait_job(db, job_id, timeout_s=timeout_s)
-    result = final.get("result") or {}
-    if final.get("status") in ("error", "failed") and not result:
-        return {"ok": False,
-                "error": final.get("error") or "warehouse_product_price_job_failed",
-                "submitted": None, "web_agent_job_id": job_id,
-                "platform_product_write": None}
-    result["web_agent_job_id"] = job_id
-    if result.get("need_scan"):
-        return {"ok": False, "need_scan": True,
-                "error": result.get("error") or "淘宝登录态已失效",
-                "submitted": False, "web_agent_job_id": job_id,
-                "execution_boundary": result.get("execution_boundary")}
-    return result
-
 
 def publish_plan7_existing_super_reduce_drafts(
         db: Session, *, item_ids: list[str], sku_count: int,

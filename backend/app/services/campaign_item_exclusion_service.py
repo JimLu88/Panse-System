@@ -14,6 +14,32 @@ from app.models.campaign import CampaignItemExclusion
 from app.services import no_sales_service
 
 
+# User-owned permanent scope rule.  This is intentionally code-backed rather
+# than a mutable database row: warehouse merchandise is not a campaign product,
+# and an operator must not be able to reactivate it through the generic item-
+# exclusion deactivate endpoint.
+WAREHOUSE_USER_RULE_ITEM_ID = "1038725569412"
+WAREHOUSE_USER_RULE_SKU_ID = "6060112621275"
+
+
+def fixed_user_rule_items(mapped_pairs: list[tuple]) -> dict[str, dict]:
+    mapped_item_ids = {
+        str(getattr(promo, "taobao_item_id", "") or "").strip()
+        for _sku, promo in mapped_pairs
+    }
+    if WAREHOUSE_USER_RULE_ITEM_ID not in mapped_item_ids:
+        return {}
+    return {
+        WAREHOUSE_USER_RULE_ITEM_ID: {
+            "taobao_item_id": WAREHOUSE_USER_RULE_ITEM_ID,
+            "taobao_sku_id": WAREHOUSE_USER_RULE_SKU_ID,
+            "reason": "用户明确：仓库商品永久不报名、不改价",
+            "source": "user_rule_20260901",
+            "mode": "fixed_user_rule",
+        },
+    }
+
+
 def explicit_items(db: Session) -> dict[str, dict]:
     rows = db.execute(
         select(CampaignItemExclusion).where(CampaignItemExclusion.active.is_(True))
@@ -52,6 +78,8 @@ def derived_all_placeholder_items(mapped_pairs: list[tuple]) -> dict[str, dict]:
 def effective_items(db: Session, mapped_pairs: list[tuple]) -> dict[str, dict]:
     result = derived_all_placeholder_items(mapped_pairs)
     result.update(explicit_items(db))
+    # Fixed user rules win over both derived and mutable explicit markers.
+    result.update(fixed_user_rule_items(mapped_pairs))
     return result
 
 

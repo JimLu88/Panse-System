@@ -931,15 +931,19 @@ def price_resolution_analysis(db: Session, plan) -> dict:
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     delisted = delisted_sku_service.get_delisted(db)
     terminal_no_sales = no_sales_service.get_no_sales(db)
+    mapped_pairs = _mapped_pairs(db)
+    whole_item_exclusions = _campaign_item_exclusions_for_plan(
+        db, plan, mapped_pairs)
     decisions: dict[str, dict] = {}
     by_item: dict[str, dict] = {}
-    for s, p in _mapped_pairs(db):
+    for s, p in mapped_pairs:
         # Placeholder/custom SKUs use their dedicated live-price path below;
         # they do not receive ordinary ERP campaign target discounts.
         if bool(getattr(s, "is_custom_placeholder", False)):
             continue
         item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
-        if not item_id or item_id in terminal_no_sales:
+        if (not item_id or item_id in terminal_no_sales
+                or item_id in whole_item_exclusions):
             continue
         daily = _d(getattr(s, "daily_price", None))
         if daily is None or daily <= 0:

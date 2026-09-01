@@ -6,18 +6,10 @@ invocation stops before database claims, Web-Agent calls, or platform access.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
-import secrets
-from datetime import datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
-from app.models.campaign import CampaignExecutionAttempt, CampaignPlan
-from app.services import campaign_discount_audit_service, web_agent_service
 
 
 WORKFLOW_KEY = "campaign:super-reduce:2026-09-01"
@@ -120,22 +112,6 @@ def user_rule_excluded_result() -> dict:
     }
 
 
-def _get_plan(db: Session, *, lock=False) -> CampaignPlan | None:
-    stmt = select(CampaignPlan).where(
-        CampaignPlan.id == PLAN_ID, CampaignPlan.workflow_key == WORKFLOW_KEY)
-    return db.execute(stmt.with_for_update() if lock else stmt).scalar_one_or_none()
-
-
-def _validate_plan(plan: CampaignPlan | None) -> dict | None:
-    if plan is None:
-        return _fail("workflow_not_found")
-    if (plan.campaign_type != "super_reduce"
-            or plan.platform_activity_mode != "long_running_update"
-            or str(plan.qn_campaign_title or "").strip() != "超级立减"):
-        return _fail("warehouse_product_price_plan_identity_drift")
-    return None
-
-
 def _validate_readback(result: dict, *, target: bool) -> dict | None:
     if not isinstance(result, dict) or not result.get("ok"):
         return _fail(str((result or {}).get("error")
@@ -162,14 +138,6 @@ def _validate_readback(result: dict, *, target: bool) -> dict | None:
         return _fail("warehouse_product_price_readback_drift",
                      platform_read=True, result=result)
     return None
-
-
-def _existing_attempt(db: Session) -> CampaignExecutionAttempt | None:
-    return db.execute(select(CampaignExecutionAttempt).where(
-        CampaignExecutionAttempt.workflow_key == WORKFLOW_KEY,
-        CampaignExecutionAttempt.operation == OPERATION,
-        CampaignExecutionAttempt.scope_sha256 == TARGET_SHA256,
-    ).with_for_update()).scalar_one_or_none()
 
 
 def _terminal_exact(result: dict) -> bool:
@@ -212,164 +180,6 @@ def _terminal_exact(result: dict) -> bool:
         and boundary.get("publish_now") is False)
 
 
-def _persist(db: Session, plan: CampaignPlan, *, evidence_type: str,
-             request_id: str, result: dict, scope_sha256: str):
-    payload = json.dumps(result, ensure_ascii=False, sort_keys=True,
-                         separators=(",", ":")).encode()
-    rows = ((result.get("manifest") or result.get("readback") or {}).get("rows")
-            or [])
-    return campaign_discount_audit_service._persist(
-        db, plan=plan, evidence_type=evidence_type, request_id=request_id,
-        web_agent_job_id=result.get("web_agent_job_id"),
-        scope_digest=scope_sha256, status="complete",
-        summary=result.get("official_terminal") or result.get("warehouse_state"),
-        rows=rows, failure_rows=[],
-        boundary=result.get("execution_boundary") or _boundary(platform_read=True),
-        artifact={"kind": "canonical_json", "filename": f"{evidence_type}.json",
-                  "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(),
-                  "content_b64": base64.b64encode(payload).decode("ascii")})
-
-
 def execute(db: Session, *, payload: dict) -> dict:
-    # Current explicit user rule supersedes the historical one-shot plan.  This
-    # unconditional first instruction is intentionally before validation,
-    # database reads/claims, evidence persistence, and every Web-Agent call.
+    """Return the fixed tombstone; this module has no executable write path."""
     return user_rule_excluded_result()
-
-    # Historical implementation below is intentionally unreachable and kept
-    # only as an auditable record of the retired safety design.
-    if not validate_request(payload):
-        return _fail("warehouse_product_price_request_not_allowed")
-    plan = _get_plan(db)
-    error = _validate_plan(plan)
-    if error:
-        return error
-    existing = _existing_attempt(db)
-    if existing:
-        return _fail("warehouse_product_price_attempt_already_consumed_no_retry",
-                     attempt_id=existing.id, attempt_state=existing.state,
-                     platform_write=existing.platform_write_observed)
-
-    db.commit()
-    pre_read = web_agent_service.read_warehouse_product_price(db, target=False)
-    pre_error = _validate_readback(pre_read, target=False)
-    if pre_error:
-        target_read = web_agent_service.read_warehouse_product_price(db, target=True)
-        if _validate_readback(target_read, target=True) is not None:
-            return pre_error
-        attempt = CampaignExecutionAttempt(
-            id=secrets.token_hex(12), plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
-            operation=OPERATION, scope_sha256=TARGET_SHA256,
-            state="completed", write_claimed=False, platform_write_observed=False,
-            automatic_retry_allowed=False, last_step="already_exact_readback",
-            request_id=f"warehouse-product-price-noop-{secrets.token_hex(6)}",
-            web_agent_job_id=target_read.get("web_agent_job_id"),
-            result_summary={"already_exact": True})
-        db.add(attempt)
-        db.commit()
-        return {"ok": True, "already_exact_no_write": True,
-                "attempt_id": attempt.id,
-                "execution_boundary": _boundary(platform_read=True)}
-
-    plan = _get_plan(db, lock=True)
-    error = _validate_plan(plan)
-    if error:
-        return error
-    if _existing_attempt(db):
-        return _fail("warehouse_product_price_claim_raced_no_write")
-    attempt_id = secrets.token_hex(12)
-    attempt = CampaignExecutionAttempt(
-        id=attempt_id, plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
-        operation=OPERATION, scope_sha256=TARGET_SHA256,
-        state="write_claimed", write_claimed=True,
-        write_claimed_at=datetime.now(timezone.utc),
-        platform_write_observed=False, automatic_retry_allowed=False,
-        request_id=f"warehouse-product-price-{secrets.token_hex(6)}",
-        web_agent_job_id=pre_read.get("web_agent_job_id"),
-        last_step="fresh_baseline_then_write_claimed",
-        result_summary={"trigger": request_payload(),
-                        "pre_read_job_id": pre_read.get("web_agent_job_id")})
-    db.add(attempt)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        return _fail("warehouse_product_price_claim_raced_no_write")
-
-    baseline_snapshot = _persist(
-        db, plan, evidence_type="warehouse_product_price_baseline",
-        request_id=f"warehouse-price-baseline-{secrets.token_hex(6)}",
-        result=pre_read, scope_sha256=BASELINE_SHA256)
-    attempt = db.get(CampaignExecutionAttempt, attempt_id)
-    attempt.result_summary = {**(attempt.result_summary or {}),
-                              "baseline_snapshot_id": baseline_snapshot.id}
-    db.commit()
-
-    try:
-        terminal = web_agent_service.correct_warehouse_product_price(
-            db, payload=payload)
-    except Exception as exc:  # durable claim makes every transport error unknown
-        terminal = {"ok": False, "submitted": None,
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "execution_boundary": {"platform_product_write": None}}
-    observed = (terminal.get("execution_boundary") or {}).get(
-        "platform_product_write")
-    if observed not in {True, False}:
-        observed = None
-    attempt = db.get(CampaignExecutionAttempt, attempt_id)
-    attempt.platform_write_observed = observed
-    attempt.web_agent_job_id = terminal.get("web_agent_job_id")
-    attempt.state = "platform_terminal" if _terminal_exact(terminal) else (
-        "failed" if observed is False else "unknown")
-    attempt.last_step = ("platform_readback_exact" if _terminal_exact(terminal)
-                         else "platform_outcome_not_exact")
-    attempt.error_code = (None if _terminal_exact(terminal) else str(
-        terminal.get("error") or "warehouse_product_price_terminal_not_exact")[:128])
-    attempt.result_summary = {**(attempt.result_summary or {}),
-                              "official_terminal": terminal.get("official_terminal"),
-                              "terminal_error": terminal.get("error"),
-                              "needs_user_interaction": terminal.get(
-                                  "needs_user_interaction")}
-    db.commit()
-    if not _terminal_exact(terminal):
-        return _fail("warehouse_product_price_terminal_not_exact_no_retry",
-                     platform_read=True, platform_write=observed,
-                     attempt_id=attempt_id, terminal=terminal)
-    terminal_snapshot = _persist(
-        db, plan, evidence_type="warehouse_product_price_platform_terminal",
-        request_id=f"warehouse-price-terminal-{secrets.token_hex(6)}",
-        result=terminal, scope_sha256=TARGET_SHA256)
-
-    post_read = web_agent_service.read_warehouse_product_price(db, target=True)
-    post_error = _validate_readback(post_read, target=True)
-    readback_snapshot = None
-    if post_error is None:
-        readback_snapshot = _persist(
-            db, plan, evidence_type="warehouse_product_price_readback",
-            request_id=f"warehouse-price-readback-{secrets.token_hex(6)}",
-            result=post_read, scope_sha256=TARGET_SHA256)
-    attempt = db.get(CampaignExecutionAttempt, attempt_id)
-    attempt.state = "completed" if post_error is None else "failed"
-    attempt.last_step = ("independent_readback_verified" if post_error is None
-                         else "independent_readback_failed")
-    attempt.error_code = None if post_error is None else post_error["error"][:128]
-    attempt.result_summary = {**(attempt.result_summary or {}),
-                              "terminal_snapshot_id": terminal_snapshot.id,
-                              "readback_snapshot_id": getattr(
-                                  readback_snapshot, "id", None),
-                              "readback_job_id": post_read.get("web_agent_job_id"),
-                              "readback_error": (post_error.get("error")
-                                                 if post_error else None)}
-    db.commit()
-    if post_error:
-        return {**post_error, "attempt_id": attempt_id, "submitted": True,
-                "execution_boundary": _boundary(
-                    platform_read=True, platform_write=True)}
-    return {"ok": True, "workflow_key": WORKFLOW_KEY, "plan_id": PLAN_ID,
-            "attempt_id": attempt_id, "item_id": ITEM_ID, "sku_id": SKU_ID,
-            "old_price": OLD_PRICE, "target_price": TARGET_PRICE,
-            "product_state": EXPECTED_PRODUCT_STATE,
-            "terminal_snapshot_id": terminal_snapshot.id,
-            "readback_snapshot_id": readback_snapshot.id,
-            "execution_boundary": _boundary(
-                platform_read=True, platform_write=True)}

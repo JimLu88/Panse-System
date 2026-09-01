@@ -6,6 +6,7 @@ from app.models.campaign import CampaignPlan
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_price_floor_service
+from app.services import campaign_item_exclusion_service
 from app.services import campaign_recon_service as recon
 from app.services import campaign_service as campaign
 from app.services import no_sales_service
@@ -160,6 +161,54 @@ def test_exact_placeholder_allowlist_enables_only_named_sku(db_session):
         "sku_code": "PPSPLACE99",
         "is_placeholder": True,
     }]
+
+
+def test_warehouse_user_rule_is_permanent_across_campaign_surfaces(db_session):
+    plan = _plan(db_session)
+    item_id = campaign_item_exclusion_service.WAREHOUSE_USER_RULE_ITEM_ID
+    sku_id = campaign_item_exclusion_service.WAREHOUSE_USER_RULE_SKU_ID
+    _sku(
+        db_session,
+        product_code="PPSWAREHOUSE",
+        sku_code="PPSWAREHOUSE11",
+        item_id=item_id,
+        sku_id=sku_id,
+    )
+
+    exclusions = campaign.campaign_item_exclusions(db_session)
+    assert exclusions[item_id] == {
+        "taobao_item_id": item_id,
+        "taobao_sku_id": sku_id,
+        "reason": "用户明确：仓库商品永久不报名、不改价",
+        "source": "user_rule_20260901",
+        "mode": "fixed_user_rule",
+    }
+    signup, signup_stats = campaign.build_signup_rows(db_session, plan)
+    discounts, discount_stats = campaign.build_discount_rows(db_session, plan)
+
+    assert signup == []
+    assert discounts == []
+    assert campaign.target_prices(db_session, plan) == {}
+    assert campaign.price_resolution_analysis(db_session, plan) == {
+        "by_sku_id": {}, "holds": [], "adjustments": []}
+    assert any(
+        row.get("taobao_item_id") == item_id
+        and row.get("mode") == "fixed_user_rule"
+        for row in signup_stats["excluded_whole_items"]
+    )
+    assert any(
+        row.get("taobao_item_id") == item_id
+        and row.get("mode") == "fixed_user_rule"
+        for row in discount_stats["excluded_whole_items"]
+    )
+    assert recon._compare_discounts(db_session, plan, [{
+        "item_id": item_id,
+        "sku_id": sku_id,
+        "discount_value": 1,
+    }]) == []
+    grouping = campaign.group_by_sales(db_session)
+    assert item_id not in grouping["有动销"]
+    assert item_id not in grouping["无动销"]
 
 
 def test_terminal_no_sales_is_absent_from_later_rows_holds_targets_and_recon(

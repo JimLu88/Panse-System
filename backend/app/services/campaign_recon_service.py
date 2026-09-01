@@ -361,10 +361,16 @@ def _compare_discounts(db: Session, plan, records: list[dict]) -> list[dict]:
     excluded_skus = campaign_service.excluded_custom_placeholder_sku_ids(
         db, plan)
     terminal_no_sales = no_sales_service.get_no_sales(db)
+    fixed_user_rule_items = {
+        item_id for item_id, detail in campaign_service.campaign_item_exclusions(
+            db).items()
+        if detail.get("mode") == "fixed_user_rule"
+    }
     records = [
         rec for rec in records
         if str(rec.get("sku_id") or "") not in excluded_skus
         and str(rec.get("item_id") or "") not in terminal_no_sales
+        and str(rec.get("item_id") or "") not in fixed_user_rule_items
     ]
     scoped_records = (
         [rec for rec in records if str(rec.get("item_id") or "") in expected_items]
@@ -457,6 +463,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     live_activity_evidence = None
     ignored_policy_sku_ids: list[str] = []
     ignored_terminal_no_sales_items: list[str] = []
+    ignored_fixed_user_rule_items: list[str] = []
     if activity_bytes:
         records = parse_activity_items_export(
             activity_bytes,
@@ -465,6 +472,11 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
         excluded_skus = campaign_service.excluded_custom_placeholder_sku_ids(
             db, plan)
         terminal_no_sales = no_sales_service.get_no_sales(db)
+        fixed_user_rule_items = {
+            item_id for item_id, detail in campaign_service.campaign_item_exclusions(
+                db).items()
+            if detail.get("mode") == "fixed_user_rule"
+        }
         ignored_policy_sku_ids = sorted({
             str(row.get("sku_id") or "") for row in records
             if str(row.get("sku_id") or "") in excluded_skus
@@ -473,10 +485,15 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
             str(row.get("item_id") or "") for row in records
             if str(row.get("item_id") or "") in terminal_no_sales
         } - {""})
+        ignored_fixed_user_rule_items = sorted({
+            str(row.get("item_id") or "") for row in records
+            if str(row.get("item_id") or "") in fixed_user_rule_items
+        } - {""})
         records = [
             row for row in records
             if str(row.get("sku_id") or "") not in excluded_skus
             and str(row.get("item_id") or "") not in terminal_no_sales
+            and str(row.get("item_id") or "") not in fixed_user_rule_items
         ]
         active_records = [
             row for row in records
@@ -575,6 +592,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
         ignored_policy_sku_ids)
     summary["ignored_terminal_no_sales_items"] = (
         ignored_terminal_no_sales_items)
+    summary["ignored_fixed_user_rule_items"] = ignored_fixed_user_rule_items
     if unexpected_active_items:
         summary["hard_error_count"] += len(unexpected_active_items)
         summary["alarm"] = summary["hard_error_count"]

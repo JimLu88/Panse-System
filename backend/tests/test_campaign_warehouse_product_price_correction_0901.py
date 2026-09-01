@@ -1,4 +1,5 @@
 from copy import deepcopy
+import inspect
 import json
 from pathlib import Path
 
@@ -55,14 +56,6 @@ def test_execute_is_user_rule_excluded_before_db_claim_or_web_agent(monkeypatch)
         def __getattr__(self, name):
             raise AssertionError(f"database access forbidden: {name}")
 
-    def forbidden(*args, **kwargs):
-        raise AssertionError("Web-Agent/platform access forbidden")
-
-    monkeypatch.setattr(service.web_agent_service,
-                        "read_warehouse_product_price", forbidden)
-    monkeypatch.setattr(service.web_agent_service,
-                        "correct_warehouse_product_price", forbidden)
-
     result = service.execute(ForbiddenDb(), payload=service.request_payload())
 
     assert result["ok"] is False
@@ -73,6 +66,10 @@ def test_execute_is_user_rule_excluded_before_db_claim_or_web_agent(monkeypatch)
     assert result["price_change"] is False
     assert result["execution_boundary"]["platform_product_write"] is False
     assert result["execution_boundary"]["price_change"] is False
+    source = inspect.getsource(service.execute)
+    assert "CampaignExecutionAttempt" not in source
+    assert "web_agent_service" not in source
+    assert ".commit(" not in source
 
 
 def test_erp_web_agent_client_is_also_fail_closed(monkeypatch):
@@ -89,20 +86,14 @@ def test_erp_web_agent_client_is_also_fail_closed(monkeypatch):
     assert result["platform_write"] is False
     assert result["price_change"] is False
     assert result["web_agent_called"] is False
+    source = inspect.getsource(web_agent_service.correct_warehouse_product_price)
+    assert "_post(" not in source
+    assert "wait_job(" not in source
 
 
 def test_retired_cli_and_powershell_wrapper_do_not_contact_any_runtime(
         monkeypatch, capsys):
     from app.cli import campaign_correct_warehouse_product_sku_price as cli
-
-    monkeypatch.setattr(
-        cli, "_service_token",
-        lambda: (_ for _ in ()).throw(AssertionError("token read forbidden")),
-    )
-    monkeypatch.setattr(
-        cli, "call_api",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("API call forbidden")),
-    )
 
     assert cli.main() == 0
     receipt = json.loads(capsys.readouterr().out)
@@ -110,6 +101,10 @@ def test_retired_cli_and_powershell_wrapper_do_not_contact_any_runtime(
     assert receipt["claim_created"] is False
     assert receipt["platform_write"] is False
     assert receipt["price_change"] is False
+    source = inspect.getsource(cli)
+    assert "urllib" not in source
+    assert "SessionLocal" not in source
+    assert "call_api" not in source
 
     wrapper = (
         Path(__file__).resolve().parents[2]

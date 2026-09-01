@@ -15,6 +15,9 @@
 - ERP API、service、CLI、PowerShell 兼容入口和下游 Web-Agent 写入口均永久 fail-closed；
   任意调用只返回 `user_rule_excluded`、`platform_write=false`、`price_change=false`，不得
   创建 claim、启动浏览器或触达平台。
+- 活动公共入口还把该商品写成不可由数据库停用的 `fixed_user_rule`：报名行、单品立减、
+  目标价、价格冲突处置、动销分组和核对均整品静默排除；来源固定记录为
+  `user_rule_20260901`。这不改变定制/占位 SKU 精确白名单或平台终态零动销规则。
 - 02 只交付程序，不执行真实业务命令。完整规则见
   `docs/计划7单品立减小促价与仓库定制SKU一次性修正_20260901.md`。
 
