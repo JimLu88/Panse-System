@@ -1,5 +1,31 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-02 升降桌轮换 SKU 已保存为唯一平台草稿并完成只读闭环
+
+- 商品 `793202812082` 的唯一草稿仍为 `dbDraftId=1355242198`，原保存时间仍为
+  `2026-09-01 22:54:21`。草稿现有 13 个唯一商家编码；新增规格为
+  `130cm 带高台升降桌` / `PPS2441004051311B1`，标价 `9100.00`、库存 `9`，
+  桌腿材质 `钢`、电机 `2个`、桌面长度 `750mm`，其余可读字段与源规格一致。
+- 最终只读回读先固定线上商品 12 行，再打开该唯一草稿逐行比较。结果为
+  `sku_row_count=13`、`merchant_code_count=13`、`diff=[]`、
+  `invalid_rows=[]`、`preexisting_sku_diff=[]`；原 12 个 SKU 的全部非空业务字段
+  零差异。商品仍未上架，活动仍未报名，最终回读
+  `platform_product_write=false`。
+- ERP 台账已收口为 `saved_draft_verified` / `created_in_platform_draft`，
+  `campaign_signup_status=not_submitted`，证据 SHA-256 为
+  `354b084bbbe949ce8fe467f0d621b8beac1eb2b0b15aeee25c2889ea88d967e8`。
+- 恢复入口锁定草稿 ID、标题和保存时间；只允许保存同一草稿，绝不点击
+  `提交宝贝信息`、上架或报名。一次恢复预检因淘宝把行控件从 18 个变为 16 个而在
+  写前停止，未生成恢复锁、未点击保存。程序现按同批行结构和非空业务字段比较，
+  仍硬校验 13 行、唯一编码、目标字段及线上 12 行基线；Web-Agent 实现提交为
+  `e5f9fca59ea7ab3d50c3d5b5e7fc7439abbe6479`，ERP 台账提交为
+  `dd005bd0b917e64f915e3a4e16f5f52a6fac0641`。
+- 原保存锁
+  `product_sku_slot_draft_save_793202812082.claim.json` 必须永久保留；恢复锁不存在，
+  不得再运行保存或恢复入口。后续只能用只读回读确认草稿，除非用户重新明确授权新的
+  平台动作。
+
+
 ## 2026-09-01 nightly finance false-alert and export recovery
 
 - ERP code commit `97802bd39ffeb81d24ea6886fa5ae693b7618e38` is on GitHub
