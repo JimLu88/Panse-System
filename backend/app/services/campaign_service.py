@@ -965,6 +965,33 @@ def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
             excluded_custom_placeholder_sku_pairs(db, plan)}
 
 
+def _official_custom_code_pairs(
+        records: list[dict], *, item_ids: set[str], selected_sku_ids: set[str],
+) -> set[tuple[str, str]]:
+    """Recognize extra official rows whose SKU merchant code is explicitly custom.
+
+    Some legacy QianNiu rows use a bare SKU merchant code such as ``97`` and
+    have no corresponding PricingSkuPromo mapping.  The shared SKU convention
+    still classifies suffixes 90-99 as custom.  This rule applies only to extra
+    rows inside the exact requested item scope and never overrides an explicitly
+    selected custom SKU.
+    """
+    from app.services import sku_utils
+
+    pairs = set()
+    for record in records:
+        item_id = str(record.get("item_id") or "").strip()
+        sku_id = str(record.get("sku_id") or "").strip()
+        merchant_code = str(record.get("merchant_code") or "").strip()
+        if (
+            item_id in item_ids and sku_id.isdigit()
+            and sku_id not in selected_sku_ids
+            and sku_utils.is_custom_sku_code(merchant_code)
+        ):
+            pairs.add((item_id, sku_id))
+    return pairs
+
+
 def _campaign_item_exclusions_for_plan(
         db: Session, plan, mapped_pairs: list[tuple], *,
         include_candidate_unavailable: bool = True,
@@ -4114,9 +4141,12 @@ def _refresh_official_product_sku_identity(
             "actual_sha256": artifact_sha256,
             "job_id": exported.get("job_id"),
         }
-    excluded_pairs = (
-        excluded_custom_placeholder_sku_pairs(db, plan) if plan is not None else set()
-    )
+    excluded_pairs = set()
+    if plan is not None:
+        excluded_pairs = excluded_custom_placeholder_sku_pairs(db, plan)
+        excluded_pairs.update(_official_custom_code_pairs(
+            records, item_ids=set(item_ids),
+            selected_sku_ids=custom_placeholder_sku_allowlist(plan)))
     scope_guard = _official_product_scope_guard(
         pending_rows, records, excluded_pairs)
     if not scope_guard["ok"]:
@@ -4133,9 +4163,19 @@ def _refresh_official_product_sku_identity(
                 "export_created": exported.get("export_created"),
             },
         }
+    target_pairs = {
+        (str(row.get("taobao_item_id") or "").strip(),
+         str(row.get("taobao_sku_id") or "").strip())
+        for row in pending_rows
+    }
+    target_records = [
+        record for record in records
+        if (str(record.get("item_id") or "").strip(),
+            str(record.get("sku_id") or "").strip()) in target_pairs
+    ]
     sku_by_code = {row.sku_code: row for row in db.execute(select(PricingSku)).scalars()}
     ledger_rows = []
-    for record in records:
+    for record in target_records:
         merchant = str(record.get("merchant_code") or "").strip()
         sku = sku_by_code.get(merchant)
         ledger_rows.append({
@@ -4153,7 +4193,7 @@ def _refresh_official_product_sku_identity(
         db, ledger_rows, evidence_source="official_product_export:campaign_execute",
         evidence_sha256=artifact_sha256)
     ledger_gate = sku_identity_service.assert_current_platform_snapshot(
-        db, records, item_ids=set(item_ids), evidence_sha256=artifact_sha256)
+        db, target_records, item_ids=set(item_ids), evidence_sha256=artifact_sha256)
     return {
         "ok": scope_guard["ok"] and ledger_gate["ok"]
               and not ledger_refresh["conflicts"],

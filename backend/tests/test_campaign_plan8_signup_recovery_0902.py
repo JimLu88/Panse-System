@@ -206,6 +206,18 @@ def test_official_product_scope_rejects_target_merchant_code_drift():
     }]
 
 
+def test_official_custom_code_pairs_recognize_bare_97_only_in_exact_scope():
+    records = [
+        {"item_id": "1001", "sku_id": "2001", "merchant_code": "97"},
+        {"item_id": "1001", "sku_id": "2002", "merchant_code": "89"},
+        {"item_id": "9009", "sku_id": "2003", "merchant_code": "99"},
+        {"item_id": "1001", "sku_id": "2004", "merchant_code": "98"},
+    ]
+    result = campaign_service._official_custom_code_pairs(
+        records, item_ids={"1001"}, selected_sku_ids={"2004"})
+    assert result == {("1001", "2001")}
+
+
 def _patch_read_gates(monkeypatch, *, current: dict | None = None):
     rows = _signup_rows()
     monkeypatch.setattr(
