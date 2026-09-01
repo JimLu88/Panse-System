@@ -156,6 +156,16 @@ def test_deterministic_program_error_stops_blind_retry_and_enters_maintenance_qu
     assert pipeline.list_program_maintenance(db_session) == []
 
 
+def test_deterministic_web_agent_download_failure_stops_blind_retry():
+    result = pipeline.classify_failure(
+        "wanxiangtai流水未完成: deterministic: step#2 download: "
+        "Download.save_as: Target page, context or browser has been closed"
+    )
+
+    assert result["owner"] == "program_maintenance"
+    assert result["retry_policy"] == "stop_and_review"
+
+
 def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(

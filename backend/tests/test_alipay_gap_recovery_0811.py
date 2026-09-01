@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zipfile
 from datetime import date, timedelta
 
 from app.models.finance import AlipayFlow
 from app.models.import_file import ImportedFile
 from app.services import agent_ingest_service as ingest
+from app.services import settings_service
 
 
 def _signcustomer_zip(order_no: str = "5120803044263167809") -> bytes:
@@ -145,3 +147,38 @@ def test_refresh_alipay_daily_keeps_failed_date_and_reason(db_session, monkeypat
         "date": failed_day.isoformat(),
         "reason": "账单暂不可下载",
     }]
+
+
+def test_refresh_alipay_daily_persists_official_no_business_day_as_coverage(
+    db_session, monkeypatch,
+):
+    no_data_day = date.today() - timedelta(days=1)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ingest.web_agent_service,
+        "alipay_accounts",
+        lambda db: [{"id": "enterprise", "name": "企业号"}],
+    )
+    monkeypatch.setattr(
+        ingest.web_agent_service,
+        "alipay_bill",
+        lambda db, aid, bill_type, bill_date: calls.append(bill_date) or {
+            "ok": False,
+            "code": "40004",
+            "sub_msg": "请求的账单时间无业务数据",
+        },
+    )
+
+    first = ingest.refresh_alipay_daily(db_session, max_days=1)
+    db_session.commit()
+    second = ingest.refresh_alipay_daily(db_session, max_days=1)
+
+    assert first["fail"] == 0
+    assert first["no_data"] == 1
+    assert second["fail"] == 0
+    assert second["skipped_covered"] == 1
+    assert calls == [no_data_day.isoformat()]
+    state = json.loads(settings_service.get(db_session, ingest.KEY_STATE))
+    assert state[ingest.STATE_ENTERPRISE_ALIPAY_NO_DATA_DAYS][
+        no_data_day.isoformat()
+    ]["reason"] == "official_no_business_data"

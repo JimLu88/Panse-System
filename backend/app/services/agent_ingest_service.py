@@ -50,6 +50,7 @@ STATE_MAIN_ALIPAY_FLOW = "alipay_main_flow"
 MAIN_ALIPAY_FLOW_TASK = "alipay_main"
 STATE_FINANCE_TASK_SUCCESS = "finance_task_success"
 STATE_ENTERPRISE_ALIPAY_FLOW = "alipay_enterprise_flow"
+STATE_ENTERPRISE_ALIPAY_NO_DATA_DAYS = "alipay_enterprise_no_data_days"
 FINANCE_BROWSER_FLOW_TASKS = (
     "wechat_bill",
     "wanxiangtai",
@@ -1216,6 +1217,18 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
     # 每个账单日看最新一条归档结果。文件名由 Web-Agent 固定为
     # 账单_signcustomer_YYYY-MM-DD.zip；旧的 error 记录不能被后来的日期掩盖。
     covered: set[date] = set()
+    state = _load_json(db, KEY_STATE)
+    raw_no_data = state.get(STATE_ENTERPRISE_ALIPAY_NO_DATA_DAYS)
+    no_data_days = raw_no_data if isinstance(raw_no_data, dict) else {}
+    # The official API can explicitly state that a settled day had no business
+    # data.  That is durable coverage, not an error to retry every evening.
+    for raw_day in no_data_days:
+        try:
+            bill_day = date.fromisoformat(str(raw_day))
+        except ValueError:
+            continue
+        if start <= bill_day <= end:
+            covered.add(bill_day)
     rows = db.execute(
         select(ImportedFile).where(
             ImportedFile.kind == "alipay",
@@ -1239,7 +1252,8 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
             covered.add(bill_day)
 
     out: dict = {"account": account_name, "from": str(start), "to": str(end),
-                 "pulled": 0, "fail": 0, "skipped_covered": 0,
+                 "pulled": 0, "fail": 0, "no_data": 0,
+                 "skipped_covered": 0,
                  "failures": []}
     d = start
     while d <= end:
@@ -1251,11 +1265,15 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
             r = web_agent_service.alipay_bill(db, aid, "signcustomer", d.isoformat())
             if r.get("ok"):
                 out["pulled"] += 1
+            elif _is_explicit_alipay_no_business_data(r):
+                out["no_data"] += 1
+                no_data_days[d.isoformat()] = {
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "reason": "official_no_business_data",
+                }
             else:
                 out["fail"] += 1
-                reason = str(
-                    r.get("error") or r.get("msg") or r.get("code") or "账单接口未返回原因"
-                )[:240]
+                reason = _alipay_bill_error_reason(r)
                 out["failures"].append({"date": d.isoformat(), "reason": reason})
         except Exception as exc:  # noqa: BLE001 - 单日失败不阻断
             out["fail"] += 1
@@ -1264,7 +1282,31 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
                 "reason": f"{type(exc).__name__}: {exc}"[:240],
             })
         d += timedelta(days=1)
+    # Bound the marker to the same recovery horizon.  A later real imported
+    # file still wins naturally because both are treated as covered.
+    state[STATE_ENTERPRISE_ALIPAY_NO_DATA_DAYS] = {
+        raw_day: value
+        for raw_day, value in no_data_days.items()
+        if raw_day >= start.isoformat()
+    }
+    _save_json(db, KEY_STATE, state)
     return out
+
+
+def _is_explicit_alipay_no_business_data(value: object) -> bool:
+    """Accept only the official no-business-data response as zero-day proof."""
+    if isinstance(value, dict):
+        return any(_is_explicit_alipay_no_business_data(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_is_explicit_alipay_no_business_data(item) for item in value)
+    return "请求的账单时间无业务数据" in str(value or "")
+
+
+def _alipay_bill_error_reason(result: dict) -> str:
+    for key in ("error", "msg", "sub_msg", "code", "sub_code"):
+        if result.get(key):
+            return str(result[key])[:240]
+    return "账单接口未返回原因"
 
 
 def reingest_pending_shipping(db: Session) -> dict:
