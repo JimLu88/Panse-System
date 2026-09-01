@@ -90,6 +90,30 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
             current.conflict_detected = False
             refreshed += 1
             disposition = "backfill_code_corrected"
+        elif (current.identity_sha256 != digest
+              and current.latest_evidence_source.startswith("erp_database_backfill")
+              and str(evidence_source).startswith("official_product_export:")
+              and meaning["merchant_code"] == meaning["sku_code"]
+              and current.merchant_code == meaning["merchant_code"]
+              and all(getattr(current, field) == meaning[field] for field in (
+                  "taobao_item_id", "taobao_sku_id", "sku_code",
+                  "product_code", "is_custom_placeholder"))):
+            # The ERP backfill stores the concise internal SKU label, while
+            # Taobao's official product export stores the full sale-attribute
+            # string for the same item/SKU/merchant-code identity.  Canonicalize
+            # this one-time backfill projection from exact official evidence.
+            # Once an official observation is canonical, any later spec drift
+            # still takes the normal identity-conflict path below.
+            current.sku_spec = meaning["sku_spec"]
+            current.identity_sha256 = digest
+            current.last_observed_at = now
+            current.latest_sale_state = _clean(raw.get("sale_state"))
+            current.latest_daily_price = raw.get("daily_price")
+            current.latest_evidence_source = evidence_source
+            current.latest_evidence_sha256 = evidence_sha256
+            current.conflict_detected = False
+            refreshed += 1
+            disposition = "backfill_spec_canonicalized"
         elif current.identity_sha256 != digest:
             current.conflict_detected = True
             conflicts += 1

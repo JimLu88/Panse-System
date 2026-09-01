@@ -150,3 +150,54 @@ def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept(
     assert row.merchant_code == "PPS2441004051311"
     assert [x.merchant_code for x in history] == ["legacy-import-code", "PPS2441004051311"]
     assert history[-1].disposition == "backfill_code_corrected"
+
+
+def test_official_export_canonicalizes_backfill_spec_once_with_exact_codes():
+    db = _db()
+    old = {
+        "taobao_item_id": "1036279566778", "taobao_sku_id": "6280283835626",
+        "merchant_code": "PPS2633008032212", "sku_spec": "榉木柔光床-1.35米-榉木铺板",
+        "sku_code": "PPS2633008032212", "product_code": "PPS26330080322",
+    }
+    official = {
+        **old,
+        "sku_spec": "床板材质:榉木;颜色分类:榉木柔光床-1.35米;",
+    }
+    sku_identity_service.observe(
+        db, [old], evidence_source="erp_database_backfill:0147",
+        evidence_sha256="1" * 64)
+    result = sku_identity_service.observe(
+        db, [official],
+        evidence_source="official_product_export:campaign_execute",
+        evidence_sha256="2" * 64)
+    row = db.execute(select(SkuIdentity)).scalar_one()
+    history = db.execute(select(SkuIdentityObservation).order_by(
+        SkuIdentityObservation.id)).scalars().all()
+
+    assert result == {"created": 0, "refreshed": 1, "conflicts": 0, "skipped": 0}
+    assert row.sku_spec == official["sku_spec"]
+    assert row.latest_evidence_source == "official_product_export:campaign_execute"
+    assert row.conflict_detected is False
+    assert history[-1].disposition == "backfill_spec_canonicalized"
+
+
+def test_official_export_does_not_hide_spec_drift_after_official_identity_exists():
+    db = _db()
+    base = {
+        "taobao_item_id": "1036279566778", "taobao_sku_id": "6280283835626",
+        "merchant_code": "PPS2633008032212",
+        "sku_spec": "床板材质:榉木;颜色分类:榉木柔光床-1.35米;",
+        "sku_code": "PPS2633008032212", "product_code": "PPS26330080322",
+    }
+    sku_identity_service.observe(
+        db, [base], evidence_source="official_product_export:campaign_execute",
+        evidence_sha256="3" * 64)
+    result = sku_identity_service.observe(
+        db, [{**base, "sku_spec": "颜色分类:已被改成其他规格;"}],
+        evidence_source="official_product_export:campaign_execute",
+        evidence_sha256="4" * 64)
+    row = db.execute(select(SkuIdentity)).scalar_one()
+
+    assert result["conflicts"] == 1
+    assert row.sku_spec == base["sku_spec"]
+    assert row.conflict_detected is True
