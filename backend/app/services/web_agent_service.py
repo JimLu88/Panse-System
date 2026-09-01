@@ -216,22 +216,51 @@ def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
+def export_product_prices(
+        db: Session, *, timeout_s: int = 260,
+        item_ids: list[str] | set[str] | tuple[str, ...] | None = None,
+        recovery_record: dict | None = None,
+) -> dict:
     """全自动推标价·第1步: 让 Web-Agent 触发千牛「excel商品批量导出」+ 从下载中心下载发布模版。
     返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/error}。异步导出~2min, 给足等待。"""
     import base64
-    j = _post(db, "/api/product-price/export", {}, timeout=30)
+    if item_ids and recovery_record:
+        return {"ok": False, "error": "product_export_scope_and_recovery_conflict"}
+    endpoint = "/api/product-price/export"
+    payload: dict = {}
+    if recovery_record is not None:
+        endpoint = "/api/product-price/export-recover"
+        payload = dict(recovery_record)
+    elif item_ids:
+        payload["item_ids"] = sorted({
+            str(item_id).strip() for item_id in item_ids
+            if str(item_id).strip().isdigit()
+        })
+        if not payload["item_ids"]:
+            return {"ok": False, "error": "product_export_item_scope_empty"}
+    j = _post(db, endpoint, payload, timeout=30)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
-    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    job_id = j["job"]
+    final = wait_job(db, job_id, timeout_s=timeout_s)
     res = final.get("result") or {}
+    detail = {key: value for key, value in res.items() if key != "xlsx_b64"}
     if res.get("need_scan"):
-        return {"ok": False, "need_scan": True, "message": res.get("message")}
+        return {"ok": False, "need_scan": True, "message": res.get("message"),
+                "job_id": job_id, "detail": detail}
     if not res.get("ok") or not res.get("xlsx_b64"):
-        return {"ok": False, "error": res.get("message", "导出/下载失败"),
-                "screenshot_base64": res.get("screenshot_base64")}
+        return {"ok": False,
+                "error": res.get("error") or res.get("message") or "导出/下载失败",
+                "message": res.get("message"), "job_id": job_id,
+                "screenshot_base64": res.get("screenshot_base64"),
+                "detail": detail}
     return {"ok": True, "xlsx_bytes": base64.b64decode(res["xlsx_b64"]),
-            "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
+            "filename": res.get("filename"), "job_id": job_id,
+            "sha256": res.get("sha256"), "record": res.get("record"),
+            "download_mode": res.get("download_mode"),
+            "export_created": res.get("export_created"),
+            "platform_write": res.get("platform_write"),
+            "screenshot_base64": res.get("screenshot_base64")}
 
 
 def product_sku_slot_stage(db: Session, payload: dict, *, timeout_s: int = 240) -> dict:

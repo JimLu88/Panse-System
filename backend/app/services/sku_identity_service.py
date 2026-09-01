@@ -480,6 +480,38 @@ def assert_exact_platform_snapshot(db: Session, rows: list[dict], *, item_ids: s
     }
 
 
+def assert_current_platform_snapshot(
+        db: Session, rows: list[dict], *, item_ids: set[str],
+        evidence_sha256: str) -> dict:
+    """Compare only observations written from this exact official artifact.
+
+    The canonical ledger is append-only and can legitimately retain old SKU
+    identities.  A current campaign gate must therefore not treat historical
+    rows from older exports as if they were still present on the platform.
+    """
+    observed = {(str(r.get("item_id") or r.get("taobao_item_id") or ""),
+                 str(r.get("sku_id") or r.get("taobao_sku_id") or ""))
+                for r in rows}
+    observed = {pair for pair in observed
+                if pair[0] in item_ids and pair[1].isdigit()}
+    observations = db.execute(select(SkuIdentityObservation).where(
+        SkuIdentityObservation.taobao_item_id.in_(sorted(item_ids)),
+        SkuIdentityObservation.evidence_sha256 == str(evidence_sha256),
+    )).scalars().all()
+    current = {(row.taobao_item_id, row.taobao_sku_id) for row in observations}
+    conflicts = sorted({
+        (row.taobao_item_id, row.taobao_sku_id)
+        for row in observations if row.disposition == "identity_conflict"
+    })
+    return {
+        "ok": observed == current and not conflicts,
+        "missing_in_current_evidence": sorted(observed - current),
+        "unexpected_in_current_evidence": sorted(current - observed),
+        "current_evidence_conflicts": conflicts,
+        "evidence_sha256": str(evidence_sha256),
+    }
+
+
 def campaign_manifest_gate(db: Session, rows: list[dict]) -> dict:
     """DB-only preparation gate; execution still performs official full export."""
     expected = {(str(r.get("taobao_item_id") or ""), str(r.get("taobao_sku_id") or ""))

@@ -105,6 +105,30 @@ def test_platform_snapshot_comparison_fails_closed_on_drift():
     assert drift["missing_in_ledger"] == [("793202812082", "6241447059626")]
 
 
+def test_current_artifact_snapshot_ignores_historical_old_sku_rows():
+    db = _db()
+    old = [{
+        "taobao_item_id": "793202812082", "taobao_sku_id": "6241447059624",
+        "merchant_code": "OLD-CODE", "sku_spec": "旧规格",
+    }]
+    current = [{
+        "taobao_item_id": "793202812082", "taobao_sku_id": "6241447059625",
+        "merchant_code": "CURRENT-CODE", "sku_spec": "当前规格",
+    }]
+    sku_identity_service.observe(
+        db, old, evidence_source="official_product_export:old",
+        evidence_sha256="1" * 64)
+    sku_identity_service.observe(
+        db, current, evidence_source="official_product_export:current",
+        evidence_sha256="2" * 64)
+    result = sku_identity_service.assert_current_platform_snapshot(
+        db, [{"item_id": "793202812082", "sku_id": "6241447059625"}],
+        item_ids={"793202812082"}, evidence_sha256="2" * 64)
+    assert result["ok"] is True
+    assert result["missing_in_current_evidence"] == []
+    assert result["unexpected_in_current_evidence"] == []
+
+
 def test_legacy_product_code_merchant_projection_is_corrected_with_history_kept():
     db = _db()
     old = {

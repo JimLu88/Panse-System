@@ -157,6 +157,55 @@ def _request() -> dict:
     }
 
 
+def test_official_product_scope_allows_only_exact_excluded_custom_extras():
+    pending = [{
+        "taobao_item_id": "1001", "taobao_sku_id": "2001",
+        "sku_code": "CODE-1",
+    }]
+    records = [
+        {"item_id": "1001", "sku_id": "2001", "merchant_code": "CODE-1"},
+        {"item_id": "1001", "sku_id": "2999", "merchant_code": "CUSTOM"},
+    ]
+    result = campaign_service._official_product_scope_guard(
+        pending, records, {("1001", "2999")})
+    assert result["ok"] is True
+    assert result["expected_sku_count"] == 1
+    assert result["official_sku_count"] == 2
+    assert result["accepted_excluded_custom_pairs"] == [("1001", "2999")]
+
+
+def test_official_product_scope_rejects_unknown_extra_and_unknown_item():
+    pending = [{
+        "taobao_item_id": "1001", "taobao_sku_id": "2001",
+        "sku_code": "CODE-1",
+    }]
+    records = [
+        {"item_id": "1001", "sku_id": "2001", "merchant_code": "CODE-1"},
+        {"item_id": "1001", "sku_id": "2888", "merchant_code": "UNKNOWN"},
+        {"item_id": "9009", "sku_id": "2999", "merchant_code": "CUSTOM"},
+    ]
+    result = campaign_service._official_product_scope_guard(
+        pending, records, {("9009", "2999")})
+    assert result["ok"] is False
+    assert result["unknown_extra_pairs"] == [
+        ("1001", "2888"), ("9009", "2999")]
+
+
+def test_official_product_scope_rejects_target_merchant_code_drift():
+    result = campaign_service._official_product_scope_guard(
+        [{"taobao_item_id": "1001", "taobao_sku_id": "2001",
+          "sku_code": "CODE-1"}],
+        [{"item_id": "1001", "sku_id": "2001",
+          "merchant_code": "DRIFTED"}],
+        set())
+    assert result["ok"] is False
+    assert result["merchant_code_mismatches"] == [{
+        "item_id": "1001", "sku_id": "2001",
+        "expected_merchant_code": "CODE-1",
+        "official_merchant_code": "DRIFTED",
+    }]
+
+
 def _patch_read_gates(monkeypatch, *, current: dict | None = None):
     rows = _signup_rows()
     monkeypatch.setattr(

@@ -181,7 +181,7 @@ def test_resume_push_skips_pre_submit_refresh_and_quietly_closes_no_sales(
         campaign_service, "_build_super_signup_xlsx", lambda _rows: b"xlsx")
     monkeypatch.setattr(
         campaign_service, "_refresh_official_product_sku_identity",
-        lambda _db, rows: {
+        lambda _db, rows, **_kwargs: {
             "ok": True, "checked_items": 1, "checked_skus": len(rows),
             "artifact": {"filename": "product.xlsx", "size": 1,
                          "sha256": "f" * 64},

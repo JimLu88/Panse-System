@@ -947,15 +947,22 @@ def _custom_placeholder_sku_is_selected(plan, s, sku_id: object) -> bool:
     )
 
 
-def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
-    """Exact mapped custom/placeholder SKU IDs silently outside this plan."""
+def excluded_custom_placeholder_sku_pairs(db: Session, plan) -> set[tuple[str, str]]:
+    """Exact item/SKU pairs for custom placeholders outside this plan."""
     return {
-        str(sku_id)
+        (str(getattr(promo, "taobao_item_id", "") or "").strip(), str(sku_id))
         for sku, promo in _mapped_pairs(db)
         if _is_explicit_custom_price_sku(sku)
         for sku_id in _expand_sku_ids(promo)
         if not _custom_placeholder_sku_is_selected(plan, sku, sku_id)
+        and str(getattr(promo, "taobao_item_id", "") or "").strip().isdigit()
     }
+
+
+def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
+    """Compatibility projection of exact excluded custom/placeholder SKU IDs."""
+    return {sku_id for _item_id, sku_id in
+            excluded_custom_placeholder_sku_pairs(db, plan)}
 
 
 def _campaign_item_exclusions_for_plan(
@@ -3983,8 +3990,88 @@ def _halt_prewrite(db: Session, plan, result: dict) -> dict:
     return result
 
 
+def _official_product_scope_guard(
+        pending_rows: list[dict], records: list[dict],
+        excluded_custom_pairs: set[tuple[str, str]],
+) -> dict:
+    """Require every target SKU and allow only exact plan-excluded extras."""
+    expected: dict[tuple[str, str], str] = {}
+    duplicate_expected: list[tuple[str, str]] = []
+    invalid_expected: list[dict] = []
+    for row in pending_rows:
+        item_id = str(row.get("taobao_item_id") or "").strip()
+        sku_id = str(row.get("taobao_sku_id") or "").strip()
+        merchant_code = str(row.get("sku_code") or "").strip()
+        pair = (item_id, sku_id)
+        if not item_id.isdigit() or not sku_id.isdigit() or not merchant_code:
+            invalid_expected.append({
+                "item_id": item_id, "sku_id": sku_id,
+                "merchant_code": merchant_code or None,
+            })
+            continue
+        if pair in expected:
+            duplicate_expected.append(pair)
+        expected[pair] = merchant_code
+
+    actual: dict[tuple[str, str], str] = {}
+    duplicate_actual: list[tuple[str, str]] = []
+    invalid_actual: list[dict] = []
+    for record in records:
+        item_id = str(record.get("item_id") or "").strip()
+        sku_id = str(record.get("sku_id") or "").strip()
+        merchant_code = str(record.get("merchant_code") or "").strip()
+        pair = (item_id, sku_id)
+        if not item_id.isdigit() or not sku_id.isdigit():
+            invalid_actual.append({
+                "item_id": item_id, "sku_id": sku_id,
+                "merchant_code": merchant_code or None,
+            })
+            continue
+        if pair in actual:
+            duplicate_actual.append(pair)
+        actual[pair] = merchant_code
+
+    expected_pairs = set(expected)
+    actual_pairs = set(actual)
+    expected_items = {item_id for item_id, _sku_id in expected_pairs}
+    allowed_extras = {
+        (str(item_id), str(sku_id)) for item_id, sku_id in excluded_custom_pairs
+        if str(item_id) in expected_items
+    }
+    missing = sorted(expected_pairs - actual_pairs)
+    extras = actual_pairs - expected_pairs
+    unknown_extras = sorted(extras - allowed_extras)
+    accepted_extras = sorted(extras & allowed_extras)
+    merchant_code_mismatches = [{
+        "item_id": pair[0], "sku_id": pair[1],
+        "expected_merchant_code": expected[pair],
+        "official_merchant_code": actual.get(pair) or None,
+    } for pair in sorted(expected_pairs & actual_pairs)
+        if actual.get(pair) != expected[pair]]
+    ok = not any((
+        duplicate_expected, duplicate_actual, invalid_expected, invalid_actual,
+        missing, unknown_extras, merchant_code_mismatches,
+    ))
+    return {
+        "ok": ok,
+        "error": None if ok else "official_product_sku_scope_mismatch",
+        "expected_sku_count": len(expected_pairs),
+        "official_sku_count": len(actual_pairs),
+        "accepted_excluded_custom_sku_count": len(accepted_extras),
+        "accepted_excluded_custom_pairs": accepted_extras,
+        "missing_on_platform": missing,
+        "unknown_extra_pairs": unknown_extras,
+        "merchant_code_mismatches": merchant_code_mismatches,
+        "duplicate_expected_pairs": sorted(set(duplicate_expected)),
+        "duplicate_official_pairs": sorted(set(duplicate_actual)),
+        "invalid_expected_rows": invalid_expected,
+        "invalid_official_rows": invalid_actual,
+    }
+
+
 def _refresh_official_product_sku_identity(
-        db: Session, pending_rows: list[dict]) -> dict:
+        db: Session, pending_rows: list[dict], *, plan=None,
+        export_recovery: dict | None = None) -> dict:
     """Read the official current product export and require exact SKU sets.
 
     This is the last read-only guard before the one-shot write claim.  It
@@ -3994,7 +4081,16 @@ def _refresh_official_product_sku_identity(
     from app.models.pricing import PricingSku
     from app.services import campaign_recon_service, sku_identity_service, web_agent_service
 
-    exported = web_agent_service.export_product_prices(db, timeout_s=420)
+    item_ids = sorted({
+        str(row.get("taobao_item_id") or "").strip()
+        for row in pending_rows
+        if str(row.get("taobao_item_id") or "").strip().isdigit()
+    })
+    exported = web_agent_service.export_product_prices(
+        db, timeout_s=420,
+        recovery_record=export_recovery,
+        item_ids=None if export_recovery is not None else item_ids,
+    )
     if not exported.get("ok"):
         return {
             "ok": False,
@@ -4002,16 +4098,41 @@ def _refresh_official_product_sku_identity(
             "error": exported.get("error") or exported.get("message")
                      or "official_product_export_failed",
             "need_scan": bool(exported.get("need_scan")),
+            "job_id": exported.get("job_id"),
+            "export_detail": exported.get("detail"),
         }
     content = exported.get("xlsx_bytes") or b""
     records = campaign_recon_service.parse_product_batch_export(content)
-    actual_by_item: dict[str, set[str]] = defaultdict(set)
-    for record in records:
-        item_id = str(record.get("item_id") or "").strip()
-        sku_id = str(record.get("sku_id") or "").strip()
-        if item_id.isdigit() and sku_id.isdigit():
-            actual_by_item[item_id].add(sku_id)
     artifact_sha256 = hashlib.sha256(content).hexdigest()
+    if (export_recovery is not None
+            and artifact_sha256 != str(export_recovery.get("expected_sha256") or "")):
+        return {
+            "ok": False,
+            "step": "official_product_sku_export",
+            "error": "official_product_export_recovery_sha256_mismatch",
+            "expected_sha256": export_recovery.get("expected_sha256"),
+            "actual_sha256": artifact_sha256,
+            "job_id": exported.get("job_id"),
+        }
+    excluded_pairs = (
+        excluded_custom_placeholder_sku_pairs(db, plan) if plan is not None else set()
+    )
+    scope_guard = _official_product_scope_guard(
+        pending_rows, records, excluded_pairs)
+    if not scope_guard["ok"]:
+        return {
+            "ok": False,
+            "step": "official_product_sku_identity",
+            "error": scope_guard["error"],
+            "scope_guard": scope_guard,
+            "artifact": {
+                "filename": exported.get("filename"), "size": len(content),
+                "sha256": artifact_sha256, "job_id": exported.get("job_id"),
+                "record": exported.get("record"),
+                "download_mode": exported.get("download_mode"),
+                "export_created": exported.get("export_created"),
+            },
+        }
     sku_by_code = {row.sku_code: row for row in db.execute(select(PricingSku)).scalars()}
     ledger_rows = []
     for record in records:
@@ -4031,41 +4152,30 @@ def _refresh_official_product_sku_identity(
     ledger_refresh = sku_identity_service.observe(
         db, ledger_rows, evidence_source="official_product_export:campaign_execute",
         evidence_sha256=artifact_sha256)
-    expected_by_item: dict[str, set[str]] = defaultdict(set)
-    for row in pending_rows:
-        item_id = str(row.get("taobao_item_id") or "").strip()
-        sku_id = str(row.get("taobao_sku_id") or "").strip()
-        if item_id.isdigit() and sku_id.isdigit():
-            expected_by_item[item_id].add(sku_id)
-    mismatches = []
-    for item_id, expected in sorted(expected_by_item.items()):
-        actual = actual_by_item.get(item_id, set())
-        if actual != expected:
-            mismatches.append({
-                "item_id": item_id,
-                "expected_sku_ids": sorted(expected),
-                "official_current_sku_ids": sorted(actual),
-                "missing_in_erp_manifest": sorted(actual - expected),
-                "missing_on_platform": sorted(expected - actual),
-            })
-    ledger_gate = sku_identity_service.assert_exact_platform_snapshot(
-        db, records, item_ids=set(expected_by_item))
-    if not ledger_gate["ok"]:
-        mismatches.append({"ledger": ledger_gate})
+    ledger_gate = sku_identity_service.assert_current_platform_snapshot(
+        db, records, item_ids=set(item_ids), evidence_sha256=artifact_sha256)
     return {
-        "ok": not mismatches and not ledger_refresh["conflicts"],
+        "ok": scope_guard["ok"] and ledger_gate["ok"]
+              and not ledger_refresh["conflicts"],
         "step": "official_product_sku_identity",
-        "error": "official_product_sku_scope_mismatch" if mismatches else None,
-        "mismatches": mismatches,
+        "error": ("official_product_sku_ledger_mismatch"
+                  if not ledger_gate["ok"] or ledger_refresh["conflicts"] else None),
+        "scope_guard": scope_guard,
         "artifact": {
             "filename": exported.get("filename"),
             "size": len(content),
             "sha256": artifact_sha256,
+            "job_id": exported.get("job_id"),
+            "record": exported.get("record"),
+            "download_mode": exported.get("download_mode"),
+            "export_created": exported.get("export_created"),
         },
         "ledger_refresh": ledger_refresh,
         "ledger_gate": ledger_gate,
-        "checked_items": len(expected_by_item),
-        "checked_skus": sum(len(value) for value in expected_by_item.values()),
+        "checked_items": len(item_ids),
+        "checked_skus": scope_guard["expected_sku_count"],
+        "official_skus": scope_guard["official_sku_count"],
+        "excluded_custom_skus": scope_guard["accepted_excluded_custom_sku_count"],
     }
 
 

@@ -63,6 +63,16 @@ EXPECTED_OFFICIAL_RECORD_ITEM_IDS = (
 )
 EXPECTED_FULL_ROW_COUNT = 53
 EXPECTED_PENDING_ROW_COUNT = 52
+EXPECTED_OFFICIAL_PRODUCT_EXPORT_RECOVERY = {
+    "id": "329309563",
+    "sourceFileName": "2215699812811_edit_custom_1788289509612",
+    "rowCount": 6,
+    "failedRowCount": 0,
+    "gmtCreate": "2026-09-02 03:05:10",
+    "expected_sha256": (
+        "fb9e552254f29f8e022f799edd5a6a01b7dfc6653112dba3ee5286bb4270b984"
+    ),
+}
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -452,7 +462,8 @@ def recover_plan8_signup(
         )
 
     official_identity = campaign_service._refresh_official_product_sku_identity(
-        db, pending_rows)
+        db, pending_rows, plan=plan,
+        export_recovery=EXPECTED_OFFICIAL_PRODUCT_EXPORT_RECOVERY)
     if (
         not official_identity.get("ok")
         or official_identity.get("checked_items") != 6

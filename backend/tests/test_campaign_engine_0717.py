@@ -238,7 +238,7 @@ def test_final_signup_is_one_write_then_quiet_no_sales_exclusion_and_receipt(
     monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", refresh)
     monkeypatch.setattr(
         cs, "_refresh_official_product_sku_identity",
-        lambda _db, rows: {
+        lambda _db, rows, **_kwargs: {
             "ok": True, "checked_items": 2, "checked_skus": len(rows),
             "artifact": {"filename": "product.xlsx", "size": 1,
                          "sha256": "f" * 64},
@@ -1363,7 +1363,7 @@ def _mock_wa(monkeypatch, calls):
     )
     monkeypatch.setattr(
         cs, "_refresh_official_product_sku_identity",
-        lambda _db, rows: {
+        lambda _db, rows, **_kwargs: {
             "ok": True, "checked_items": len({
                 str(row.get("taobao_item_id")) for row in rows}),
             "checked_skus": len(rows),
