@@ -369,8 +369,11 @@ def mark_lift_desk_draft_readback_result(db: Session, *, result: dict) -> dict:
         and readback.get("item_id") == LIFT_DESK_PROPOSAL["taobao_item_id"]
         and readback.get("target_merchant_code")
         == LIFT_DESK_PROPOSAL["target_merchant_code"]
-        and readback.get("option_count") == 13
         and readback.get("sku_row_count") == 13
+        and readback.get("merchant_code_count") == 13
+        and readback.get("option_guard") is True
+        and readback.get("option_evidence") in {
+            "attribute_options", "sku_rows"}
         and readback.get("diff") == []
         and readback.get("rendered_missing") == []
         and readback.get("input_value_missing") == []
