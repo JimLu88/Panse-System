@@ -1,10 +1,13 @@
 from copy import deepcopy
+import json
+from pathlib import Path
 
 from app.dependencies import (
     CAMPAIGN_PREPARE_SERVICE_PATHS,
     CAMPAIGN_WAREHOUSE_PRODUCT_PRICE_CORRECTION_PATH,
 )
 from app.services import campaign_warehouse_product_price_correction_service as service
+from app.services import web_agent_service
 
 
 def _readback(*, target: bool) -> dict:
@@ -38,13 +41,85 @@ def test_embedded_manifests_and_target_are_exact():
     assert service.manifest_sha256(target) == service.TARGET_SHA256
 
 
-def test_fixed_request_and_machine_path_are_registered():
+def test_historical_request_is_no_longer_executable_but_path_is_registered():
     payload = service.request_payload()
 
-    assert service.validate_request(payload)
+    assert not service.validate_request(payload)
     assert not service.validate_request({**payload, "target_price": "1419.99"})
     assert (CAMPAIGN_WAREHOUSE_PRODUCT_PRICE_CORRECTION_PATH
             in CAMPAIGN_PREPARE_SERVICE_PATHS)
+
+
+def test_execute_is_user_rule_excluded_before_db_claim_or_web_agent(monkeypatch):
+    class ForbiddenDb:
+        def __getattr__(self, name):
+            raise AssertionError(f"database access forbidden: {name}")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Web-Agent/platform access forbidden")
+
+    monkeypatch.setattr(service.web_agent_service,
+                        "read_warehouse_product_price", forbidden)
+    monkeypatch.setattr(service.web_agent_service,
+                        "correct_warehouse_product_price", forbidden)
+
+    result = service.execute(ForbiddenDb(), payload=service.request_payload())
+
+    assert result["ok"] is False
+    assert result["error"] == "user_rule_excluded"
+    assert result["claim_created"] is False
+    assert result["web_agent_called"] is False
+    assert result["platform_write"] is False
+    assert result["price_change"] is False
+    assert result["execution_boundary"]["platform_product_write"] is False
+    assert result["execution_boundary"]["price_change"] is False
+
+
+def test_erp_web_agent_client_is_also_fail_closed(monkeypatch):
+    monkeypatch.setattr(
+        web_agent_service, "_post",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Web-Agent HTTP call forbidden")),
+    )
+
+    result = web_agent_service.correct_warehouse_product_price(
+        object(), payload=service.request_payload())
+
+    assert result["error"] == "user_rule_excluded"
+    assert result["platform_write"] is False
+    assert result["price_change"] is False
+    assert result["web_agent_called"] is False
+
+
+def test_retired_cli_and_powershell_wrapper_do_not_contact_any_runtime(
+        monkeypatch, capsys):
+    from app.cli import campaign_correct_warehouse_product_sku_price as cli
+
+    monkeypatch.setattr(
+        cli, "_service_token",
+        lambda: (_ for _ in ()).throw(AssertionError("token read forbidden")),
+    )
+    monkeypatch.setattr(
+        cli, "call_api",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("API call forbidden")),
+    )
+
+    assert cli.main() == 0
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["error"] == "user_rule_excluded"
+    assert receipt["claim_created"] is False
+    assert receipt["platform_write"] is False
+    assert receipt["price_change"] is False
+
+    wrapper = (
+        Path(__file__).resolve().parents[2]
+        / "scripts" / "campaign_correct_warehouse_product_sku_price_nas.ps1"
+    ).read_text(encoding="utf-8")
+    assert "user_rule_excluded" in wrapper
+    assert "docker exec" not in wrapper
+    assert "ssh.exe" not in wrapper
+    assert "platform_write = $false" in wrapper
+    assert "price_change = $false" in wrapper
 
 
 def test_readback_requires_complete_manifest_and_warehouse_state():

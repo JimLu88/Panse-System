@@ -928,7 +928,7 @@ def correct_warehouse_product_sku_price(
         body: CampaignWarehouseProductPriceCorrectionIn,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
-    """Correct SKU 6060112621275 from 1500 to 1420 and keep it in stock."""
+    """Return the permanent user-rule exclusion for this warehouse SKU."""
     from app.services import campaign_warehouse_product_price_correction_service
 
     result = campaign_warehouse_product_price_correction_service.execute(

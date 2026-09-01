@@ -1,4 +1,4 @@
-"""Call the fixed one-shot warehouse product SKU price correction API."""
+"""Retired warehouse-price CLI; always return the user-rule exclusion."""
 from __future__ import annotations
 
 import json
@@ -40,16 +40,13 @@ def call_api(*, token: str) -> tuple[int, bytes]:
 
 
 def main() -> int:
-    try:
-        status, body = call_api(token=_service_token())
-    except RuntimeError as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False),
-              file=sys.stderr)
-        return 2
-    sys.stdout.buffer.write(body)
-    if body and not body.endswith(b"\n"):
-        sys.stdout.buffer.write(b"\n")
-    return 0 if 200 <= status < 300 else 1
+    body = json.dumps(
+        service.user_rule_excluded_result(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    sys.stdout.buffer.write(body + b"\n")
+    return 0
 
 
 if __name__ == "__main__":

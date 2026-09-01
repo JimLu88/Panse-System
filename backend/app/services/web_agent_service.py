@@ -271,7 +271,28 @@ def read_warehouse_product_price(
 
 def correct_warehouse_product_price(
         db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
-    """Run the fixed one-SKU warehouse-preserving price correction once."""
+    """Permanently reject the retired warehouse SKU price correction."""
+    return {
+        "ok": False,
+        "error": "user_rule_excluded",
+        "reason": "warehouse_item_no_signup_no_price_change",
+        "item_id": "1038725569412",
+        "sku_id": "6060112621275",
+        "submitted": False,
+        "claim_created": False,
+        "web_agent_called": False,
+        "platform_write": False,
+        "price_change": False,
+        "execution_boundary": {
+            "platform_read": False,
+            "platform_product_write": False,
+            "account_action": False,
+            "price_change": False,
+            "automatic_retry": False,
+        },
+    }
+
+    # Retired implementation retained below as unreachable audit history.
     started = _post(
         db, "/api/product-sku/warehouse-price-correction",
         dict(payload), timeout=30)

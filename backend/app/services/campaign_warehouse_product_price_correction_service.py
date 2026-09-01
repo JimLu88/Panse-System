@@ -1,9 +1,8 @@
-"""One-shot warehouse-preserving correction for Taobao SKU 6060112621275.
+"""Retired warehouse price-correction evidence and fail-closed entry.
 
-Only the exact price 1500.00 -> 1420.00 is permitted.  The complete 14-row
-editor manifest, product title, list state, stock and all non-target cells are
-immutable.  A durable claim is written before the browser save; every success,
-failure or unknown result permanently disables automatic retry.
+The historical manifests remain for audit only.  The current user rule is that
+warehouse item 1038725569412 / SKU 6060112621275 must not be repriced.  Every
+invocation stops before database claims, Web-Agent calls, or platform access.
 """
 from __future__ import annotations
 
@@ -54,6 +53,7 @@ ROWS = (
 )
 BASELINE_SHA256 = "cf079f0b2903fecf0e7267ce9331c91b31d7ee12cce06aff20508c98296ecde5"
 TARGET_SHA256 = "4ad0097702e2126ff3b56a6bbaaf9e5d62c8849b5e4a5985e28d7b49e0266987"
+USER_RULE_ERROR = "user_rule_excluded"
 
 
 def manifest(*, target: bool = False) -> dict:
@@ -80,9 +80,8 @@ def request_payload() -> dict:
 
 
 def validate_request(payload: dict) -> bool:
-    return (isinstance(payload, dict) and payload == request_payload()
-            and manifest_sha256(manifest()) == BASELINE_SHA256
-            and manifest_sha256(manifest(target=True)) == TARGET_SHA256)
+    """No request is executable; historical payloads are evidence only."""
+    return False
 
 
 def _boundary(*, platform_read=False, platform_write=False) -> dict:
@@ -105,6 +104,20 @@ def _fail(error: str, **extra) -> dict:
                 platform_read=bool(extra.pop("platform_read", False)),
                 platform_write=platform_write),
             **extra}
+
+
+def user_rule_excluded_result() -> dict:
+    """Return the permanent user-rule tombstone without touching any system."""
+    return {
+        **_fail(USER_RULE_ERROR),
+        "reason": "warehouse_item_no_signup_no_price_change",
+        "item_id": ITEM_ID,
+        "sku_id": SKU_ID,
+        "claim_created": False,
+        "web_agent_called": False,
+        "platform_write": False,
+        "price_change": False,
+    }
 
 
 def _get_plan(db: Session, *, lock=False) -> CampaignPlan | None:
@@ -218,6 +231,13 @@ def _persist(db: Session, plan: CampaignPlan, *, evidence_type: str,
 
 
 def execute(db: Session, *, payload: dict) -> dict:
+    # Current explicit user rule supersedes the historical one-shot plan.  This
+    # unconditional first instruction is intentionally before validation,
+    # database reads/claims, evidence persistence, and every Web-Agent call.
+    return user_rule_excluded_result()
+
+    # Historical implementation below is intentionally unreachable and kept
+    # only as an auditable record of the retired safety design.
     if not validate_request(payload):
         return _fail("warehouse_product_price_request_not_allowed")
     plan = _get_plan(db)
