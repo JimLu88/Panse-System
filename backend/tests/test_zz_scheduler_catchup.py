@@ -39,6 +39,19 @@ def test_run_row_suppresses_catchup(db_session):
     assert missed == ["daily_1810_order_sheets"]
 
 
+def test_active_on_time_job_suppresses_startup_catchup(db_session):
+    """The completion row is absent while a long cron run is active."""
+    assert sched._claim_job("daily_2030_finance_agent") is True
+    try:
+        missed = sched.missed_catchup_jobs(
+            db_session, now=_now_at(20, 31), overrides={},
+        )
+    finally:
+        sched._release_job("daily_2030_finance_agent")
+
+    assert "daily_2030_finance_agent" not in missed
+
+
 def test_failed_run_is_eligible_for_one_startup_catchup(db_session):
     """A failed critical run is not mistaken for completion after restart."""
     fire = _now_at(22, 50)

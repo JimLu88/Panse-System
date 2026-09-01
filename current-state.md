@@ -1,5 +1,32 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-01 nightly finance false-alert and export recovery
+
+- ERP code commit `97802bd39ffeb81d24ea6886fa5ae693b7618e38` is on GitHub
+  `main` and is the verified production API/Web version.  The unified release
+  verifier passed health, ready, API/Web parity, migration `0149 (head)`,
+  required routes and all four production containers.  The API health window
+  expired seconds before its first healthy response during the initial release;
+  the approved standalone Web recovery path completed the interrupted second
+  half, after which the full verifier passed.
+- A process-local scheduler claim now prevents the on-time 20:30 finance job
+  and the 60-second startup catch-up from running the same job concurrently.
+  A duplicate trigger is logged as ignored and never becomes a finance failure
+  or user notification.
+- The official Alipay API response `请求的账单时间无业务数据` is now stored as
+  durable zero-business-day coverage.  Only that exact official evidence is
+  accepted; other empty/error responses remain failures.  Covered zero days
+  are not requested or reported again in later nightly runs.
+- Deterministic Web-Agent selector/download contract errors are routed once to
+  program maintenance and close the automatic retry chain.  Login/QR remains a
+  user-input gate rather than a program failure; the existing pipeline pauses
+  after its single account-level reminder.
+- Focused ERP regression passed 48 tests plus Python compilation and scoped
+  diff checks.  No finance pull, account login, QR flow, import, notification or
+  other business action was used for release verification.  Rollback images:
+  `panse-system-api:rollback-20260901-214111` and
+  `panse-system-web:rollback-20260901-215124`.
+
 ## 2026-09-01 五项价格修正已完成并由全新官方导出闭环
 
 - Windows 防火墙规则 `Panse Web-Agent LAN 8500` 已启用并回读为：仅

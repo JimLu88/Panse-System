@@ -45,6 +45,10 @@ _PROGRAM_FAILURE_PATTERNS = (
     "数据契约",
     "schema mismatch",
     "contract mismatch",
+    "deterministic:",
+    "wechat_bill_table_missing",
+    "wechat_bill_download_missing",
+    "download.save_as: target page, context or browser has been closed",
 )
 
 _EXECUTION_FAILURE_PATTERNS = (

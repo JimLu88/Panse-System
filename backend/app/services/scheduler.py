@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time as time_mod
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
@@ -32,6 +33,27 @@ _logger = logging.getLogger("panse.scheduler")
 _SCHEDULER = None   # type: ignore[var-annotated]
 _REGISTRY: dict[str, dict] = {}
 # job_id -> {label, fn, kind: 'cron'/'interval', schedule_kwargs}
+_ACTIVE_JOB_IDS: set[str] = set()
+_ACTIVE_JOB_IDS_LOCK = threading.Lock()
+
+
+def _claim_job(job_id: str) -> bool:
+    """Prevent cron/startup-catchup races from running the same job twice."""
+    with _ACTIVE_JOB_IDS_LOCK:
+        if job_id in _ACTIVE_JOB_IDS:
+            return False
+        _ACTIVE_JOB_IDS.add(job_id)
+        return True
+
+
+def _release_job(job_id: str) -> None:
+    with _ACTIVE_JOB_IDS_LOCK:
+        _ACTIVE_JOB_IDS.discard(job_id)
+
+
+def _job_is_active(job_id: str) -> bool:
+    with _ACTIVE_JOB_IDS_LOCK:
+        return job_id in _ACTIVE_JOB_IDS
 
 
 # ----------------------------- 任务运行包装 ----------------------- #
@@ -103,6 +125,13 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
     from app.database import SessionLocal
     from app.models.scheduled_job import ScheduledJobRun
 
+    if not _claim_job(job_id):
+        # This is not a business failure.  It most commonly happens when a
+        # restart catch-up wakes while the on-time cron invocation is still
+        # running.  The active invocation owns the durable result and alerts.
+        _logger.info("定时任务 %s 已在运行，忽略重复触发", job_id)
+        return
+
     started = datetime.now(timezone.utc)
     t0 = time_mod.time()
     error: Optional[str] = None
@@ -156,8 +185,9 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
     finally:
         duration = int((time_mod.time() - t0) * 1000)
         # 写日志 (独立 session)
-        log_db = SessionLocal()
+        log_db = None
         try:
+            log_db = SessionLocal()
             log_db.add(ScheduledJobRun(
                 job_id=job_id, job_label=label, status=status,
                 duration_ms=duration, error=error, result_summary=result,
@@ -169,7 +199,9 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
         except Exception as e:  # pragma: no cover
             _logger.warning("写 ScheduledJobRun 失败: %s", e)
         finally:
-            log_db.close()
+            if log_db is not None:
+                log_db.close()
+            _release_job(job_id)
 
 
 # ----------------------------- 公共注册接口 ----------------------- #
@@ -2517,6 +2549,10 @@ def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
     ov = overrides if overrides is not None else _load_overrides()
     out: list[str] = []
     for jid, grace_h in _CATCHUP_JOBS.items():
+        if _job_is_active(jid):
+            # The on-time run is in flight and has not written its completion
+            # row yet.  It is not a missed run and must not be started twice.
+            continue
         cfg = _REGISTRY.get(jid)
         if not cfg or not cfg.get("cron"):
             continue
