@@ -276,6 +276,13 @@ class CampaignFivePriceRecoveryIn(CampaignFivePriceCorrectionIn):
     confirmed_no_platform_write: bool
 
 
+class CampaignFivePriceSuperRecoveryV2In(CampaignFivePriceCorrectionIn):
+    """Recovery after fresh readback proves the next-step attempt persisted none."""
+
+    expected_failed_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    confirmed_no_persisted_change: bool
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -1034,6 +1041,32 @@ def recover_five_price_super_reduce(
             "five_price_super_recovery_request_not_allowed",
             "five_price_plan_identity_drift",
             "five_price_super_recovery_failed_attempt_not_write_free",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-five-price-super-reduce-v2")
+def recover_five_price_super_reduce_v2(
+        body: CampaignFivePriceSuperRecoveryV2In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover after four fresh readbacks prove the prior form was not saved."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.recover_super_reduce_v2(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "five_price_super_recovery_v2_failed_attempt_not_found",
+        } else 409
+        if error in {
+            "five_price_super_recovery_v2_request_not_allowed",
+            "five_price_plan_identity_drift",
+            "five_price_super_recovery_v2_failed_attempt_not_exact",
         }:
             code = 422
         raise HTTPException(code, detail=result)
