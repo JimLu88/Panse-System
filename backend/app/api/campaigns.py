@@ -269,6 +269,13 @@ class CampaignFivePriceCorrectionIn(BaseModel):
     source_export_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignFivePriceRecoveryIn(CampaignFivePriceCorrectionIn):
+    """One recovery bound to the exact NAS-to-Web-Agent timeout attempt."""
+
+    expected_failed_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    confirmed_no_platform_write: bool
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -975,6 +982,32 @@ def correct_five_price_issues(
         if error in {
             "five_price_request_not_allowed",
             "five_price_plan_identity_drift",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-five-price-single-discount")
+def recover_five_price_single_discount(
+        body: CampaignFivePriceRecoveryIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover only the fixed single-discount timeout; preserve its attempt."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.recover_single_discount(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "five_price_recovery_failed_attempt_not_found",
+        } else 409
+        if error in {
+            "five_price_recovery_request_not_allowed",
+            "five_price_plan_identity_drift",
+            "five_price_recovery_failed_attempt_not_write_free",
         }:
             code = 422
         raise HTTPException(code, detail=result)

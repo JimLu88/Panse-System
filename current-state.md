@@ -1,5 +1,24 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-01 五项价格修正的精确超时恢复入口
+
+- 五项范围固定：`793202812082` 是平台明确近 60 天零销量商品，永久排除本次报名、
+  改价和重试；其余只允许修正 `717418169535` 的 17 个既有单品立减尾差及 4 个活动中
+  商品的 8 个指定定制 SKU。不得改日常价、仓库商品、普通非目标 SKU，也不得撤销、
+  暂停、重新报名或扩大范围。
+- 原单品立减 attempt `b8b0ddcb5633cbe6a1b69681` 已由生产库证明为群晖连接
+  `192.168.31.91:8500` 超时：`web_agent_job_id` 为空、平台写入观察为空、自动重试关闭。
+  原 attempt 保持不变，不能删除、覆盖或直接重跑。
+- 新恢复入口只接受上述固定 attempt、固定 manifest 和人工确认“未到达 Web-Agent”的
+  一次性请求；先另建独立 recovery claim，再调用原精确 Web-Agent 入口。原 attempt
+  任一字段漂移、已有 recovery claim 或恢复终态不精确都会永久停止，不自动重跑。
+- 超级立减阶段现在硬性要求单品立减原 attempt 或精确 recovery attempt 已完成；第一阶段
+  未完成时不能启动第二阶段。正式恢复脚本为
+  `scripts/campaign_recover_five_price_single_discount_nas.ps1`。
+- 当前仅完成程序准备，未执行恢复。Windows 端必须先获用户明确批准，新增仅 Private、
+  LocalSubnet、TCP 8500 的入站规则，并先证明群晖使用既有令牌可访问 Web-Agent；网络
+  未验通前严禁消费 recovery claim。
+
 ## 2026-09-01 计划7小促价入口与已撤销的仓库改价方案
 
 - 活动 `143780562424` 固定修正 20 个普通 SKU：商品 `1036273574687` 8 个、
