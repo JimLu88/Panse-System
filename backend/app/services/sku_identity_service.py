@@ -272,6 +272,66 @@ def mark_lift_desk_stage_failed(db: Session, *, result: dict) -> dict:
             "failure": failure, "evidence_sha256": row.evidence_sha256}
 
 
+def mark_lift_desk_draft_save_result(db: Session, *, result: dict) -> dict:
+    """Persist verified draft-save, pre-write failure, or no-retry unknown state."""
+    row = db.execute(select(SkuPhysicalSlotProposal).where(
+        SkuPhysicalSlotProposal.target_merchant_code == LIFT_DESK_PROPOSAL[
+            "target_merchant_code"]
+    ).with_for_update()).scalar_one()
+    readback = dict(result.get("readback") or {})
+    verified = bool(result.get("ok") and result.get("draft_saved")
+                    and result.get("listed") is False
+                    and result.get("campaign_status") == "not_submitted"
+                    and readback.get("ok"))
+    platform_write = result.get("platform_product_write") is True
+    no_retry = result.get("automatic_retry_allowed") is False
+    if verified:
+        row.lifecycle_state = "saved_draft_verified"
+        row.product_create_status = "created_in_platform_draft"
+        row.product_save_status = "saved_draft_verified"
+        row.campaign_signup_status = "not_submitted"
+        row.evidence_source = "web_agent_platform_draft_readback"
+    elif platform_write or no_retry:
+        row.lifecycle_state = "draft_save_result_unknown"
+        row.product_create_status = "possible_platform_draft"
+        row.product_save_status = "result_unknown"
+        row.campaign_signup_status = "not_submitted"
+        row.evidence_source = "web_agent_platform_draft_save_unknown"
+    else:
+        row.lifecycle_state = "draft_save_prewrite_failed"
+        row.product_create_status = "not_created"
+        row.product_save_status = "not_saved"
+        row.campaign_signup_status = "not_submitted"
+        row.evidence_source = "web_agent_platform_draft_prewrite_failed"
+    proposed = dict(row.proposed_fields or {})
+    proposed["draft_save"] = {
+        "verified": verified,
+        "already_saved": bool(result.get("already_saved")),
+        "platform_product_write": platform_write,
+        "automatic_retry_allowed": False if (verified or platform_write or no_retry) else True,
+        "error": _clean(result.get("error")),
+        "job_id": _clean(result.get("job_id")),
+        "readback": readback,
+        "claim_path": _clean(result.get("claim_path")),
+    }
+    row.proposed_fields = proposed
+    row.evidence_sha256 = _hash({
+        "proposal_id": row.id,
+        "state": row.lifecycle_state,
+        "draft_save": proposed["draft_save"],
+        "campaign_signup_status": "not_submitted",
+    })
+    db.flush()
+    return {
+        "id": row.id, "state": row.lifecycle_state,
+        "product_create_status": row.product_create_status,
+        "product_save_status": row.product_save_status,
+        "campaign_signup_status": row.campaign_signup_status,
+        "automatic_retry_allowed": proposed["draft_save"]["automatic_retry_allowed"],
+        "evidence_sha256": row.evidence_sha256,
+    }
+
+
 def query(db: Session, *, item_id: str | None = None, merchant_code: str | None = None) -> dict:
     stmt = select(SkuIdentity).order_by(SkuIdentity.taobao_item_id, SkuIdentity.taobao_sku_id)
     if item_id:
