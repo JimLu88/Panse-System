@@ -1,4 +1,6 @@
+import hashlib
 import inspect
+import json
 from datetime import datetime
 
 import pytest
@@ -8,6 +10,7 @@ from app.cli import (
     campaign_recover_five_price_single_discount as recovery_cli,
     campaign_recover_five_price_super_reduce as super_recovery_cli,
     campaign_recover_five_price_super_reduce_v2 as super_recovery_v2_cli,
+    campaign_recover_five_price_super_reduce_v3 as super_recovery_v3_cli,
 )
 from app.models.campaign import CampaignExecutionAttempt, CampaignPlan
 from app.services import campaign_five_price_correction_service as service
@@ -60,6 +63,17 @@ def test_super_recovery_v2_request_is_bound_to_exact_unsaved_attempt():
     assert payload["confirmed_no_persisted_change"] is True
     payload["confirmed_no_persisted_change"] = False
     assert service.validate_super_recovery_v2_request(payload) is False
+
+
+def test_super_recovery_v3_request_is_bound_to_exact_partial_attempt():
+    payload = service.super_recovery_v3_request_payload()
+    assert service.validate_super_recovery_v3_request(payload)
+    assert payload["expected_failed_attempt_id"] == (
+        "797c3857548bd818cf6065fb")
+    assert payload["confirmed_partial_persisted_change"] is True
+    assert payload["persisted_item_id"] == "1046992283533"
+    payload["persisted_item_id"] = "717418169535"
+    assert service.validate_super_recovery_v3_request(payload) is False
 
 
 def test_durable_operation_names_fit_production_column():
@@ -254,12 +268,74 @@ def _failed_super_v2_attempt(db_session, **updates):
     return row
 
 
+def _failed_super_v3_attempt(db_session, **updates):
+    terminal_error = (
+        "TimeoutError: Locator.click: Timeout 5000ms exceeded.\n"
+        "waiting for [data-pw-super-item-card='1046992283533']; "
+        "next-overlay-wrapper opened intercepts pointer events"
+    )
+    preflight = {
+        "ok": True,
+        "items": [
+            {"item_id": item_id, "platform_write": False}
+            for item_id in service.SUPER_RECOVERY_V2_OLD_TARGETS
+        ],
+    }
+    v2_payload = service.super_recovery_v2_request_payload()
+    values = {
+        "id": service.SUPER_RECOVERY_V3_FAILED_ATTEMPT_ID,
+        "plan_id": service.PLAN_ID,
+        "workflow_key": service.WORKFLOW_KEY,
+        "operation": service.SUPER_RECOVERY_V2_OPERATION,
+        "scope_sha256": hashlib.sha256(json.dumps(
+            v2_payload, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest(),
+        "state": "unknown", "write_claimed": True,
+        "platform_write_observed": True,
+        "automatic_retry_allowed": False,
+        "request_id": "five-price-super-recovery-v2-partial",
+        "web_agent_job_id": "job6",
+        "last_step": "super_recovery_v2_terminal_not_exact",
+        "error_code": terminal_error[:128],
+        "result_summary": {
+            "request": v2_payload,
+            "failed_attempt_id": service.SUPER_RECOVERY_V2_FAILED_ATTEMPT_ID,
+            "failed_attempt_preserved": True,
+            "preflight_readback": preflight,
+            "terminal_ok": False, "submitted": True,
+            "partial_success_item_ids": [],
+            "terminal_error": terminal_error,
+        },
+    }
+    values.update(updates)
+    row = CampaignExecutionAttempt(**values)
+    db_session.add(row)
+    db_session.commit()
+    return row
+
+
 def _super_readback(item_id):
     targets = service.SUPER_RECOVERY_V2_OLD_TARGETS[item_id]
     return {
         "ok": True,
         "status": "活动中",
         "web_agent_job_id": f"readback-{item_id}",
+        "editor_inventory": {
+            "rows": [
+                {"sku_id": sku_id, "inputs": [{"value": price}]}
+                for sku_id, price in targets.items()
+            ],
+        },
+        "execution_boundary": {"platform_write": False},
+    }
+
+
+def _super_readback_v3(item_id):
+    targets = service.SUPER_RECOVERY_V3_EXPECTED_TARGETS[item_id]
+    return {
+        "ok": True,
+        "status": "活动中",
+        "web_agent_job_id": f"readback-v3-{item_id}",
         "editor_inventory": {
             "rows": [
                 {"sku_id": sku_id, "inputs": [{"value": price}]}
@@ -399,6 +475,74 @@ def test_super_recovery_v2_stops_before_claim_on_price_drift(
         "five_price_super_recovery_v2_price_not_original")
     assert db_session.query(CampaignExecutionAttempt).filter_by(
         operation=service.SUPER_RECOVERY_V2_OPERATION).count() == 0
+
+
+def test_super_recovery_v3_proves_one_new_three_old_before_claim(
+        db_session, monkeypatch):
+    _plan(db_session)
+    _completed_single_attempt(db_session)
+    original = _failed_super_v3_attempt(db_session)
+    original_summary = dict(original.result_summary)
+    read_items = []
+
+    def inspect_item(_db, *, item_id, timeout_s):
+        read_items.append(item_id)
+        return _super_readback_v3(item_id)
+
+    monkeypatch.setattr(
+        service.web_agent_service, "inspect_super_reduce_item", inspect_item)
+    monkeypatch.setattr(
+        service.web_agent_service, "correct_five_price",
+        lambda _db, *, payload, timeout_s: _super_terminal())
+
+    result = service.recover_super_reduce_v3(
+        db_session, payload=service.super_recovery_v3_request_payload())
+
+    assert result["ok"] is True
+    assert read_items == list(service.SUPER_RECOVERY_V3_EXPECTED_TARGETS)
+    assert len(result["preflight_readback"]["items"]) == 4
+    db_session.refresh(original)
+    assert original.state == "unknown"
+    assert original.result_summary == original_summary
+    recovery = db_session.get(
+        CampaignExecutionAttempt, result["attempt_id"])
+    assert recovery.operation == service.SUPER_RECOVERY_V3_OPERATION
+    assert recovery.state == "completed"
+    assert recovery.result_summary["persisted_item_id"] == "1046992283533"
+    assert recovery.result_summary["remaining_item_ids"] == [
+        "717418169535", "840643621692", "840659847455"]
+
+    second = service.recover_super_reduce_v3(
+        db_session, payload=service.super_recovery_v3_request_payload())
+    assert second["error"] == (
+        "five_price_super_recovery_v3_already_consumed_no_retry")
+
+
+def test_super_recovery_v3_stops_before_claim_on_mixed_state_drift(
+        db_session, monkeypatch):
+    _plan(db_session)
+    _completed_single_attempt(db_session)
+    _failed_super_v3_attempt(db_session)
+
+    def inspect_item(_db, *, item_id, timeout_s):
+        result = _super_readback_v3(item_id)
+        if item_id == "717418169535":
+            result["editor_inventory"]["rows"][0]["inputs"][0]["value"] = "288"
+        return result
+
+    monkeypatch.setattr(
+        service.web_agent_service, "inspect_super_reduce_item", inspect_item)
+    monkeypatch.setattr(
+        service.web_agent_service, "correct_five_price",
+        lambda *_args, **_kwargs: pytest.fail("write must not start"))
+
+    result = service.recover_super_reduce_v3(
+        db_session, payload=service.super_recovery_v3_request_payload())
+
+    assert result["error"] == (
+        "five_price_super_recovery_v3_price_state_drift")
+    assert db_session.query(CampaignExecutionAttempt).filter_by(
+        operation=service.SUPER_RECOVERY_V3_OPERATION).count() == 0
 
 
 @pytest.mark.parametrize("updates", [
@@ -560,6 +704,41 @@ def test_super_recovery_v2_cli_has_fixed_endpoint_and_payload(monkeypatch):
         __import__("json").loads(captured["body"]))
 
 
+def test_super_recovery_v3_cli_has_fixed_endpoint_and_payload(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["body"] = req.data
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        super_recovery_v3_cli.request, "build_opener", lambda *_: Opener())
+    status, body = super_recovery_v3_cli.call_api(token="fixed-token")
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured["url"].endswith(
+        "/api/campaigns/recover-five-price-super-reduce-v3")
+    assert captured["timeout"] == 3600
+    assert service.validate_super_recovery_v3_request(
+        json.loads(captured["body"]))
+
+
 def test_service_identity_is_allowed_only_on_five_price_route(monkeypatch):
     monkeypatch.setattr(
         dependencies.settings_service,
@@ -580,6 +759,9 @@ def test_service_identity_is_allowed_only_on_five_price_route(monkeypatch):
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
     )
     assert dependencies.CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V2_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
+    )
+    assert dependencies.CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V3_PATH in (
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
     )
     assert dependencies.machine_identity_for_key(

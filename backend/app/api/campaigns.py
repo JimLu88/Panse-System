@@ -283,6 +283,14 @@ class CampaignFivePriceSuperRecoveryV2In(CampaignFivePriceCorrectionIn):
     confirmed_no_persisted_change: bool
 
 
+class CampaignFivePriceSuperRecoveryV3In(CampaignFivePriceCorrectionIn):
+    """Recovery bound to one persisted item and three untouched items."""
+
+    expected_failed_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    confirmed_partial_persisted_change: bool
+    persisted_item_id: str = Field(pattern=r"^\d+$")
+
+
 class CampaignPlan7DiscountIdentityRecoveryIn(BaseModel):
     """Exact official-export-bound SKU identity repair and one recovery."""
 
@@ -1067,6 +1075,32 @@ def recover_five_price_super_reduce_v2(
             "five_price_super_recovery_v2_request_not_allowed",
             "five_price_plan_identity_drift",
             "five_price_super_recovery_v2_failed_attempt_not_exact",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-five-price-super-reduce-v3")
+def recover_five_price_super_reduce_v3(
+        body: CampaignFivePriceSuperRecoveryV3In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover only after fresh reads prove one new and three old items."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.recover_super_reduce_v3(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "five_price_super_recovery_v3_failed_attempt_not_found",
+        } else 409
+        if error in {
+            "five_price_super_recovery_v3_request_not_allowed",
+            "five_price_plan_identity_drift",
+            "five_price_super_recovery_v3_failed_attempt_not_exact",
         }:
             code = 422
         raise HTTPException(code, detail=result)

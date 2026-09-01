@@ -67,6 +67,9 @@ CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_PATH = (
 CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V2_PATH = (
     "/api/campaigns/recover-five-price-super-reduce-v2"
 )
+CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V3_PATH = (
+    "/api/campaigns/recover-five-price-super-reduce-v3"
+)
 CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH = (
     "/api/campaigns/recover-super-reduce-plan7-discount-sku-identity"
 )
@@ -101,6 +104,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_FIVE_PRICE_RECOVERY_PATH,
     CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_PATH,
     CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V2_PATH,
+    CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V3_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH,
     CAMPAIGN_PLAN7_REMAINING_SIGNUP_PATH,
@@ -345,6 +349,8 @@ def require_campaign_prepare_principal(
                 "campaign.five_price_issues.recover_super_reduce"),
             CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V2_PATH: (
                 "campaign.five_price_issues.recover_super_reduce_v2"),
+            CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V3_PATH: (
+                "campaign.five_price_issues.recover_super_reduce_v3"),
             CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_RECOVERY_PATH: (
                 "campaign.super_reduce.plan7.discount_identity_recover"),
             CAMPAIGN_PLAN7_DISCOUNT_IDENTITY_READBACK_PATH: (
