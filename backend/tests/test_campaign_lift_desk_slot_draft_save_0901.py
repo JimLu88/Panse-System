@@ -22,6 +22,7 @@ def _verified_result(*, platform_write=True):
             "rendered_missing": [],
             "input_value_missing": [],
             "invalid_rows": [],
+            "preexisting_sku_diff": [],
         },
     }
 

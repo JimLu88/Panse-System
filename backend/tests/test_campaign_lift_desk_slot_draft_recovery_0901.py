@@ -16,7 +16,7 @@ def _verified_recovery():
                      "target_merchant_code": "PPS2441004051311B1",
                      "option_count": 13, "sku_row_count": 13, "diff": [],
                      "rendered_missing": [], "input_value_missing": [],
-                     "invalid_rows": []},
+                     "invalid_rows": [], "preexisting_sku_diff": []},
     }
 
 

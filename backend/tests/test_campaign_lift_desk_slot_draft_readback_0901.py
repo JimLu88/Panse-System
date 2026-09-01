@@ -24,6 +24,7 @@ def _verified_readback():
             "rendered_missing": [],
             "input_value_missing": [],
             "invalid_rows": [],
+            "preexisting_sku_diff": [],
         },
     }
 

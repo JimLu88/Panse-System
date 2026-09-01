@@ -299,6 +299,7 @@ def mark_lift_desk_draft_save_result(
         and readback.get("rendered_missing") == []
         and readback.get("input_value_missing") == []
         and readback.get("invalid_rows") == []
+        and readback.get("preexisting_sku_diff") == []
         and recovery_exact)
     platform_write = result.get("platform_product_write") is True
     no_retry = result.get("automatic_retry_allowed") is False
@@ -374,6 +375,7 @@ def mark_lift_desk_draft_readback_result(db: Session, *, result: dict) -> dict:
         and readback.get("rendered_missing") == []
         and readback.get("input_value_missing") == []
         and readback.get("invalid_rows") == []
+        and readback.get("preexisting_sku_diff") == []
     )
     if verified:
         row.lifecycle_state = "saved_draft_verified"
