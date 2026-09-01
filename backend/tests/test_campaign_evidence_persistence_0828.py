@@ -366,15 +366,20 @@ def test_refresh_merges_enrolled_and_candidate_evidence_without_platform_write(
     plan.platform_sign_record_id = "3527841611"
     db_session.commit()
     placeholder_rows = {}
+    signup_builder_kwargs = {}
 
-    monkeypatch.setattr(
-        campaign_service, "build_signup_rows",
-        lambda *_args, **_kwargs: ([
+    def fake_build_signup_rows(*_args, **kwargs):
+        signup_builder_kwargs.update(kwargs)
+        return ([
             {"taobao_item_id": "1047741358718",
              "taobao_sku_id": "6291475451145", "is_placeholder": False},
             {"taobao_item_id": "1047741358718",
              "taobao_sku_id": "6241061986676", "is_placeholder": True},
-        ], {"placeholder_candidate_sku_ids": ["6241061986676"]}))
+        ], {"placeholder_candidate_sku_ids": ["6241061986676"]})
+
+    monkeypatch.setattr(
+        campaign_service, "build_signup_rows",
+        fake_build_signup_rows)
     monkeypatch.setattr(
         web_agent_service, "campaign_export_items",
         lambda *_args, **_kwargs: {
@@ -423,6 +428,7 @@ def test_refresh_merges_enrolled_and_candidate_evidence_without_platform_write(
     assert result["candidate_evidence"]["sha256"] == "candidate-sha"
     assert result["candidate_evidence"]["execution_boundary"][
         "platform_write"] is False
+    assert signup_builder_kwargs["include_candidate_unavailable"] is False
     assert placeholder_rows["candidate_skus"] == ["6241061986676"]
     candidate_prices = {
         row["sku_id"]: row["list_price"]

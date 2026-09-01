@@ -959,10 +959,13 @@ def excluded_custom_placeholder_sku_ids(db: Session, plan) -> set[str]:
 
 
 def _campaign_item_exclusions_for_plan(
-        db: Session, plan, mapped_pairs: list[tuple]) -> dict[str, dict]:
+        db: Session, plan, mapped_pairs: list[tuple], *,
+        include_candidate_unavailable: bool = True,
+) -> dict[str, dict]:
     """Keep explicit item exclusions; let an exact SKU override derived-only ones."""
     exclusions = campaign_item_exclusions(db, mapped_pairs)
-    exclusions.update(candidate_unavailable_items_for_plan(db, plan))
+    if include_candidate_unavailable:
+        exclusions.update(candidate_unavailable_items_for_plan(db, plan))
     selected = custom_placeholder_sku_allowlist(plan)
     if not selected:
         return exclusions
@@ -1395,6 +1398,7 @@ def _erp_listed_product_codes(db: Session) -> set[str] | None:
 def build_signup_rows(
         db: Session, plan, *, enforce_price_holds: bool = True,
         allow_placeholder_safe_lowering: bool = False,
+        include_candidate_unavailable: bool = True,
 ) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
@@ -1427,7 +1431,8 @@ def build_signup_rows(
     listed_codes = _erp_listed_product_codes(db)
     mapped_pairs = _mapped_pairs(db)
     whole_item_exclusions = _campaign_item_exclusions_for_plan(
-        db, plan, mapped_pairs)
+        db, plan, mapped_pairs,
+        include_candidate_unavailable=include_candidate_unavailable)
     official_scope = official_scope_for_plan(plan)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
@@ -4083,7 +4088,12 @@ def refresh_floor_evidence_from_current_activity(
         }
     evidence_scope_rows, evidence_scope_stats = build_signup_rows(
         db, plan, enforce_price_holds=False,
-        allow_placeholder_safe_lowering=allow_placeholder_safe_lowering)
+        allow_placeholder_safe_lowering=allow_placeholder_safe_lowering,
+        # A previous candidate omission may suppress an item from a real
+        # signup, but it must never suppress that item from the next read-only
+        # candidate refresh. Otherwise the evidence erases itself without
+        # rechecking the platform.
+        include_candidate_unavailable=False)
     exported = web_agent_service.campaign_export_items(
         db,
         identity["campaign_title"],
