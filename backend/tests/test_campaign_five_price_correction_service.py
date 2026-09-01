@@ -2,6 +2,7 @@ import inspect
 
 import pytest
 
+from app import dependencies
 from app.services import campaign_five_price_correction_service as service
 
 
@@ -46,3 +47,26 @@ def test_service_has_durable_claim_before_web_agent_call():
     assert source.index("db.commit()") < source.index(
         "web_agent_service.correct_five_price")
     assert "automatic_retry_allowed=False" in source
+
+
+def test_service_identity_is_allowed_only_on_five_price_route(monkeypatch):
+    monkeypatch.setattr(
+        dependencies.settings_service,
+        "get",
+        lambda _db, key, env_fallback=False: (
+            "fixed-token"
+            if key == dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING
+            else None
+        ),
+    )
+    assert dependencies.CAMPAIGN_FIVE_PRICE_CORRECTION_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
+    )
+    assert dependencies.machine_identity_for_key(
+        "fixed-token",
+        object(),
+        path=dependencies.CAMPAIGN_FIVE_PRICE_CORRECTION_PATH,
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        "fixed-token", object(), path="/api/campaigns"
+    ) is None
