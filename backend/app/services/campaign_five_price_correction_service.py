@@ -21,6 +21,10 @@ MANIFEST_SHA256 = (
 SOURCE_EXPORT_SHA256 = (
     "545a26af5dee4bf1fc0a016c207dea341b557e9e3e263c8e73b3f9c0c3d35366")
 PHASES = {"single_discount", "super_reduce"}
+OPERATION_BY_PHASE = {
+    "single_discount": "five_price_single_discount",
+    "super_reduce": "five_price_super_reduce",
+}
 ZERO_SALES_EXCLUDED_ITEM_ID = "793202812082"
 
 
@@ -116,7 +120,7 @@ def execute(db: Session, *, payload: dict) -> dict:
     plan_error = _validate_plan(db)
     if plan_error:
         return plan_error
-    operation = f"five_price_correction_{phase}"
+    operation = OPERATION_BY_PHASE[phase]
     scope_sha = _scope_sha(phase)
     existing = db.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.workflow_key == WORKFLOW_KEY,

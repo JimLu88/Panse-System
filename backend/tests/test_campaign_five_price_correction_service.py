@@ -22,6 +22,12 @@ def test_request_rejects_scope_drift():
         service.request_payload("all")
 
 
+def test_durable_operation_names_fit_production_column():
+    assert set(service.OPERATION_BY_PHASE) == service.PHASES
+    assert all(len(name) <= 32 for name in service.OPERATION_BY_PHASE.values())
+    assert len(set(service.OPERATION_BY_PHASE.values())) == len(service.PHASES)
+
+
 def test_terminal_contract_has_exact_counts_and_no_write_boundaries():
     common = {
         "ok": True,
