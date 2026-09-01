@@ -1107,6 +1107,32 @@ def recover_five_price_super_reduce_v3(
     return result
 
 
+@router.post("/recover-five-price-super-reduce-v4")
+def recover_five_price_super_reduce_v4(
+        body: CampaignFivePriceSuperRecoveryV3In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover after the V3 stale-editor failure proved zero new writes."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.recover_super_reduce_v4(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "five_price_super_recovery_v4_failed_attempt_not_found",
+        } else 409
+        if error in {
+            "five_price_super_recovery_v4_request_not_allowed",
+            "five_price_plan_identity_drift",
+            "five_price_super_recovery_v4_failed_attempt_not_exact",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
 @router.post("/recover-super-reduce-plan7-discount-sku-identity")
 def recover_super_reduce_plan7_discount_sku_identity(
         body: CampaignPlan7DiscountIdentityRecoveryIn,

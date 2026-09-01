@@ -11,6 +11,7 @@ from app.cli import (
     campaign_recover_five_price_super_reduce as super_recovery_cli,
     campaign_recover_five_price_super_reduce_v2 as super_recovery_v2_cli,
     campaign_recover_five_price_super_reduce_v3 as super_recovery_v3_cli,
+    campaign_recover_five_price_super_reduce_v4 as super_recovery_v4_cli,
 )
 from app.models.campaign import CampaignExecutionAttempt, CampaignPlan
 from app.services import campaign_five_price_correction_service as service
@@ -74,6 +75,15 @@ def test_super_recovery_v3_request_is_bound_to_exact_partial_attempt():
     assert payload["persisted_item_id"] == "1046992283533"
     payload["persisted_item_id"] = "717418169535"
     assert service.validate_super_recovery_v3_request(payload) is False
+
+
+def test_super_recovery_v4_request_is_bound_to_exact_write_free_v3_attempt():
+    payload = service.super_recovery_v4_request_payload()
+    assert service.validate_super_recovery_v4_request(payload)
+    assert payload["expected_failed_attempt_id"] == (
+        "cfeb16011f1afcf71a01aa15")
+    payload["confirmed_partial_persisted_change"] = False
+    assert service.validate_super_recovery_v4_request(payload) is False
 
 
 def test_durable_operation_names_fit_production_column():
@@ -303,6 +313,50 @@ def _failed_super_v3_attempt(db_session, **updates):
             "failed_attempt_preserved": True,
             "preflight_readback": preflight,
             "terminal_ok": False, "submitted": True,
+            "partial_success_item_ids": [],
+            "terminal_error": terminal_error,
+        },
+    }
+    values.update(updates)
+    row = CampaignExecutionAttempt(**values)
+    db_session.add(row)
+    db_session.commit()
+    return row
+
+
+def _failed_super_v4_attempt(db_session, **updates):
+    terminal_error = "RuntimeError: 商品 717418169535 精确卡片不唯一"
+    v3_payload = service.super_recovery_v3_request_payload()
+    values = {
+        "id": service.SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID,
+        "plan_id": service.PLAN_ID,
+        "workflow_key": service.WORKFLOW_KEY,
+        "operation": service.SUPER_RECOVERY_V3_OPERATION,
+        "scope_sha256": hashlib.sha256(json.dumps(
+            v3_payload, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest(),
+        "state": "failed", "write_claimed": True,
+        "platform_write_observed": False,
+        "automatic_retry_allowed": False,
+        "request_id": "five-price-super-recovery-v3-write-free",
+        "web_agent_job_id": "job5",
+        "last_step": "super_recovery_v3_terminal_not_exact",
+        "error_code": terminal_error,
+        "result_summary": {
+            "request": v3_payload,
+            "failed_attempt_id": service.SUPER_RECOVERY_V3_FAILED_ATTEMPT_ID,
+            "failed_attempt_preserved": True,
+            "preflight_readback": {
+                "ok": True,
+                "items": [
+                    {"item_id": item_id, "platform_write": False}
+                    for item_id in service.SUPER_RECOVERY_V3_EXPECTED_TARGETS
+                ],
+            },
+            "persisted_item_id": "1046992283533",
+            "remaining_item_ids": [
+                "717418169535", "840643621692", "840659847455"],
+            "terminal_ok": False, "submitted": False,
             "partial_success_item_ids": [],
             "terminal_error": terminal_error,
         },
@@ -545,6 +599,39 @@ def test_super_recovery_v3_stops_before_claim_on_mixed_state_drift(
         operation=service.SUPER_RECOVERY_V3_OPERATION).count() == 0
 
 
+def test_super_recovery_v4_recovers_only_after_write_free_v3(
+        db_session, monkeypatch):
+    _plan(db_session)
+    _completed_single_attempt(db_session)
+    original = _failed_super_v4_attempt(db_session)
+    original_summary = dict(original.result_summary)
+
+    monkeypatch.setattr(
+        service.web_agent_service, "inspect_super_reduce_item",
+        lambda _db, *, item_id, timeout_s: _super_readback_v3(item_id))
+    monkeypatch.setattr(
+        service.web_agent_service, "correct_five_price",
+        lambda _db, *, payload, timeout_s: _super_terminal())
+
+    result = service.recover_super_reduce_v4(
+        db_session, payload=service.super_recovery_v4_request_payload())
+
+    assert result["ok"] is True
+    db_session.refresh(original)
+    assert original.state == "failed"
+    assert original.platform_write_observed is False
+    assert original.result_summary == original_summary
+    recovery = db_session.get(
+        CampaignExecutionAttempt, result["attempt_id"])
+    assert recovery.operation == service.SUPER_RECOVERY_V4_OPERATION
+    assert recovery.state == "completed"
+
+    second = service.recover_super_reduce_v4(
+        db_session, payload=service.super_recovery_v4_request_payload())
+    assert second["error"] == (
+        "five_price_super_recovery_v4_already_consumed_no_retry")
+
+
 @pytest.mark.parametrize("updates", [
     {"state": "unknown"},
     {"platform_write_observed": None},
@@ -739,6 +826,41 @@ def test_super_recovery_v3_cli_has_fixed_endpoint_and_payload(monkeypatch):
         json.loads(captured["body"]))
 
 
+def test_super_recovery_v4_cli_has_fixed_endpoint_and_payload(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["body"] = req.data
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        super_recovery_v4_cli.request, "build_opener", lambda *_: Opener())
+    status, body = super_recovery_v4_cli.call_api(token="fixed-token")
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured["url"].endswith(
+        "/api/campaigns/recover-five-price-super-reduce-v4")
+    assert captured["timeout"] == 3600
+    assert service.validate_super_recovery_v4_request(
+        json.loads(captured["body"]))
+
+
 def test_service_identity_is_allowed_only_on_five_price_route(monkeypatch):
     monkeypatch.setattr(
         dependencies.settings_service,
@@ -762,6 +884,9 @@ def test_service_identity_is_allowed_only_on_five_price_route(monkeypatch):
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
     )
     assert dependencies.CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V3_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
+    )
+    assert dependencies.CAMPAIGN_FIVE_PRICE_SUPER_RECOVERY_V4_PATH in (
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS
     )
     assert dependencies.machine_identity_for_key(

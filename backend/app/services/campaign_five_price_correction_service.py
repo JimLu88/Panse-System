@@ -33,6 +33,8 @@ SUPER_RECOVERY_V2_FAILED_ATTEMPT_ID = "b3f1282a5b34b0181d1daa95"
 SUPER_RECOVERY_V2_OPERATION = "five_price_recover_super_v2"
 SUPER_RECOVERY_V3_FAILED_ATTEMPT_ID = "797c3857548bd818cf6065fb"
 SUPER_RECOVERY_V3_OPERATION = "five_price_recover_super_v3"
+SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID = "cfeb16011f1afcf71a01aa15"
+SUPER_RECOVERY_V4_OPERATION = "five_price_recover_super_v4"
 ZERO_SALES_EXCLUDED_ITEM_ID = "793202812082"
 SUPER_RECOVERY_V2_OLD_TARGETS = {
     "1046992283533": {"6241476755540": "388.00"},
@@ -140,6 +142,22 @@ def validate_super_recovery_v3_request(payload: dict) -> bool:
     return (
         isinstance(payload, dict)
         and payload == super_recovery_v3_request_payload()
+    )
+
+
+def super_recovery_v4_request_payload() -> dict:
+    return {
+        **request_payload("super_reduce"),
+        "expected_failed_attempt_id": SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID,
+        "confirmed_partial_persisted_change": True,
+        "persisted_item_id": "1046992283533",
+    }
+
+
+def validate_super_recovery_v4_request(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload == super_recovery_v4_request_payload()
     )
 
 
@@ -312,6 +330,42 @@ def _super_v2_partial_persist_attempt_exact(
         and summary.get("partial_success_item_ids") == []
         and "data-pw-super-item-card='1046992283533'" in terminal_error
         and "next-overlay-wrapper opened" in terminal_error
+    )
+
+
+def _super_v3_write_free_listing_attempt_exact(
+        attempt: CampaignExecutionAttempt) -> bool:
+    summary = attempt.result_summary if isinstance(
+        attempt.result_summary, dict) else {}
+    expected_error = "RuntimeError: 商品 717418169535 精确卡片不唯一"
+    return bool(
+        attempt.id == SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID
+        and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == SUPER_RECOVERY_V3_OPERATION
+        and attempt.scope_sha256 == hashlib.sha256(json.dumps(
+            super_recovery_v3_request_payload(), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        and attempt.state == "failed"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.web_agent_job_id == "job5"
+        and attempt.automatic_retry_allowed is False
+        and attempt.last_step == "super_recovery_v3_terminal_not_exact"
+        and str(attempt.error_code or "") == expected_error
+        and summary.get("request") == super_recovery_v3_request_payload()
+        and summary.get("failed_attempt_id") == (
+            SUPER_RECOVERY_V3_FAILED_ATTEMPT_ID)
+        and (summary.get("preflight_readback") or {}).get("ok") is True
+        and len((summary.get("preflight_readback") or {}).get(
+            "items") or []) == 4
+        and summary.get("persisted_item_id") == "1046992283533"
+        and summary.get("remaining_item_ids") == [
+            "717418169535", "840643621692", "840659847455"]
+        and summary.get("terminal_ok") is False
+        and summary.get("submitted") is False
+        and summary.get("partial_success_item_ids") == []
+        and str(summary.get("terminal_error") or "") == expected_error
     )
 
 
@@ -960,6 +1014,122 @@ def recover_super_reduce_v3(db: Session, *, payload: dict) -> dict:
     return {
         "ok": True, "phase": "super_reduce",
         "recovered_failed_attempt_id": SUPER_RECOVERY_V3_FAILED_ATTEMPT_ID,
+        "attempt_id": attempt_id, "preflight_readback": preflight,
+        "result": terminal,
+        "execution_boundary": _boundary(
+            platform_write=bool(observed), phase="super_reduce"),
+    }
+
+
+def recover_super_reduce_v4(db: Session, *, payload: dict) -> dict:
+    """Recover after V3 stopped before writes in the stale editor overlay."""
+    if not validate_super_recovery_v4_request(payload):
+        return _fail("five_price_super_recovery_v4_request_not_allowed",
+                     phase="super_reduce")
+    plan_error = _validate_plan(db)
+    if plan_error:
+        return plan_error
+    if not _single_discount_completed(db):
+        return _fail("five_price_single_discount_not_completed",
+                     phase="super_reduce")
+    failed = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.id == SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID,
+    ).with_for_update()).scalar_one_or_none()
+    if failed is None:
+        return _fail("five_price_super_recovery_v4_failed_attempt_not_found",
+                     phase="super_reduce")
+    if not _super_v3_write_free_listing_attempt_exact(failed):
+        return _fail(
+            "five_price_super_recovery_v4_failed_attempt_not_exact",
+            phase="super_reduce")
+
+    scope_sha = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    existing = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.workflow_key == WORKFLOW_KEY,
+        CampaignExecutionAttempt.operation == SUPER_RECOVERY_V4_OPERATION,
+        CampaignExecutionAttempt.scope_sha256 == scope_sha,
+    ).with_for_update()).scalar_one_or_none()
+    if existing:
+        return _fail("five_price_super_recovery_v4_already_consumed_no_retry",
+                     phase="super_reduce", attempt_id=existing.id,
+                     attempt_state=existing.state,
+                     platform_write=existing.platform_write_observed)
+
+    preflight = _readback_super_v3_expected_targets(db)
+    if not preflight.get("ok"):
+        return preflight
+
+    attempt_id = secrets.token_hex(12)
+    attempt = CampaignExecutionAttempt(
+        id=attempt_id, plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
+        operation=SUPER_RECOVERY_V4_OPERATION, scope_sha256=scope_sha,
+        state="write_claimed", write_claimed=True,
+        write_claimed_at=datetime.now(timezone.utc),
+        platform_write_observed=False, automatic_retry_allowed=False,
+        request_id=f"five-price-recover-super-v4-{secrets.token_hex(6)}",
+        last_step="v3_write_free_one_new_three_old_claimed",
+        result_summary={
+            "request": payload,
+            "failed_attempt_id": SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID,
+            "failed_attempt_preserved": True,
+            "preflight_readback": preflight,
+            "persisted_item_id": "1046992283533",
+            "remaining_item_ids": [
+                "717418169535", "840643621692", "840659847455"],
+            "zero_sales_excluded_item_id": ZERO_SALES_EXCLUDED_ITEM_ID,
+        })
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _fail("five_price_super_recovery_v4_claim_raced_no_write",
+                     phase="super_reduce")
+
+    try:
+        terminal = web_agent_service.correct_five_price(
+            db, payload=request_payload("super_reduce"), timeout_s=2400)
+    except Exception as exc:
+        terminal = {
+            "ok": False, "submitted": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "execution_boundary": {"platform_write": None},
+        }
+    observed = (terminal.get("execution_boundary") or {}).get(
+        "platform_write")
+    if observed not in {True, False}:
+        observed = None
+    attempt = db.get(CampaignExecutionAttempt, attempt_id)
+    attempt.platform_write_observed = observed
+    attempt.web_agent_job_id = terminal.get("web_agent_job_id")
+    exact = _terminal_exact(terminal, "super_reduce")
+    attempt.state = "completed" if exact else (
+        "failed" if observed is False else "unknown")
+    attempt.last_step = (
+        "exact_editor_readback" if exact
+        else "super_recovery_v4_terminal_not_exact")
+    attempt.error_code = None if exact else str(
+        terminal.get("error")
+        or "five_price_super_recovery_v4_terminal_not_exact")[:128]
+    attempt.result_summary = {
+        **(attempt.result_summary or {}),
+        "terminal_ok": terminal.get("ok"),
+        "submitted": terminal.get("submitted"),
+        "item_count": terminal.get("item_count"),
+        "target_sku_count": terminal.get("target_sku_count"),
+        "partial_success_item_ids": terminal.get("partial_success_item_ids"),
+        "terminal_error": terminal.get("error"),
+    }
+    db.commit()
+    if not exact:
+        return _fail(
+            "five_price_super_recovery_v4_terminal_not_exact_no_retry",
+            phase="super_reduce", attempt_id=attempt_id,
+            platform_write=observed, terminal=terminal)
+    return {
+        "ok": True, "phase": "super_reduce",
+        "recovered_failed_attempt_id": SUPER_RECOVERY_V4_FAILED_ATTEMPT_ID,
         "attempt_id": attempt_id, "preflight_readback": preflight,
         "result": terminal,
         "execution_boundary": _boundary(
