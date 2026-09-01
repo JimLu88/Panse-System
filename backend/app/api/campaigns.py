@@ -1014,6 +1014,32 @@ def recover_five_price_single_discount(
     return result
 
 
+@router.post("/recover-five-price-super-reduce")
+def recover_five_price_super_reduce(
+        body: CampaignFivePriceRecoveryIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover only the fixed write-free price-input locator failure."""
+    from app.services import campaign_five_price_correction_service
+
+    result = campaign_five_price_correction_service.recover_super_reduce(
+        db, payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found",
+            "five_price_super_recovery_failed_attempt_not_found",
+        } else 409
+        if error in {
+            "five_price_super_recovery_request_not_allowed",
+            "five_price_plan_identity_drift",
+            "five_price_super_recovery_failed_attempt_not_write_free",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
 @router.post("/recover-super-reduce-plan7-discount-sku-identity")
 def recover_super_reduce_plan7_discount_sku_identity(
         body: CampaignPlan7DiscountIdentityRecoveryIn,

@@ -27,6 +27,8 @@ OPERATION_BY_PHASE = {
 }
 RECOVERY_FAILED_ATTEMPT_ID = "b8b0ddcb5633cbe6a1b69681"
 RECOVERY_OPERATION = "five_price_recover_single"
+SUPER_RECOVERY_FAILED_ATTEMPT_ID = "5373510a5a33b115e4771f37"
+SUPER_RECOVERY_OPERATION = "five_price_recover_super"
 ZERO_SALES_EXCLUDED_ITEM_ID = "793202812082"
 
 
@@ -61,6 +63,21 @@ def recovery_request_payload() -> dict:
 
 def validate_recovery_request(payload: dict) -> bool:
     return isinstance(payload, dict) and payload == recovery_request_payload()
+
+
+def super_recovery_request_payload() -> dict:
+    return {
+        **request_payload("super_reduce"),
+        "expected_failed_attempt_id": SUPER_RECOVERY_FAILED_ATTEMPT_ID,
+        "confirmed_no_platform_write": True,
+    }
+
+
+def validate_super_recovery_request(payload: dict) -> bool:
+    return (
+        isinstance(payload, dict)
+        and payload == super_recovery_request_payload()
+    )
 
 
 def _boundary(*, platform_write=False, phase=None) -> dict:
@@ -137,6 +154,37 @@ def _write_free_timeout_attempt_exact(attempt: CampaignExecutionAttempt) -> bool
         and summary.get("submitted") is None
         and "/api/campaign/five-price-correction" in terminal_error
         and "Connection to 192.168.31.91 timed out" in terminal_error
+    )
+
+
+def _write_free_super_locator_attempt_exact(
+        attempt: CampaignExecutionAttempt) -> bool:
+    summary = attempt.result_summary if isinstance(
+        attempt.result_summary, dict) else {}
+    terminal_error = str(summary.get("terminal_error") or "")
+    expected_error = (
+        "RuntimeError: 商品 1046992283533 指定 SKU 当前价变化: "
+        "{'6241476755540': {'expected': '388.00', "
+        "'actual': '6241476755540.00'}}"
+    )
+    return bool(
+        attempt.id == SUPER_RECOVERY_FAILED_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID
+        and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION_BY_PHASE["super_reduce"]
+        and attempt.scope_sha256 == _scope_sha("super_reduce")
+        and attempt.state == "failed"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.web_agent_job_id == "job1"
+        and attempt.automatic_retry_allowed is False
+        and attempt.last_step == "terminal_not_exact"
+        and str(attempt.error_code or "") == expected_error
+        and summary.get("request") == request_payload("super_reduce")
+        and summary.get("terminal_ok") is False
+        and summary.get("submitted") is False
+        and summary.get("partial_success_item_ids") == []
+        and terminal_error == expected_error
     )
 
 
@@ -343,4 +391,109 @@ def recover_single_discount(db: Session, *, payload: dict) -> dict:
         "attempt_id": attempt_id, "result": terminal,
         "execution_boundary": _boundary(
             platform_write=bool(observed), phase="single_discount"),
+    }
+
+
+def recover_super_reduce(db: Session, *, payload: dict) -> dict:
+    """Permit one exact recovery after the proven write-free locator defect."""
+    if not validate_super_recovery_request(payload):
+        return _fail("five_price_super_recovery_request_not_allowed",
+                     phase="super_reduce")
+    plan_error = _validate_plan(db)
+    if plan_error:
+        return plan_error
+    if not _single_discount_completed(db):
+        return _fail("five_price_single_discount_not_completed",
+                     phase="super_reduce")
+    failed = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.id == SUPER_RECOVERY_FAILED_ATTEMPT_ID,
+    ).with_for_update()).scalar_one_or_none()
+    if failed is None:
+        return _fail("five_price_super_recovery_failed_attempt_not_found",
+                     phase="super_reduce")
+    if not _write_free_super_locator_attempt_exact(failed):
+        return _fail("five_price_super_recovery_failed_attempt_not_write_free",
+                     phase="super_reduce")
+
+    scope_sha = hashlib.sha256(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    existing = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.workflow_key == WORKFLOW_KEY,
+        CampaignExecutionAttempt.operation == SUPER_RECOVERY_OPERATION,
+        CampaignExecutionAttempt.scope_sha256 == scope_sha,
+    ).with_for_update()).scalar_one_or_none()
+    if existing:
+        return _fail("five_price_super_recovery_already_consumed_no_retry",
+                     phase="super_reduce", attempt_id=existing.id,
+                     attempt_state=existing.state,
+                     platform_write=existing.platform_write_observed)
+
+    attempt_id = secrets.token_hex(12)
+    attempt = CampaignExecutionAttempt(
+        id=attempt_id, plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
+        operation=SUPER_RECOVERY_OPERATION, scope_sha256=scope_sha,
+        state="write_claimed", write_claimed=True,
+        write_claimed_at=datetime.now(timezone.utc),
+        platform_write_observed=False, automatic_retry_allowed=False,
+        request_id=f"five-price-recover-super-{secrets.token_hex(6)}",
+        last_step="exact_write_free_locator_recovery_claimed",
+        result_summary={
+            "request": payload,
+            "failed_attempt_id": SUPER_RECOVERY_FAILED_ATTEMPT_ID,
+            "failed_attempt_preserved": True,
+            "zero_sales_excluded_item_id": ZERO_SALES_EXCLUDED_ITEM_ID,
+        })
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _fail("five_price_super_recovery_claim_raced_no_write",
+                     phase="super_reduce")
+
+    try:
+        terminal = web_agent_service.correct_five_price(
+            db, payload=request_payload("super_reduce"), timeout_s=2400)
+    except Exception as exc:
+        terminal = {
+            "ok": False, "submitted": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "execution_boundary": {"platform_write": None},
+        }
+    observed = (terminal.get("execution_boundary") or {}).get(
+        "platform_write")
+    if observed not in {True, False}:
+        observed = None
+    attempt = db.get(CampaignExecutionAttempt, attempt_id)
+    attempt.platform_write_observed = observed
+    attempt.web_agent_job_id = terminal.get("web_agent_job_id")
+    exact = _terminal_exact(terminal, "super_reduce")
+    attempt.state = "completed" if exact else (
+        "failed" if observed is False else "unknown")
+    attempt.last_step = (
+        "exact_editor_readback" if exact
+        else "super_recovery_terminal_not_exact")
+    attempt.error_code = None if exact else str(
+        terminal.get("error")
+        or "five_price_super_recovery_terminal_not_exact")[:128]
+    attempt.result_summary = {
+        **(attempt.result_summary or {}),
+        "terminal_ok": terminal.get("ok"),
+        "submitted": terminal.get("submitted"),
+        "item_count": terminal.get("item_count"),
+        "target_sku_count": terminal.get("target_sku_count"),
+        "partial_success_item_ids": terminal.get("partial_success_item_ids"),
+        "terminal_error": terminal.get("error"),
+    }
+    db.commit()
+    if not exact:
+        return _fail("five_price_super_recovery_terminal_not_exact_no_retry",
+                     phase="super_reduce", attempt_id=attempt_id,
+                     platform_write=observed, terminal=terminal)
+    return {
+        "ok": True, "phase": "super_reduce",
+        "recovered_failed_attempt_id": SUPER_RECOVERY_FAILED_ATTEMPT_ID,
+        "attempt_id": attempt_id, "result": terminal,
+        "execution_boundary": _boundary(
+            platform_write=bool(observed), phase="super_reduce"),
     }
