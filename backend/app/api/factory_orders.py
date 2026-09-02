@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date
 from decimal import Decimal
 from typing import Optional
@@ -36,6 +37,21 @@ def _expected(fo: FactoryOrder) -> Optional[Decimal]:
     return None
 
 
+def _unpaid_reason(fo: FactoryOrder, exp: Optional[Decimal], act: Optional[Decimal]) -> Optional[str]:
+    """按当前可核验字段生成待付初判；仅作排查线索，不改业务数据。"""
+    if fo.payment_status == "paid":
+        return None
+    if act is None and exp is None:
+        return "缺少推算成本，且未导入或未匹配工厂账单"
+    if act is None:
+        return "未导入或未匹配工厂账单，暂按推算成本待付"
+    if act == 0:
+        return "工厂账单金额为0，需确认退款、抵扣、样品或赠品"
+    if fo.payment_date or fo.alipay_flow_no:
+        return "已有付款信息但状态仍为未付，需核销支付状态"
+    return "已有工厂账单，尚未匹配付款流水或月结销账"
+
+
 def _row(fo: FactoryOrder) -> dict:
     exp = _expected(fo)
     act = Decimal(str(fo.factory_bill_amount)).quantize(_CENTS) if fo.factory_bill_amount is not None else None
@@ -57,7 +73,44 @@ def _row(fo: FactoryOrder) -> dict:
         "alipay_flow_no": fo.alipay_flow_no,
         "reconciled": act is not None,                                # 录了工厂实际即视为已核对
         "remark": fo.remark,
+        "unpaid_reason": _unpaid_reason(fo, exp, act),
+        "unpaid_reason_note": fo.unpaid_reason_note,
     }
+
+
+def _payable_amount(row: dict) -> float:
+    return row["factory_bill_amount"] if row["factory_bill_amount"] is not None else (row["expected_amount"] or 0)
+
+
+def _monthly_summary(rows: list[dict]) -> list[dict]:
+    """按下单月归集有效工厂单；金额口径与页面已付/待付卡片一致。"""
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        month = (row["order_date"] or "")[:7] or "未注明日期"
+        groups[month].append(row)
+
+    result: list[dict] = []
+    for month, items in groups.items():
+        paid = [row for row in items if row["payment_status"] == "paid"]
+        unpaid = [row for row in items if row["payment_status"] != "paid"]
+        result.append({
+            "month": month,
+            "count": len(items),
+            "expected_sum": round(sum((row["expected_amount"] or 0) for row in items), 2),
+            "actual_sum": round(sum((row["factory_bill_amount"] or 0) for row in items), 2),
+            "paid_count": len(paid),
+            "paid_sum": round(sum(_payable_amount(row) for row in paid), 2),
+            "unpaid_count": len(unpaid),
+            "unpaid_sum": round(sum(_payable_amount(row) for row in unpaid), 2),
+            "missing_bill_count": sum(1 for row in unpaid if row["factory_bill_amount"] is None),
+            "unresolved_count": sum(1 for row in unpaid if not (row["unpaid_reason_note"] or "").strip()),
+        })
+    dated = sorted(
+        (item for item in result if item["month"] != "未注明日期"),
+        key=lambda item: item["month"],
+        reverse=True,
+    )
+    return dated + [item for item in result if item["month"] == "未注明日期"]
 
 
 @router.get("")
@@ -79,10 +132,12 @@ def list_factory_orders(
     )
     if factory:
         stmt = stmt.where(FactoryOrder.factory_name == factory)
-    if payment_status:
-        stmt = stmt.where(FactoryOrder.payment_status == payment_status)
     stmt = factory_settlement_service._apply_product_search(stmt, product_search)
-    rows = [_row(fo) for fo in db.execute(stmt).scalars().all()]
+    # 月表基于同一工厂/产品范围内的全部记录计算，不受当前月份和支付筛选影响。
+    all_rows = [_row(fo) for fo in db.execute(stmt).scalars().all()]
+    rows = all_rows
+    if payment_status:
+        rows = [r for r in rows if r["payment_status"] == payment_status]
     if month:
         rows = [r for r in rows if (r["order_date"] or "").startswith(month)]
     if only_unreconciled:
@@ -93,7 +148,6 @@ def list_factory_orders(
     act_sum = sum((r["factory_bill_amount"] or 0) for r in rows)
     rec = sum(1 for r in rows if r["reconciled"])
     # 支付维度: 已付金额取工厂实际(账单), 无账单则退回推算(应付); 答用户"不然不知道"
-    _amt = lambda r: (r["factory_bill_amount"] if r["factory_bill_amount"] is not None else (r["expected_amount"] or 0))
     paid_rows = [r for r in rows if r["payment_status"] == "paid"]
     unpaid_rows = [r for r in rows if r["payment_status"] != "paid"]
     return {
@@ -107,10 +161,11 @@ def list_factory_orders(
             "reconciled_pct": round(rec / len(rows) * 100, 1) if rows else 0,
             "paid_count": len(paid_rows),
             "unpaid_count": len(unpaid_rows),
-            "paid_sum": round(sum(_amt(r) for r in paid_rows), 2),
-            "unpaid_sum": round(sum(_amt(r) for r in unpaid_rows), 2),
+            "paid_sum": round(sum(_payable_amount(r) for r in paid_rows), 2),
+            "unpaid_sum": round(sum(_payable_amount(r) for r in unpaid_rows), 2),
         },
-        "factories": sorted({r["factory_name"] for r in rows if r["factory_name"]}),
+        "monthly_summary": _monthly_summary(all_rows),
+        "factories": sorted({r["factory_name"] for r in all_rows if r["factory_name"]}),
     }
 
 
@@ -154,6 +209,7 @@ class ReconcileIn(BaseModel):
     payment_date: Optional[date] = None
     alipay_flow_no: Optional[str] = None
     remark: Optional[str] = None
+    unpaid_reason_note: Optional[str] = None
 
 
 @router.post("/{factory_order_no}/reconcile")
@@ -179,6 +235,8 @@ def reconcile_factory_order(
         fo.alipay_flow_no = body.alipay_flow_no
     if body.remark is not None:
         fo.remark = body.remark
+    if body.unpaid_reason_note is not None:
+        fo.unpaid_reason_note = body.unpaid_reason_note.strip() or None
     db.commit()
     db.refresh(fo)
     return _row(fo)

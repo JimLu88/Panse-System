@@ -18,6 +18,8 @@ export interface FactoryOrderRow {
   alipay_flow_no: string | null;
   reconciled: boolean;
   remark: string | null;
+  unpaid_reason: string | null;
+  unpaid_reason_note: string | null;
 }
 
 export interface FactoryOrderSummary {
@@ -36,7 +38,21 @@ export interface FactoryOrderSummary {
 export interface FactoryOrderList {
   rows: FactoryOrderRow[];
   summary: FactoryOrderSummary;
+  monthly_summary: FactoryOrderMonthlySummary[];
   factories: string[];
+}
+
+export interface FactoryOrderMonthlySummary {
+  month: string;
+  count: number;
+  expected_sum: number;
+  actual_sum: number;
+  paid_count: number;
+  paid_sum: number;
+  unpaid_count: number;
+  unpaid_sum: number;
+  missing_bill_count: number;
+  unresolved_count: number;
 }
 
 export interface FactoryOrderAccessory {
@@ -69,6 +85,7 @@ export const reconcileFactoryOrder = (
     payment_date?: string;
     alipay_flow_no?: string;
     remark?: string;
+    unpaid_reason_note?: string;
   },
 ) => api.post<FactoryOrderRow>(`/api/factory-orders/${encodeURIComponent(no)}/reconcile`, payload).then((r) => r.data);
 

@@ -215,6 +215,8 @@ class FactoryOrder(Base, TimestampMixin):
     carrier: Mapped[Optional[str]] = mapped_column(String(64))
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # 待付排查专用备注：与订单/工厂业务备注分开，避免核查原因覆盖原始资料。
+    unpaid_reason_note: Mapped[Optional[str]] = mapped_column(Text)
 
     # Phase 2 扩展
     voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

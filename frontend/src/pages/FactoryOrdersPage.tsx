@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
   listFactoryOrders, factoryOrderAccessories, reconcileFactoryOrder, syncFactoryOrdersFromOrders,
-  importFactoryBill, type FactoryOrderRow,
+  importFactoryBill, type FactoryOrderMonthlySummary, type FactoryOrderRow,
 } from '../api/client';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { StatusCard } from '../components/MobileCards';
@@ -72,6 +72,7 @@ export default function FactoryOrdersPage() {
         payment_date: vals.payment_date ? dayjs(vals.payment_date).format('YYYY-MM-DD') : undefined,
         alipay_flow_no: vals.alipay_flow_no ?? undefined,
         remark: vals.remark ?? undefined,
+        unpaid_reason_note: vals.unpaid_reason_note ?? undefined,
       }),
     onSuccess: () => {
       message.success('已核对');
@@ -123,6 +124,7 @@ export default function FactoryOrdersPage() {
       payment_date: r.payment_date ? dayjs(r.payment_date) : undefined,
       alipay_flow_no: r.alipay_flow_no ?? undefined,
       remark: r.remark ?? undefined,
+      unpaid_reason_note: r.unpaid_reason_note ?? undefined,
     });
   };
 
@@ -148,6 +150,17 @@ export default function FactoryOrdersPage() {
       title: '支付', dataIndex: 'payment_status', width: 110,
       render: (v: string, r: FactoryOrderRow) =>
         v === 'paid' ? <Tag color="blue">已付{r.payment_date ? ` ${r.payment_date}` : ''}</Tag> : <Tag>未付</Tag>,
+    },
+    {
+      title: '待付初判原因', dataIndex: 'unpaid_reason', width: 250,
+      render: (v: string | null, r: FactoryOrderRow) =>
+        r.payment_status === 'paid' ? <Text type="secondary">—</Text> : <Text>{v || '待人工判断'}</Text>,
+    },
+    {
+      title: '人工排查备注', dataIndex: 'unpaid_reason_note', width: 220, ellipsis: true,
+      render: (v: string | null, r: FactoryOrderRow) =>
+        r.payment_status === 'paid' ? <Text type="secondary">—</Text>
+          : v ? <Text>{v}</Text> : <Tag color="orange">待填写</Tag>,
     },
     {
       title: '对账', dataIndex: 'reconciled', width: 80,
@@ -176,6 +189,36 @@ export default function FactoryOrdersPage() {
             <Col xs={24} sm={12}><Card size="small"><Statistic title="已付(工厂)" value={s.paid_sum} precision={2} prefix="¥" suffix={` · ${s.paid_count}单`} valueStyle={{ color: '#1677ff' }} /></Card></Col>
             <Col xs={24} sm={12}><Card size="small"><Statistic title="未付(待付)" value={s.unpaid_sum} precision={2} prefix="¥" suffix={` · ${s.unpaid_count}单`} valueStyle={{ color: s.unpaid_sum >= 1 ? '#fa8c16' : undefined }} /></Card></Col>
           </Row>
+          <Card
+            size="small"
+            title="按下单月汇总"
+            extra={<Text type="secondary">点击“查看待付”逐月排查；金额优先取工厂账单，缺账单时取推算成本</Text>}
+            style={{ marginBottom: 12 }}
+          >
+            <Table<FactoryOrderMonthlySummary>
+              rowKey="month"
+              size="small"
+              pagination={false}
+              dataSource={data?.monthly_summary || []}
+              scroll={{ x: 1050 }}
+              columns={[
+                { title: '下单月', dataIndex: 'month', width: 100, fixed: 'left' },
+                { title: '总单数', dataIndex: 'count', width: 80, align: 'right' },
+                { title: '推算应付', dataIndex: 'expected_sum', width: 130, align: 'right', render: money },
+                { title: '工厂实际', dataIndex: 'actual_sum', width: 130, align: 'right', render: money },
+                { title: '已付', width: 150, render: (_, r) => `${money(r.paid_sum)} · ${r.paid_count}单` },
+                { title: '未付(待付)', width: 160, render: (_, r) => <Text type={r.unpaid_count ? 'warning' : undefined}>{money(r.unpaid_sum)} · {r.unpaid_count}单</Text> },
+                { title: '缺工厂账单', dataIndex: 'missing_bill_count', width: 110, align: 'right' },
+                { title: '待写人工原因', dataIndex: 'unresolved_count', width: 120, align: 'right', render: (v) => v ? <Tag color="orange">{v} 单</Tag> : <Tag color="green">已完成</Tag> },
+                {
+                  title: '操作', width: 100, fixed: 'right',
+                  render: (_, r) => r.month === '未注明日期'
+                    ? null
+                    : <Button size="small" onClick={() => { setMonth(r.month); setPayStatus('unpaid'); setView('all'); }}>查看待付</Button>,
+                },
+              ]}
+            />
+          </Card>
         </>
       )}
       <Space style={{ marginBottom: 12 }} wrap>
@@ -237,6 +280,7 @@ export default function FactoryOrdersPage() {
               { label: '工厂单', value: r.factory_order_no },
               { label: '工厂', value: r.factory_name || '—' },
               { label: '支付', value: r.payment_status === 'paid' ? '已付' : '未付' },
+              ...(r.payment_status === 'paid' ? [] : [{ label: '待付原因', value: r.unpaid_reason || '待人工判断' }]),
             ]}
             amount={money(r.factory_bill_amount ?? r.expected_amount)}
             actions={[{ label: '核对', primary: true, onClick: () => openReconcile(r) }]}
@@ -249,7 +293,7 @@ export default function FactoryOrdersPage() {
             dataSource={data?.rows || []}
             columns={columns}
             size="small"
-            scroll={{ x: 1400 }}
+            scroll={{ x: 1850 }}
             pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 单` }}
             expandable={{
               expandedRowRender: (r) => <AccessoryPanel no={r.factory_order_no} />,
@@ -286,6 +330,9 @@ export default function FactoryOrdersPage() {
           </Form.Item>
           <Form.Item label="备注/差异原因" name="remark">
             <Input.TextArea rows={2} placeholder="如有差异, 记原因" />
+          </Form.Item>
+          <Form.Item label="待付人工排查备注" name="unpaid_reason_note">
+            <Input.TextArea rows={3} placeholder="填写实际待付原因，例如：材料抵扣、售后抵扣、7月预付款、账单未到、付款流水待核销" />
           </Form.Item>
         </Form>
       </Modal>
