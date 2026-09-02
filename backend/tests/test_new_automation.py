@@ -100,10 +100,35 @@ def test_aftersales_followup_skips_chinese_done(db_session):
     db_session.add_all([
         AfterSales(platform_order_no="ZH1", reason="平台退款", status="已完成", processed_at=None),
         AfterSales(platform_order_no="ZH2", reason="平台退款", status="auto", processed_at=None),
+        AfterSales(platform_order_no="ZH3", reason="万师傅维修", status="auto_linked", processed_at=None),
+        AfterSales(platform_order_no="ZH4", reason="物流损坏", status=None, processed_at=None),
     ])
     db_session.flush()
     result = aftersales_followup_service.check_and_push(db_session)
-    assert result["overdue_count"] == 1  # 只 auto(ZH2) 待处理; 已完成(ZH1)不算
+    assert result["overdue_count"] == 1  # 只真正待人工处理的 ZH4 进入提醒
+
+
+def test_aftersales_followup_skips_automatic_ledger_rows(db_session):
+    """自动入账及自动关联行是已处理台账，不应生成售后待办或飞书警告。"""
+    db_session.add_all([
+        AfterSales(
+            platform_order_no="AUTO1",
+            reason="平台退款",
+            status="auto",
+            processed_at=date.today() - timedelta(days=10),
+        ),
+        AfterSales(
+            platform_order_no="AUTO2",
+            reason="万师傅维修",
+            status="auto_linked",
+            processed_at=date.today() - timedelta(days=10),
+        ),
+    ])
+    db_session.flush()
+
+    result = aftersales_followup_service.check_and_push(db_session)
+
+    assert result == {"overdue_count": 0, "pushed": False}
 
 
 def test_aftersales_reason_action_mapping():

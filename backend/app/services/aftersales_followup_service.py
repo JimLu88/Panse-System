@@ -40,10 +40,20 @@ _REASON_ACTION_MAP: dict[str, str] = {
 
 _DEFAULT_ACTION = "请核实情况并录入处理详情"
 _OVERDUE_DAYS = 3
-# 已解决状态白名单 —— 这些不算超时待处理。
+# 不需要人工跟进的状态白名单 —— 这些不算超时待处理。
 # 用户 2026-07-03 踩坑: 实际数据 status 是中文「已完成」(导入的), 但原来只认英文
 # resolved/closed → 857 条已完成的被误报成待处理, 把提醒从 ~237 撑成 1091。补齐中文值。
-_DONE_STATUSES = ("resolved", "closed", "已完成", "已解决", "已处理")
+# auto/auto_linked 是系统从平台退款、支付宝流水和万师傅记录自动生成并已处理/关联的
+# 财务售后台账。它们用于对账追溯，不是等待人工处理的售后案件。
+_DONE_STATUSES = (
+    "resolved",
+    "closed",
+    "已完成",
+    "已解决",
+    "已处理",
+    "auto",
+    "auto_linked",
+)
 
 
 def _get_suggested_action(reason: str) -> str:
@@ -64,7 +74,7 @@ def check_and_push(db: Session) -> dict:
     """
     cutoff = date.today() - timedelta(days=_OVERDUE_DAYS)
 
-    # 未解决: status 为 None 或不在 resolved/closed
+    # 只追踪真正待人工处理的记录；自动生成/已关联台账不进入提醒。
     stmt = select(AfterSales).where(
         or_(
             AfterSales.status.is_(None),
