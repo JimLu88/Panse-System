@@ -249,11 +249,13 @@ def _discount_scope(db: Session, plan: CampaignPlan) -> tuple[list[dict], dict |
             "error": "plan8_final_v3_discount_scope_drift",
             "row_count": len(rows), "pairs": sorted(pairs), "stats": stats,
         }
-    normalized = []
+    wire_rows = []
     for row in rows:
         item_id = str(row.get("taobao_item_id") or "")
         sku_id = str(row.get("taobao_sku_id") or "")
+        sku_code = str(row.get("sku_code") or "").strip()
         actual_deduct = f"{Decimal(str(row.get('deduct'))).quantize(Decimal('0.01')):.2f}"
+        target_price = f"{Decimal(str(row.get('target_price'))).quantize(Decimal('0.01')):.2f}"
         expected_deduct = EXPECTED_DISCOUNT_DEDUCTS[(item_id, sku_id)]
         if actual_deduct != expected_deduct:
             return rows, {
@@ -262,11 +264,27 @@ def _discount_scope(db: Session, plan: CampaignPlan) -> tuple[list[dict], dict |
                 "expected_deduct": expected_deduct,
                 "actual_deduct": actual_deduct,
             }
-        normalized.append({
-            "item_id": item_id, "sku_id": sku_id,
-            "expected_deduct": expected_deduct,
+        if not sku_code or Decimal(target_price) <= 0:
+            return rows, {
+                "error": "plan8_final_v3_discount_row_drift",
+                "item_id": item_id, "sku_id": sku_id,
+                "expected_deduct": expected_deduct,
+                "actual_deduct": actual_deduct,
+                "sku_code_present": bool(sku_code),
+                "target_price": target_price,
+            }
+        # This is the exact Web-Agent wire contract.  The agent independently
+        # validates these five fields before it opens a browser, then converts
+        # them to its internal item_id/sku_id/expected_deduct representation.
+        wire_rows.append({
+            "taobao_item_id": item_id,
+            "taobao_sku_id": sku_id,
+            "sku_code": sku_code,
+            "deduct": expected_deduct,
+            "target_price": target_price,
         })
-    return sorted(normalized, key=lambda row: (row["item_id"], row["sku_id"])), None
+    return sorted(wire_rows, key=lambda row: (
+        row["taobao_item_id"], row["taobao_sku_id"])), None
 
 
 def _fixed_manifest(target_rows: list[dict], discount_rows: list[dict],

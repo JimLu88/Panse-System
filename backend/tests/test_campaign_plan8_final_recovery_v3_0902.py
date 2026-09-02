@@ -131,7 +131,11 @@ def _web_result(payload, *, phase):
         "scope_sha256": payload["scope_sha256"], "platform_write": False,
         "draft_records": _records(manifest, final=phase == "readback"),
         "discount_rows": [
-            {**row, "state": discount_state,
+            {
+             "item_id": row["taobao_item_id"],
+             "sku_id": row["taobao_sku_id"],
+             "expected_deduct": row["deduct"],
+             "state": discount_state,
              "activity_id": "143900000001"}
             for row in manifest["discount_rows"]],
     }
@@ -239,6 +243,29 @@ def test_plan8_v3_route_is_narrowly_allowlisted():
                for row in recovery.DRAFT_RECORDS.values()) == 8
     assert recovery.EXPECTED_TARGET_ROW_COUNT == 78
     assert recovery.EXPECTED_TARGET_CUSTOM_ROW_COUNT == 18
+
+
+def test_plan8_v3_discount_scope_matches_web_agent_wire_contract(
+        db_session, monkeypatch):
+    source_rows = _discount_rows()
+    monkeypatch.setattr(
+        campaign_service, "build_discount_rows",
+        lambda *_a, **_k: (source_rows, {"rows": 8}))
+
+    rows, error = recovery._discount_scope(db_session, object())
+
+    assert error is None
+    assert len(rows) == 8
+    assert all(set(row) == {
+        "taobao_item_id", "taobao_sku_id", "sku_code", "deduct",
+        "target_price",
+    } for row in rows)
+    assert {(row["taobao_item_id"], row["taobao_sku_id"])
+            for row in rows} == recovery.ADD_PAIRS
+    assert all(row["sku_code"] and float(row["target_price"]) > 0
+               for row in rows)
+    assert {(row["taobao_item_id"], row["taobao_sku_id"]): row["deduct"]
+            for row in rows} == recovery.EXPECTED_DISCOUNT_DEDUCTS
 
 
 def test_plan8_v2_is_permanently_retired_in_runtime(db_session, monkeypatch):
