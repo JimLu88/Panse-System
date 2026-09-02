@@ -38,6 +38,12 @@ CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH = (
 CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH = (
     "/api/campaigns/recover-super88-plan8-final-v3/claim-verification"
 )
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v4"
+)
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_CLAIM_VERIFY_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v4/claim-verification"
+)
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
@@ -110,6 +116,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH,
+    CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH,
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH,
@@ -313,13 +320,13 @@ def machine_identity_for_key(
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-wake"
-    # Web-Agent may only prove that ERP durably claimed this one exact V3
+    # Web-Agent may only prove that ERP durably claimed this one exact V4
     # attempt before consuming its browser reservation.  The endpoint is
     # read-only and returns no token or manifest contents.
-    if path == CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH:
+    if path == CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_CLAIM_VERIFY_PATH:
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
-            return "machine:web-agent-plan8-v3-claim-verify"
+            return "machine:web-agent-plan8-v4-claim-verify"
     # The 01 executor gets one non-exported credential that can authenticate
     # only the two ERP-internal preparation paths.  It cannot list plans,
     # change exclusions, upload, submit, retry, withdraw, notify, or call any
@@ -332,18 +339,18 @@ def machine_identity_for_key(
     return None
 
 
-def require_web_agent_plan8_v3_claim_verifier(
+def require_web_agent_plan8_v4_claim_verifier(
     request: Request,
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     db: Session = Depends(get_db),
 ) -> ServicePrincipal:
     identity = machine_identity_for_key(x_api_key, db, path=request.url.path)
-    if identity != "machine:web-agent-plan8-v3-claim-verify":
+    if identity != "machine:web-agent-plan8-v4-claim-verify":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED,
-                            "Web-Agent计划8 V3核验身份无效")
+                            "Web-Agent计划8 V4核验身份无效")
     return ServicePrincipal(
         username=identity, role="web_agent_service",
-        scope="campaign.super88.plan8.final_recovery_v3.claim_verify.readonly",
+        scope="campaign.super88.plan8.final_recovery_v4.claim_verify.readonly",
     )
 
 
@@ -378,6 +385,8 @@ def require_campaign_prepare_principal(
                 "campaign.super88.plan8.final_recovery_v2"),
             CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH: (
                 "campaign.super88.plan8.final_recovery_v3"),
+            CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH: (
+                "campaign.super88.plan8.final_recovery_v4"),
             CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH: (
                 "campaign.super_reduce.plan7.discount_audit"),
             CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH: (

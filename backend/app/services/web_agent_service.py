@@ -741,7 +741,7 @@ def recover_plan8_final_v3(
     allowed to write and Web-Agent owns its own matching one-shot claim.
     """
     started = _post(
-        db, "/api/campaign/plan8-final-recovery-v3", payload, timeout=30)
+        db, "/api/campaign/plan8-final-recovery-v4", payload, timeout=30)
     if not started.get("ok") or not started.get("job"):
         busy = (
             started.get("error") == "taobao_profile_busy"

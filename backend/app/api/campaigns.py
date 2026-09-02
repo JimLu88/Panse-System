@@ -35,7 +35,7 @@ from app.dependencies import (
     ServicePrincipal,
     get_current_user,
     require_campaign_prepare_principal,
-    require_web_agent_plan8_v3_claim_verifier,
+    require_web_agent_plan8_v4_claim_verifier,
     require_role,
 )
 from app.models.auth import User
@@ -134,7 +134,7 @@ class CampaignPlan8FinalRecoveryV2In(BaseModel):
     recovery_version: int = Field(ge=2, le=2)
 
 
-class CampaignPlan8FinalRecoveryV3In(BaseModel):
+class CampaignPlan8FinalRecoveryV4In(BaseModel):
     """Fixed request for in-place completion of six bound plan-8 drafts."""
 
     model_config = ConfigDict(extra="forbid")
@@ -142,13 +142,13 @@ class CampaignPlan8FinalRecoveryV3In(BaseModel):
     workflow_key: str
     plan_id: int = Field(ge=1)
     expected_status: str
-    recovery_version: int = Field(ge=3, le=3)
+    recovery_version: int = Field(ge=4, le=4)
     mode: str = Field(pattern=r"^(execute|readback)$")
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class CampaignPlan8FinalRecoveryV3ClaimVerifyIn(BaseModel):
+class CampaignPlan8FinalRecoveryV4ClaimVerifyIn(BaseModel):
     """Web-Agent's fixed, read-only proof request before consuming its lease."""
 
     model_config = ConfigDict(extra="forbid")
@@ -844,8 +844,18 @@ def recover_super88_plan8_final_v2(
 
 
 @router.post("/recover-super88-plan8-final-v3")
-def recover_super88_plan8_final_v3(
-        body: CampaignPlan8FinalRecoveryV3In,
+def recover_super88_plan8_final_v3_retired(
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """The failed pre-write V3 entry is permanently retired."""
+    raise HTTPException(409, detail={
+        "ok": False, "error": "plan8_final_v3_retired_use_v4",
+        "platform_write": False, "claim_created": False,
+    })
+
+
+@router.post("/recover-super88-plan8-final-v4")
+def recover_super88_plan8_final_v4(
+        body: CampaignPlan8FinalRecoveryV4In,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
     """Complete or read back exactly the six existing plan-8 draft records."""
@@ -872,12 +882,12 @@ def recover_super88_plan8_final_v3(
     return result
 
 
-@router.post("/recover-super88-plan8-final-v3/claim-verification")
-def verify_super88_plan8_final_v3_claim(
-        body: CampaignPlan8FinalRecoveryV3ClaimVerifyIn,
+@router.post("/recover-super88-plan8-final-v4/claim-verification")
+def verify_super88_plan8_final_v4_claim(
+        body: CampaignPlan8FinalRecoveryV4ClaimVerifyIn,
         db: Session = Depends(get_db),
         _: ServicePrincipal = Depends(
-            require_web_agent_plan8_v3_claim_verifier)):
+            require_web_agent_plan8_v4_claim_verifier)):
     """Let Web-Agent prove ERP's durable one-shot claim without a credential leak."""
     from app.services import campaign_plan8_final_recovery_v3_service
 

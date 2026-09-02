@@ -29,9 +29,9 @@ from app.services import (
 WORKFLOW_KEY = "campaign:super88:49462:49469"
 PLAN_ID = 8
 EXPECTED_STATUS = "alarmed"
-RECOVERY_VERSION = 3
-OPERATION = "plan8_final_recovery_v3"
-EXECUTION_SOURCE = "campaign_super88_plan8_final_recovery_v3"
+RECOVERY_VERSION = 4
+OPERATION = "plan8_final_recovery_v4"
+EXECUTION_SOURCE = "campaign_super88_plan8_final_recovery_v4"
 EXPECTED_POLICY_SHA256 = (
     "0209e67546c2e20be904a54d16402a32de02d91129bc1cceeda34b6e6fa4483f"
 )
@@ -151,8 +151,8 @@ BOUND_EVIDENCE_ROWS = {
 }
 EXPECTED_TARGET_ROW_COUNT = 78
 EXPECTED_TARGET_CUSTOM_ROW_COUNT = 18
-EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V3_6_ITEMS_78_SKUS_18_CUSTOM"
-READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V3_NO_PLATFORM_WRITE"
+EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V4_6_ITEMS_78_SKUS_18_CUSTOM"
+READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V4_NO_PLATFORM_WRITE"
 READBACK_PLAN_STATUSES = {
     "resume_executing", "alarmed", "signup_pushed", "reconciled",
 }
@@ -1287,7 +1287,7 @@ def recover_plan8_final_v3(
         state="write_claimed", write_claimed=True,
         write_claimed_at=claimed_at, platform_write_observed=None,
         automatic_retry_allowed=False,
-        request_id=f"plan8-final-v3-{secrets.token_hex(8)}",
+        request_id=f"plan8-final-v4-{secrets.token_hex(8)}",
         last_step="platform_write_claim",
         result_summary={"manifest": manifest, "inspection": inspection_detail},
     )

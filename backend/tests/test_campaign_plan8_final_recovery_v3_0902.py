@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app import dependencies
-from app.cli import campaign_recover_plan8_final_v3 as cli
+from app.cli import campaign_recover_plan8_final_v4 as cli
 from app.models.campaign import CampaignExecutionAttempt, CampaignPlan
 from app.services import (
     campaign_execution_service,
@@ -223,7 +223,7 @@ def _run(db, *, mode="execute", **overrides):
         "workflow_key": recovery.WORKFLOW_KEY,
         "expected_plan_id": 8,
         "expected_status": "alarmed",
-        "recovery_version": 3,
+        "recovery_version": recovery.RECOVERY_VERSION,
         "mode": mode,
         "confirmation": (recovery.EXECUTE_CONFIRMATION
                          if mode == "execute" else recovery.READBACK_CONFIRMATION),
@@ -233,12 +233,15 @@ def _run(db, *, mode="execute", **overrides):
     return recovery.recover_plan8_final_v3(db, **values)
 
 
-def test_plan8_v3_route_is_narrowly_allowlisted():
-    assert dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH == (
-        "/api/campaigns/recover-super88-plan8-final-v3")
+def test_plan8_v4_route_is_narrowly_allowlisted_and_v3_is_retired():
+    assert dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH == (
+        "/api/campaigns/recover-super88-plan8-final-v4")
+    assert dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH in (
+        dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
     assert dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH in (
         dependencies.CAMPAIGN_PREPARE_SERVICE_PATHS)
-    assert recovery.RECOVERY_VERSION == 3
+    assert recovery.RECOVERY_VERSION == 4
+    assert recovery.OPERATION == "plan8_final_recovery_v4"
     assert len(recovery.DRAFT_RECORDS) == 6
     assert sum(len(row["add_sku_ids"])
                for row in recovery.DRAFT_RECORDS.values()) == 8
@@ -525,7 +528,7 @@ def test_web_agent_v3_carries_reservation_expiry_from_inspect_envelope(
 def test_plan8_v3_cli_accepts_only_fixed_execute_or_readback(monkeypatch):
     valid = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
-        "expected_status": "alarmed", "recovery_version": 3,
+        "expected_status": "alarmed", "recovery_version": 4,
         "mode": "readback",
         "confirmation": recovery.READBACK_CONFIRMATION,
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
@@ -544,7 +547,7 @@ def test_plan8_v3_cli_accepts_only_fixed_execute_or_readback(monkeypatch):
         raise AssertionError("drifted payload must be rejected")
 
     script = Path(__file__).parents[2] / "scripts" / (
-        "campaign_recover_plan8_final_v3_nas.ps1")
+        "campaign_recover_plan8_final_v4_nas.ps1")
     text = script.read_text(encoding="utf-8-sig")
     assert text.isascii()
     assert "[switch]$ExecuteOnce" in text
@@ -764,7 +767,7 @@ def test_plan8_v3_request_requires_explicit_mode_confirmation_and_scope(
         db_session):
     denied = recovery.recover_plan8_final_v3(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
-        expected_status="alarmed", recovery_version=3, mode="execute",
+        expected_status="alarmed", recovery_version=4, mode="execute",
         confirmation="", target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert denied["error"] == "plan8_final_v3_request_not_allowed"
 
@@ -773,10 +776,10 @@ def test_plan8_v3_claim_verify_machine_identity_is_path_scoped(monkeypatch):
     monkeypatch.setattr(
         dependencies.settings_service, "get",
         lambda _db, key, **_kwargs: "secret" if key == "web_agent_token" else None)
-    path = dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH
+    path = dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_CLAIM_VERIFY_PATH
     assert dependencies.machine_identity_for_key(
         "secret", object(), path=path
-    ) == "machine:web-agent-plan8-v3-claim-verify"
+    ) == "machine:web-agent-plan8-v4-claim-verify"
     assert dependencies.machine_identity_for_key(
         "secret", object(), path="/api/campaigns"
     ) is None
