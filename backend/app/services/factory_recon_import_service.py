@@ -27,6 +27,8 @@ from app.models.order import Order
 _HEADER_MAP = {
     "单号": "doc_no",
     "订单号": "order_no",
+    "订单号1": "order_no", "订单1": "order_no",
+    "订单号2": "extra_order_no1", "订单2": "extra_order_no1",
     "追加订单号1": "extra_order_no1", "追加订单号一": "extra_order_no1",
     "追加订单号2": "extra_order_no2", "追加订单号二": "extra_order_no2",
     "详情": "detail",
@@ -116,7 +118,7 @@ def _find_header_row(rows: list[tuple]) -> int:
     """找到含「订单号」「价格」的表头行 (通常第 2 行, 0-based=1)。找不到默认第 2 行。"""
     for idx, row in enumerate(rows[:6]):
         cells = {_norm_header(c) for c in row}
-        if "订单号" in cells and ("价格" in cells or "数量" in cells):
+        if cells.intersection({"订单号", "订单号1", "订单1"}) and ("价格" in cells or "数量" in cells):
             return idx
     return 1
 
@@ -168,6 +170,10 @@ def import_factory_recon_xlsx(db: Session, content: bytes) -> FactoryReconImport
 
         sheet_inserted = 0
         for row in rows[hdr_idx + 1:]:
+            row_text = " ".join(str(cell).strip() for cell in row if cell is not None)
+            # 「账单尾款」是本期账单终点；其后的延期订单仅供下期备忘，不在本期入账。
+            if any(marker in row_text for marker in ("账单尾款", "本期尾款")):
+                break
             rec: dict[str, Any] = {}
             remarks: list[str] = []
             for ci, fld in col_fields:
@@ -187,6 +193,11 @@ def import_factory_recon_xlsx(db: Session, content: bytes) -> FactoryReconImport
             order_date = _to_date(rec.get("order_date"))
             qty_d = _dec(rec.get("qty"))
             qty = int(qty_d) if qty_d is not None else 1
+            # 合计/小计行是派生结果，逐单台账不能再导一次，否则整期金额会翻倍。
+            if not order_no and not doc_no and any(
+                marker in row_text for marker in ("合计金额", "本期合计", "小计")
+            ):
+                continue
             # 整行空 / 无价格且无单号 → 跳过 (合计行/空行)
             if settle_price is None and not order_no and not doc_no:
                 continue

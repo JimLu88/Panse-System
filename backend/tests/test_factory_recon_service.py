@@ -139,3 +139,25 @@ def test_resolve_requires_reason(db_session):
         assert False, "空原因应报错"
     except ValueError:
         pass
+
+
+def test_order1_order2_headers_and_statement_boundaries(db_session):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "6月账单"
+    ws.append(["6月账单"])
+    ws.append(["单号", "订单号1", "订单号2", "详情", "图片", "数量", "价格"])
+    ws.append([93, "5115417627826040832", "5115619190250004822", "岩板桌", None, 1, 1250])
+    ws.append([None, None, None, None, "合计金额", None, 1250])
+    ws.append(["售后", None, None, "售后抵扣", None, None, -50])
+    ws.append([None, None, None, None, "5月账单尾款", None, 1200])
+    ws.append([154, "3305445027534040190", None, "延后下单7月底", None, 2, 920])
+
+    rep = imp.import_factory_recon_xlsx(db_session, _to_bytes(wb))
+    items = db_session.query(FactoryReconItem).order_by(FactoryReconItem.id).all()
+
+    assert rep.inserted == 2
+    assert [(item.order_no, item.extra_order_no1, item.settle_price) for item in items] == [
+        ("5115417627826040832", "5115619190250004822", Decimal("1250")),
+        (None, None, Decimal("-50")),
+    ]

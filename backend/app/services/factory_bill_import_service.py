@@ -118,6 +118,11 @@ def parse_sheet_rows(rows: list[list[Any]]) -> tuple[list[BillLine], list[dict],
             continue
         if not colmap:
             continue   # 表头之前的标题行
+        # 工厂有时把下期延期订单附在「账单尾款」之后作为备忘；这些行不属于本期账单。
+        # 以明确尾款标记为边界，避免把下期订单误写进本期工厂实际。
+        row_text = " ".join(str(cell).strip() for cell in row if cell is not None)
+        if any(marker in row_text for marker in ("账单尾款", "本期尾款")):
+            break
         oi = colmap.get("order_no")
         pi = colmap.get("price")
         prod_i = colmap.get("product")
@@ -172,13 +177,19 @@ def parse_workbook(file_bytes: bytes, sheet_name: Optional[str] = None):
 
 
 def _apply(db: Session, lines: list[BillLine]) -> dict:
-    """按订单号(含追加号)匹配未作废工厂单, 写 factory_bill_amount。"""
+    """按订单号(含追加号)匹配未作废工厂单, 汇总写 factory_bill_amount。
+
+    同一平台订单可能在账单里拆成多行(例如两个 SKU/两件产品)，必须先求和后写入；
+    逐行覆盖会只留下最后一行，造成工厂实际少计。
+    """
     fo_by_no: dict[str, FactoryOrder] = {}
     for fo in db.execute(select(FactoryOrder).where(FactoryOrder.voided_at.is_(None))).scalars().all():
         if fo.platform_order_no:
             fo_by_no.setdefault(fo.platform_order_no, fo)
     updated = unchanged = non_numeric = topup_linked = 0
     unmatched: list[dict] = []
+    matched_totals: dict[int, Decimal] = {}
+    matched_orders: dict[int, FactoryOrder] = {}
     for ln in lines:
         if ln.price is None:
             non_numeric += 1
@@ -212,10 +223,15 @@ def _apply(db: Session, lines: list[BillLine]) -> dict:
                 extra_fo.factory_cost_type = "same_order_topup"
                 extra_fo.related_primary_order_no = ln.order_no
                 extra_fo.factory_bill_amount = Decimal("0")
-        if fo.factory_bill_amount is not None and Decimal(str(fo.factory_bill_amount)) == ln.price:
+        matched_orders[fo.id] = fo
+        matched_totals[fo.id] = matched_totals.get(fo.id, Decimal("0")) + ln.price
+
+    for fo_id, total in matched_totals.items():
+        fo = matched_orders[fo_id]
+        if fo.factory_bill_amount is not None and Decimal(str(fo.factory_bill_amount)) == total:
             unchanged += 1
             continue
-        fo.factory_bill_amount = ln.price
+        fo.factory_bill_amount = total
         updated += 1
     return {"updated": updated, "unchanged": unchanged, "topup_linked": topup_linked,
             "non_numeric": non_numeric, "unmatched": unmatched}
