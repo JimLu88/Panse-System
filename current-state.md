@@ -9,6 +9,10 @@
 - Web-Agent inspect 必须持有 reservation 到 commit；任务忙碌发生在 ERP 写 claim 之前，
   不消耗机会。commit 后任何未知结果禁止重试，只能 `-ReadbackOnly` 做官方只读判定。
 - ERP 只建立一个 V3 父 attempt，不调用通用 push_signup，也不会生成内层 signup attempt。
+  父 attempt 的 claim 与计划状态 CAS 原子落库；Web-Agent 消耗租约前必须通过固定只读
+  claim-verification 回查。inspect 同时要求新增 8 个真实 SKU 的官方候选当前价、最低
+  标价、合格活动价上限全部新鲜且满足现有价格硬门，并将完整 8 行和旧 53 行绑定 scope。
+  正式脚本必须显式选择 `-ExecuteOnce` 或 `-ReadbackOnly`，无参数拒绝。
   正式命令与完整接口契约见
   `docs/计划8六条草稿原位恢复V3_20260902.md`。维护任务尚未执行计划 8 真实恢复。
 

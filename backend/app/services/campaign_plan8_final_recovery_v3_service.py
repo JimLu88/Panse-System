@@ -14,6 +14,7 @@ import json
 import secrets
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.campaign import CampaignExecutionAttempt, CampaignPlan
@@ -118,6 +119,16 @@ EXPECTED_DISCOUNT_DEDUCTS = {
 }
 EXPECTED_TARGET_ROW_COUNT = 78
 EXPECTED_TARGET_CUSTOM_ROW_COUNT = 18
+EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V3_6_ITEMS_78_SKUS_18_CUSTOM"
+READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V3_NO_PLATFORM_WRITE"
+READBACK_PLAN_STATUSES = {
+    "resume_executing", "alarmed", "signup_pushed", "reconciled",
+}
+EXPECTED_COMMIT_CHECKPOINTS = [
+    "claimed", "discount_terminal", "discount_readback_exact",
+    "draft_patch_terminal", "draft_patch_readback_exact",
+    "publish_terminal", "official_readback_exact",
+]
 
 PREREQUISITE_ATTEMPTS = {
     "14ddfc8e428148b66f61c7aa": (
@@ -209,6 +220,7 @@ def _target_rows(db: Session, plan: CampaignPlan, identity: dict,
         and len(custom_ids) == EXPECTED_TARGET_CUSTOM_ROW_COUNT
         and actual_scope == EXPECTED_TARGET_SCOPE_SHA256
         and ADD_SKU_IDS <= sku_ids
+        and not (ADD_SKU_IDS & custom_ids)
     ):
         return rows, {
             "error": "plan8_final_v3_signup_scope_drift",
@@ -217,6 +229,7 @@ def _target_rows(db: Session, plan: CampaignPlan, identity: dict,
             "item_ids": sorted(item_ids),
             "custom_sku_count": len(custom_ids),
             "missing_add_sku_ids": sorted(ADD_SKU_IDS - sku_ids),
+            "add_skus_marked_custom": sorted(ADD_SKU_IDS & custom_ids),
             "actual_scope_sha256": actual_scope,
             "stats": stats,
         }
@@ -340,6 +353,158 @@ def _valid_sha(value) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{64}", str(value or "")))
 
 
+def _observed_at(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _canonical_legacy_rows(value) -> list[dict] | None:
+    """Normalize the exact 53 official rows captured during inspect.
+
+    These values are not guessed in ERP.  They are read from the platform's
+    bound single-discount editors and become immutable through the parent
+    attempt scope hash.
+    """
+    if not isinstance(value, list):
+        return None
+    rows = []
+    pairs = set()
+    try:
+        for raw in value:
+            if not isinstance(raw, dict) or set(raw) != {
+                    "item_id", "sku_id", "actual_deduct", "activity_id",
+                    "activity_status"}:
+                return None
+            item_id = str(raw.get("item_id") or "")
+            sku_id = str(raw.get("sku_id") or "")
+            activity_id = str(raw.get("activity_id") or "")
+            activity_status = str(raw.get("activity_status") or "").strip()
+            deduct = _money(raw.get("actual_deduct"))
+            pair = (item_id, sku_id)
+            if (not item_id.isdigit() or not sku_id.isdigit()
+                    or not activity_id.isdigit() or pair in pairs
+                    or pair in ADD_PAIRS
+                    or item_id not in (TARGET_ITEM_IDS | set(PROTECTED_RECORDS))
+                    or Decimal(deduct) <= 0 or not activity_status):
+                return None
+            pairs.add(pair)
+            rows.append({
+                "item_id": item_id,
+                "sku_id": sku_id,
+                "actual_deduct": deduct,
+                "activity_id": activity_id,
+                "activity_status": activity_status,
+            })
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return sorted(rows, key=lambda row: (
+        row["item_id"], row["sku_id"], row["activity_id"]))
+
+
+def _validate_candidate_price_evidence(
+        result: dict, manifest: dict) -> tuple[bool, dict]:
+    """Apply current-price and selectable-candidate R17-equivalent gates."""
+    evidence = result.get("candidate_price_evidence") or {}
+    raw_rows = evidence.get("records") or []
+    expected_rows = {
+        (row["item_id"], row["sku_id"]): row
+        for record in manifest["draft_records"]
+        for row in record["add_rows"]
+    }
+    actual = {}
+    problems = []
+    max_age_hours = campaign_policy_service.floor_evidence_max_age_hours()
+    now = datetime.now(timezone.utc)
+    for raw in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(raw, dict) or set(raw) != {
+                "item_id", "sku_id", "current_list_price",
+                "min_list_price", "max_eligible_activity_price", "sku_name"}:
+            problems.append({"error": "price_evidence_fields_invalid"})
+            continue
+        pair = (str(raw.get("item_id") or ""), str(raw.get("sku_id") or ""))
+        if pair in actual:
+            problems.append({"pair": pair, "error": "duplicate_price_evidence"})
+            continue
+        actual[pair] = raw
+        expected = expected_rows.get(pair)
+        observed = _observed_at(evidence.get("observed_at"))
+        try:
+            live = Decimal(_money(raw.get("current_list_price")))
+            min_list = Decimal(_money(raw.get("min_list_price")))
+            eligible_ceiling = Decimal(_money(
+                raw.get("max_eligible_activity_price")))
+            signup = Decimal(str((expected or {}).get("signup_price")))
+        except (TypeError, ValueError, ArithmeticError):
+            problems.append({"pair": pair, "error": "price_evidence_value_invalid"})
+            continue
+        age_hours = ((now - observed).total_seconds() / 3600
+                     if observed is not None else None)
+        reasons = []
+        if expected is None:
+            reasons.append("unexpected_pair")
+        if str(evidence.get("source") or "") != "qianniu_selectable_item_list":
+            reasons.append("source_not_official")
+        if age_hours is None or age_hours < -0.05 or age_hours > max_age_hours:
+            reasons.append("evidence_stale_or_future")
+        if live != signup:
+            reasons.append("current_live_price_not_erp_daily_price")
+        if signup > min_list:
+            reasons.append("signup_price_above_min_list_price")
+        if signup > eligible_ceiling:
+            reasons.append("signup_price_above_candidate_eligible_ceiling")
+        if reasons:
+            problems.append({
+                "item_id": pair[0], "sku_id": pair[1], "reasons": reasons,
+                "signup_price": _money(signup),
+                "current_list_price": _money(live),
+                "min_list_price": _money(min_list),
+                "max_eligible_activity_price": _money(eligible_ceiling),
+                "observed_at": evidence.get("observed_at"),
+            })
+    normalized_rows = sorted([{
+        "item_id": pair[0], "sku_id": pair[1],
+        "sku_name": str(row.get("sku_name") or ""),
+        "current_list_price": _money(row.get("current_list_price")),
+        "min_list_price": _money(row.get("min_list_price")),
+        "max_eligible_activity_price": _money(
+            row.get("max_eligible_activity_price")),
+    } for pair, row in actual.items() if pair in expected_rows], key=lambda row: (
+        row["item_id"], row["sku_id"])) if not any(
+            problem.get("error") == "price_evidence_value_invalid"
+            for problem in problems) else []
+    digest = str(evidence.get("sha256") or "")
+    selection = evidence.get("selection_guard") or {}
+    ok = bool(
+        evidence.get("ok") is True
+        and not (evidence.get("missing_sku_ids") or [])
+        and set(actual) == set(expected_rows)
+        and len(normalized_rows) == 8
+        and not problems
+        and _valid_sha(digest)
+        and selection.get("checked") == 0
+        and selection.get("zero_selected") is True
+        and evidence.get("requested_sku_count") == 8
+        and evidence.get("observed_sku_count") == 8
+    )
+    return ok, {
+        "rows": normalized_rows,
+        "rows_sha256": _hash(normalized_rows),
+        "sha256": digest,
+        "observed_at": evidence.get("observed_at"),
+        "source": evidence.get("source"),
+        "selection_guard": selection,
+        "max_age_hours": max_age_hours,
+        "problems": problems,
+        "missing_pairs": sorted(set(expected_rows) - set(actual)),
+        "unexpected_pairs": sorted(set(actual) - set(expected_rows)),
+    }
+
+
 def _sku_price_map(rows: list[dict]) -> dict[str, str] | None:
     result = {}
     try:
@@ -429,11 +594,13 @@ def validate_inspection(result: dict, manifest: dict,
             and row.get("before_hash") == _hash(row.get("snapshot"))
         )
     legacy = result.get("legacy_discount_baseline") or {}
+    canonical_legacy_rows = _canonical_legacy_rows(legacy.get("rows"))
     legacy_ok = (
         legacy.get("row_count") == 53
-        and len(legacy.get("rows") or []) == 53
+        and canonical_legacy_rows is not None
+        and len(canonical_legacy_rows) == 53
         and _valid_sha(legacy.get("sha256"))
-        and legacy.get("sha256") == _hash(legacy.get("rows"))
+        and legacy.get("sha256") == _hash(canonical_legacy_rows)
     )
     all_record_ids = {str(value) for value in result.get("all_record_ids") or []}
     expected_record_ids = {
@@ -445,6 +612,12 @@ def validate_inspection(result: dict, manifest: dict,
         and all_record_ids == expected_record_ids
     )
     reservation_token = str(result.get("reservation_token") or "")
+    try:
+        lease_expires_at_epoch = float(result.get("lease_expires_at_epoch"))
+    except (TypeError, ValueError):
+        lease_expires_at_epoch = 0
+    candidate_ok, candidate_detail = _validate_candidate_price_evidence(
+        result, manifest)
     ok = bool(
         result.get("ok") is True
         and not result.get("busy")
@@ -452,8 +625,10 @@ def validate_inspection(result: dict, manifest: dict,
         and result.get("scope_sha256") == manifest_sha256
         and result.get("identity") == IDENTITY
         and records_ok and discounts_ok and protected_ok and legacy_ok
+        and candidate_ok
         and exclusions_ok and len(reservation_token) >= 16
         and result.get("reservation_active") is True
+        and lease_expires_at_epoch > datetime.now(timezone.utc).timestamp()
         and _valid_sha(result.get("artifact_sha256"))
     )
     return ok, {
@@ -462,18 +637,22 @@ def validate_inspection(result: dict, manifest: dict,
         "records": record_detail,
         "discount_rows": discount_rows,
         "protected_records": list(protected.values()),
-        "legacy_discount_baseline": legacy,
+        "legacy_discount_baseline": {
+            **legacy, "rows": canonical_legacy_rows or []},
+        "candidate_price_evidence": candidate_detail,
         "all_record_ids": sorted(all_record_ids),
         "excluded_item_ids": sorted(result.get("excluded_item_ids") or []),
         "artifact_sha256": result.get("artifact_sha256"),
         "reservation_token_sha256": _hash(reservation_token),
         "reservation_active": result.get("reservation_active"),
+        "lease_expires_at_epoch": lease_expires_at_epoch,
         "scope_sha256": result.get("scope_sha256"),
         "web_agent_job_id": result.get("web_agent_job_id"),
     }
 
 
-def enrich_manifest_with_inspection(manifest: dict, detail: dict) -> dict:
+def enrich_manifest_with_inspection(
+        manifest: dict, detail: dict, *, inspect_scope_sha256: str) -> dict:
     baseline = {
         "official_artifact_sha256": detail["artifact_sha256"],
         "draft_record_before_hashes": {
@@ -487,11 +666,15 @@ def enrich_manifest_with_inspection(manifest: dict, detail: dict) -> dict:
         "legacy_discount_sha256": str(
             detail["legacy_discount_baseline"]["sha256"]),
         "legacy_discount_row_count": 53,
+        "legacy_discount_rows": detail["legacy_discount_baseline"]["rows"],
+        "candidate_price_evidence": detail["candidate_price_evidence"],
         "new_discount_before_rows": detail["discount_rows"],
         "new_discount_before_sha256": _hash(detail["discount_rows"]),
         "all_record_ids": detail["all_record_ids"],
         "excluded_item_ids": detail["excluded_item_ids"],
         "reservation_token_sha256": detail["reservation_token_sha256"],
+        "reservation_expires_at_epoch": detail["lease_expires_at_epoch"],
+        "inspect_scope_sha256": inspect_scope_sha256,
     }
     return {**manifest, "inspection_baseline": baseline}
 
@@ -499,6 +682,31 @@ def enrich_manifest_with_inspection(manifest: dict, detail: dict) -> dict:
 def validate_commit(result: dict, manifest: dict,
                     manifest_sha256: str) -> tuple[bool, dict]:
     baseline = manifest["inspection_baseline"]
+    def pairs(key: str) -> set[tuple[str, str]] | None:
+        value = result.get(key)
+        if not isinstance(value, list):
+            return None
+        normalized = []
+        for row in value:
+            if not isinstance(row, (list, tuple)) or len(row) != 2:
+                return None
+            pair = (str(row[0] or ""), str(row[1] or ""))
+            if not pair[0].isdigit() or not pair[1].isdigit():
+                return None
+            normalized.append(pair)
+        return set(normalized) if len(normalized) == len(set(normalized)) else None
+
+    written = pairs("discount_pairs_written")
+    already_correct = pairs("discount_pairs_already_correct")
+    patched_ids = {str(value) for value in result.get("patched_record_ids") or []}
+    published_ids = {str(value) for value in result.get("published_record_ids") or []}
+    expected_patched = {
+        DRAFT_RECORDS["1036279566778"]["record_id"],
+        DRAFT_RECORDS["1074244132390"]["record_id"],
+    }
+    expected_published = {
+        spec["record_id"] for spec in DRAFT_RECORDS.values()
+    }
     detail = {
         "step": result.get("step"),
         "platform_write": result.get("platform_write"),
@@ -508,6 +716,11 @@ def validate_commit(result: dict, manifest: dict,
         "draft_records_updated": result.get("draft_records_updated"),
         "draft_records_published": result.get("draft_records_published"),
         "reservation_consumed": result.get("reservation_consumed"),
+        "discount_pairs_written": sorted(written or []),
+        "discount_pairs_already_correct": sorted(already_correct or []),
+        "patched_record_ids": sorted(patched_ids),
+        "published_record_ids": sorted(published_ids),
+        "checkpoints": result.get("checkpoints"),
         "web_agent_job_id": result.get("web_agent_job_id"),
     }
     ok = bool(
@@ -515,9 +728,17 @@ def validate_commit(result: dict, manifest: dict,
         and result.get("platform_write") is True
         and result.get("scope_sha256") == manifest_sha256
         and result.get("inspection_baseline") == baseline
-        and result.get("discount_rows_written") == 8
+        and written is not None and already_correct is not None
+        and not (written & already_correct)
+        and written | already_correct == ADD_PAIRS
+        and result.get("discount_rows_written") == len(written)
+        and result.get("discount_rows_already_correct") == len(already_correct)
         and result.get("draft_records_updated") == 2
         and result.get("draft_records_published") == 6
+        and patched_ids == expected_patched
+        and published_ids == expected_published
+        and result.get("checkpoints") == EXPECTED_COMMIT_CHECKPOINTS
+        and result.get("inspect_scope_unchanged") is True
         and result.get("reservation_consumed") is True
     )
     return ok, detail
@@ -576,12 +797,16 @@ def validate_readback(result: dict, manifest: dict,
             and row.get("after_hash") == _hash(row.get("snapshot"))
         )
     legacy = result.get("legacy_discount_baseline") or {}
+    canonical_legacy_rows = _canonical_legacy_rows(legacy.get("rows"))
     legacy_ok = (
         legacy.get("row_count") == 53
-        and len(legacy.get("rows") or []) == 53
+        and canonical_legacy_rows is not None
+        and len(canonical_legacy_rows) == 53
+        and canonical_legacy_rows
+        == manifest["inspection_baseline"]["legacy_discount_rows"]
         and legacy.get("sha256")
         == manifest["inspection_baseline"]["legacy_discount_sha256"]
-        and legacy.get("sha256") == _hash(legacy.get("rows"))
+        and legacy.get("sha256") == _hash(canonical_legacy_rows)
     )
     all_record_ids = {str(value) for value in result.get("all_record_ids") or []}
     expected_record_ids = set(manifest["inspection_baseline"]["all_record_ids"])
@@ -611,7 +836,8 @@ def validate_readback(result: dict, manifest: dict,
         "unexpected_sku_ids": sorted(final_skus - expected_skus),
         "discount_rows": discount_rows,
         "protected_records": list(protected.values()),
-        "legacy_discount_baseline": legacy,
+        "legacy_discount_baseline": {
+            **legacy, "rows": canonical_legacy_rows or []},
         "all_record_ids": sorted(all_record_ids),
         "excluded_item_ids": sorted(result.get("excluded_item_ids") or []),
         "artifact_sha256": result.get("artifact_sha256"),
@@ -634,8 +860,71 @@ def _attempt_for_scope(db: Session, scope_sha256: str) -> CampaignExecutionAttem
     )).scalar_one_or_none()
 
 
+def verify_plan8_final_v3_claim(
+        db: Session, *, attempt_id: str, workflow_key: str, plan_id: int,
+        operation: str, scope_sha256: str, inspect_scope_sha256: str,
+        reservation_token_sha256: str) -> dict:
+    """Read-only proof that ERP durably claimed the exact enriched V3 scope."""
+    attempt = db.get(CampaignExecutionAttempt, attempt_id)
+    manifest = ((attempt.result_summary or {}).get("manifest")
+                if attempt is not None else None)
+    baseline = ((manifest or {}).get("inspection_baseline")
+                if isinstance(manifest, dict) else None)
+    try:
+        reservation_expires = float((baseline or {}).get(
+            "reservation_expires_at_epoch") or 0)
+    except (TypeError, ValueError):
+        reservation_expires = 0
+    verified = bool(
+        attempt is not None
+        and workflow_key == WORKFLOW_KEY
+        and plan_id == PLAN_ID
+        and operation == OPERATION
+        and attempt.plan_id == PLAN_ID
+        and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == scope_sha256
+        and attempt.state == "write_claimed"
+        and attempt.write_claimed is True
+        and attempt.write_claimed_at is not None
+        and bool(attempt.request_id)
+        and isinstance(manifest, dict)
+        and _hash(manifest) == scope_sha256
+        and isinstance(baseline, dict)
+        and baseline.get("inspect_scope_sha256") == inspect_scope_sha256
+        and baseline.get("reservation_token_sha256")
+        == reservation_token_sha256
+        and reservation_expires > datetime.now(timezone.utc).timestamp()
+    )
+    return {
+        "ok": verified,
+        "verified": verified,
+        "attempt_id": attempt_id,
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "operation": OPERATION,
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", False),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "inspect_scope_sha256": (
+            baseline.get("inspect_scope_sha256")
+            if isinstance(baseline, dict) else None),
+        "reservation_token_sha256": (
+            baseline.get("reservation_token_sha256")
+            if isinstance(baseline, dict) else None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "execution_boundary": {
+            **_boundary(platform_write=False), "platform_read": False,
+        },
+    }
+
+
 def _readback_existing(db: Session, plan: CampaignPlan,
                        attempt: CampaignExecutionAttempt) -> dict:
+    if str(plan.status or "") not in READBACK_PLAN_STATUSES:
+        return _fail("plan8_final_v3_readback_plan_status_not_allowed",
+                     actual_status=plan.status, attempt_id=attempt.id)
     manifest = (attempt.result_summary or {}).get("manifest")
     if not isinstance(manifest, dict):
         return _fail("plan8_final_v3_attempt_manifest_missing",
@@ -647,7 +936,8 @@ def _readback_existing(db: Session, plan: CampaignPlan,
         result = web_agent_service.recover_plan8_final_v3(
             db, payload={"phase": "readback",
                          "scope_sha256": attempt.scope_sha256,
-                         "manifest": manifest})
+                         "manifest": manifest,
+                         "attempt_id": attempt.id})
     except Exception as exc:
         result = {"ok": False, "error": type(exc).__name__,
                   "platform_write": False}
@@ -665,7 +955,8 @@ def _readback_existing(db: Session, plan: CampaignPlan,
                      attempt_id=attempt.id, readback=detail,
                      need_scan=bool(result.get("need_scan")))
     campaign_execution_service.record_platform_terminal(
-        db, attempt, state="completed", platform_write_observed=True,
+        db, attempt, state="completed",
+        platform_write_observed=attempt.platform_write_observed,
         step="readback_verified", job_id=detail.get("web_agent_job_id"),
         result_summary={**dict(attempt.result_summary or {}),
                         "manifest": manifest, "readback": detail})
@@ -682,11 +973,16 @@ def _readback_existing(db: Session, plan: CampaignPlan,
 def recover_plan8_final_v3(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_status: str, recovery_version: int,
-        mode: str = "execute") -> dict:
+        mode: str = "execute", confirmation: str = "",
+        target_scope_sha256: str = "") -> dict:
+    expected_confirmation = (
+        EXECUTE_CONFIRMATION if mode == "execute" else READBACK_CONFIRMATION)
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
             or recovery_version != RECOVERY_VERSION
-            or mode not in {"execute", "readback"}):
+            or mode not in {"execute", "readback"}
+            or confirmation != expected_confirmation
+            or target_scope_sha256 != EXPECTED_TARGET_SCOPE_SHA256):
         return _fail("plan8_final_v3_request_not_allowed")
     plan = db.execute(select(CampaignPlan).where(
         CampaignPlan.id == PLAN_ID,
@@ -766,7 +1062,8 @@ def recover_plan8_final_v3(
                      need_scan=bool(inspection.get("need_scan")))
 
     reservation_token = str(inspection["reservation_token"])
-    manifest = enrich_manifest_with_inspection(manifest, inspection_detail)
+    manifest = enrich_manifest_with_inspection(
+        manifest, inspection_detail, inspect_scope_sha256=inspect_scope_sha)
     manifest_sha = _hash(manifest)
     plan = db.execute(select(CampaignPlan).where(
         CampaignPlan.id == PLAN_ID,
@@ -798,25 +1095,43 @@ def recover_plan8_final_v3(
         return _fail("plan8_final_v3_attempt_raced_no_write",
                      attempt_count=len(raced), exact_scope_exists=exact is not None)
 
+    claimed_at = datetime.now(timezone.utc)
     attempt = CampaignExecutionAttempt(
         id=secrets.token_hex(12), plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
-        operation=OPERATION, scope_sha256=manifest_sha, state="prepared",
-        write_claimed=False, automatic_retry_allowed=False,
+        operation=OPERATION, scope_sha256=manifest_sha,
+        state="write_claimed", write_claimed=True,
+        write_claimed_at=claimed_at, platform_write_observed=None,
+        automatic_retry_allowed=False,
+        request_id=f"plan8-final-v3-{secrets.token_hex(8)}",
+        last_step="platform_write_claim",
         result_summary={"manifest": manifest, "inspection": inspection_detail},
     )
     db.add(attempt)
-    db.commit()
-    campaign_execution_service.claim_platform_write(
-        db, attempt.id, request_id=f"plan8-final-v3-{secrets.token_hex(8)}")
-    plan = db.get(CampaignPlan, PLAN_ID)
     plan.status = "resume_executing"
-    db.commit()
+    try:
+        # Attempt claim and plan CAS become durable in one transaction. There
+        # is no committed ``prepared`` orphan between two commits.
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _fail("plan8_final_v3_atomic_claim_conflict_no_write")
+    claim_verification = {
+        "attempt_id": attempt.id,
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "operation": OPERATION,
+        "scope_sha256": manifest_sha,
+        "inspect_scope_sha256": inspect_scope_sha,
+        "reservation_token_sha256": inspection_detail[
+            "reservation_token_sha256"],
+    }
     try:
         committed = web_agent_service.recover_plan8_final_v3(
             db, payload={"phase": "commit", "scope_sha256": manifest_sha,
                          "inspect_scope_sha256": inspect_scope_sha,
                          "manifest": manifest, "attempt_id": attempt.id,
-                         "reservation_token": reservation_token})
+                         "reservation_token": reservation_token,
+                         "claim_verification": claim_verification})
     except Exception as exc:  # fail closed after the one-shot claim
         committed = {"ok": False, "error": type(exc).__name__,
                      "platform_write": None}

@@ -35,6 +35,7 @@ from app.dependencies import (
     ServicePrincipal,
     get_current_user,
     require_campaign_prepare_principal,
+    require_web_agent_plan8_v3_claim_verifier,
     require_role,
 )
 from app.models.auth import User
@@ -143,6 +144,22 @@ class CampaignPlan8FinalRecoveryV3In(BaseModel):
     expected_status: str
     recovery_version: int = Field(ge=3, le=3)
     mode: str = Field(pattern=r"^(execute|readback)$")
+    confirmation: str
+    target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CampaignPlan8FinalRecoveryV3ClaimVerifyIn(BaseModel):
+    """Web-Agent's fixed, read-only proof request before consuming its lease."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    operation: str
+    scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    inspect_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reservation_token_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
@@ -841,6 +858,8 @@ def recover_super88_plan8_final_v3(
         expected_status=body.expected_status,
         recovery_version=body.recovery_version,
         mode=body.mode,
+        confirmation=body.confirmation,
+        target_scope_sha256=body.target_scope_sha256,
     )
     if not result.get("ok"):
         error = result.get("error")
@@ -850,6 +869,27 @@ def recover_super88_plan8_final_v3(
                 "plan8_final_v3_identity_not_allowed"}:
             code = 422
         raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-final-v3/claim-verification")
+def verify_super88_plan8_final_v3_claim(
+        body: CampaignPlan8FinalRecoveryV3ClaimVerifyIn,
+        db: Session = Depends(get_db),
+        _: ServicePrincipal = Depends(
+            require_web_agent_plan8_v3_claim_verifier)):
+    """Let Web-Agent prove ERP's durable one-shot claim without a credential leak."""
+    from app.services import campaign_plan8_final_recovery_v3_service
+
+    result = campaign_plan8_final_recovery_v3_service.verify_plan8_final_v3_claim(
+        db, attempt_id=body.attempt_id, workflow_key=body.workflow_key,
+        plan_id=body.plan_id, operation=body.operation,
+        scope_sha256=body.scope_sha256,
+        inspect_scope_sha256=body.inspect_scope_sha256,
+        reservation_token_sha256=body.reservation_token_sha256,
+    )
+    if not result.get("ok"):
+        raise HTTPException(409, detail=result)
     return result
 
 

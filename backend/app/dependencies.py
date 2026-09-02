@@ -35,6 +35,9 @@ CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH = (
 CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH = (
     "/api/campaigns/recover-super88-plan8-final-v3"
 )
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v3/claim-verification"
+)
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
@@ -310,6 +313,13 @@ def machine_identity_for_key(
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-wake"
+    # Web-Agent may only prove that ERP durably claimed this one exact V3
+    # attempt before consuming its browser reservation.  The endpoint is
+    # read-only and returns no token or manifest contents.
+    if path == CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH:
+        expected = settings_service.get(db, "web_agent_token", env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return "machine:web-agent-plan8-v3-claim-verify"
     # The 01 executor gets one non-exported credential that can authenticate
     # only the two ERP-internal preparation paths.  It cannot list plans,
     # change exclusions, upload, submit, retry, withdraw, notify, or call any
@@ -320,6 +330,21 @@ def machine_identity_for_key(
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "service:campaign-prepare"
     return None
+
+
+def require_web_agent_plan8_v3_claim_verifier(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> ServicePrincipal:
+    identity = machine_identity_for_key(x_api_key, db, path=request.url.path)
+    if identity != "machine:web-agent-plan8-v3-claim-verify":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Web-Agent计划8 V3核验身份无效")
+    return ServicePrincipal(
+        username=identity, role="web_agent_service",
+        scope="campaign.super88.plan8.final_recovery_v3.claim_verify.readonly",
+    )
 
 
 def require_campaign_prepare_principal(

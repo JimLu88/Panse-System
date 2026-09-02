@@ -758,6 +758,8 @@ def recover_plan8_final_v3(
     final = wait_job(db, job_id, timeout_s=timeout_s)
     result = final.get("result") or {}
     result["web_agent_job_id"] = job_id
+    if payload.get("phase") == "inspect":
+        result["lease_expires_at_epoch"] = started.get("lease_expires_at_epoch")
     if result.get("need_scan"):
         return {
             "ok": False,

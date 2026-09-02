@@ -29,6 +29,11 @@ def _read_payload() -> bytes:
         "expected_status": recovery.EXPECTED_STATUS,
         "recovery_version": recovery.RECOVERY_VERSION,
         "mode": body.get("mode"),
+        "confirmation": (
+            recovery.EXECUTE_CONFIRMATION
+            if body.get("mode") == "execute"
+            else recovery.READBACK_CONFIRMATION),
+        "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
     }
     if body != expected or body.get("mode") not in {"execute", "readback"}:
         raise ValueError("计划8最终恢复V3输入与程序固化范围不一致")

@@ -1,6 +1,7 @@
 import io
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from sqlalchemy import select
 
@@ -56,7 +57,7 @@ def _signup_rows():
             fallback += 1
             sku_ids.append(str(fallback))
         for sku_id in sku_ids:
-            custom = custom_left > 0
+            custom = custom_left > 0 and sku_id not in recovery.ADD_SKU_IDS
             custom_left -= int(custom)
             rows.append({
                 "taobao_item_id": item_id, "taobao_sku_id": sku_id,
@@ -100,12 +101,29 @@ def _records(manifest, *, final=False):
 def _web_result(payload, *, phase):
     manifest = payload["manifest"]
     if phase == "commit":
+        before = manifest["inspection_baseline"]["new_discount_before_rows"]
+        missing = [(row["item_id"], row["sku_id"])
+                   for row in before if row["state"] == "missing"]
+        correct = [(row["item_id"], row["sku_id"])
+                   for row in before if row["state"] == "correct"]
         return {
             "ok": True, "phase": phase, "platform_write": True,
             "scope_sha256": payload["scope_sha256"],
             "inspection_baseline": manifest["inspection_baseline"],
-            "discount_rows_written": 8, "draft_records_updated": 2,
+            "discount_rows_written": len(missing),
+            "discount_rows_already_correct": len(correct),
+            "discount_pairs_written": [list(pair) for pair in missing],
+            "discount_pairs_already_correct": [list(pair) for pair in correct],
+            "draft_records_updated": 2,
             "draft_records_published": 6, "reservation_consumed": True,
+            "patched_record_ids": sorted([
+                recovery.DRAFT_RECORDS["1036279566778"]["record_id"],
+                recovery.DRAFT_RECORDS["1074244132390"]["record_id"],
+            ]),
+            "published_record_ids": sorted(
+                row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
+            "checkpoints": recovery.EXPECTED_COMMIT_CHECKPOINTS,
+            "inspect_scope_unchanged": True,
         }
     discount_state = "active" if phase == "readback" else "missing"
     out = {
@@ -131,7 +149,11 @@ def _web_result(payload, *, phase):
             "sku_ids": snapshot["sku_ids"], "snapshot": snapshot,
             "before_hash": before_hash, "after_hash": before_hash,
         })
-    legacy_rows = [{"sku_id": str(index)} for index in range(53)]
+    legacy_rows = [{
+        "item_id": "1036312802226", "sku_id": str(8000000000000 + index),
+        "actual_deduct": "10.00", "activity_id": "143900000002",
+        "activity_status": "进行中",
+    } for index in range(53)]
     out.update({
         "protected_records": protected,
         "legacy_discount_baseline": {
@@ -150,6 +172,25 @@ def _web_result(payload, *, phase):
     if phase == "inspect":
         out["reservation_token"] = "reservation-token-1234567890"
         out["reservation_active"] = True
+        out["lease_expires_at_epoch"] = (
+            datetime.now(timezone.utc) + timedelta(hours=1)).timestamp()
+        add_rows = [row for record in manifest["draft_records"]
+                    for row in record["add_rows"]]
+        out["candidate_price_evidence"] = {
+            "ok": True,
+            "records": [{
+                "item_id": row["item_id"], "sku_id": row["sku_id"],
+                "sku_name": f"SKU-{row['sku_id']}",
+                "current_list_price": row["signup_price"],
+                "min_list_price": row["signup_price"],
+                "max_eligible_activity_price": row["signup_price"],
+            } for row in add_rows],
+            "requested_sku_count": 8, "observed_sku_count": 8,
+            "sha256": "a" * 64,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "source": "qianniu_selectable_item_list",
+            "selection_guard": {"checked": 0, "zero_selected": True},
+        }
     if phase == "readback":
         out["custom_sku_ids"] = manifest["final_scope"]["custom_sku_ids"]
         out["inspection_baseline"] = manifest["inspection_baseline"]
@@ -170,6 +211,21 @@ def _patch_scope(db, monkeypatch):
     monkeypatch.setattr(
         campaign_execution_service, "scope_sha256",
         lambda **_kwargs: recovery.EXPECTED_TARGET_SCOPE_SHA256)
+
+
+def _run(db, *, mode="execute", **overrides):
+    values = {
+        "workflow_key": recovery.WORKFLOW_KEY,
+        "expected_plan_id": 8,
+        "expected_status": "alarmed",
+        "recovery_version": 3,
+        "mode": mode,
+        "confirmation": (recovery.EXECUTE_CONFIRMATION
+                         if mode == "execute" else recovery.READBACK_CONFIRMATION),
+        "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
+    }
+    values.update(overrides)
+    return recovery.recover_plan8_final_v3(db, **values)
 
 
 def test_plan8_v3_route_is_narrowly_allowlisted():
@@ -206,12 +262,26 @@ def test_plan8_v3_exact_draft_and_discount_contract(db_session, monkeypatch):
 
     def fake_web(_db, *, payload, **_kwargs):
         calls.append(payload)
+        if payload["phase"] == "commit":
+            claimed = db_session.get(
+                CampaignExecutionAttempt, payload["attempt_id"])
+            assert claimed.state == "write_claimed"
+            assert claimed.write_claimed is True
+            assert db_session.get(CampaignPlan, 8).status == "resume_executing"
+            assert payload["claim_verification"] == {
+                "attempt_id": claimed.id,
+                "workflow_key": recovery.WORKFLOW_KEY,
+                "plan_id": 8,
+                "operation": recovery.OPERATION,
+                "scope_sha256": claimed.scope_sha256,
+                "inspect_scope_sha256": calls[0]["scope_sha256"],
+                "reservation_token_sha256": recovery._hash(
+                    "reservation-token-1234567890"),
+            }
         return _web_result(payload, phase=payload["phase"])
 
     monkeypatch.setattr(web_agent_service, "recover_plan8_final_v3", fake_web)
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["ok"] is True
     assert [call["phase"] for call in calls] == [
         "inspect", "commit", "readback"]
@@ -256,9 +326,7 @@ def test_plan8_v3_busy_does_not_create_or_consume_claim(
             "claim_created": False, "retry_safe": True,
             "platform_write": False,
         })
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["error"] == "plan8_final_v3_pre_write_busy"
     assert result["write_claim_created"] is False
     assert db_session.execute(select(CampaignExecutionAttempt).where(
@@ -282,28 +350,40 @@ def test_plan8_v3_claimed_failure_never_reexecutes_and_readback_is_read_only(
         return _web_result(payload, phase=payload["phase"])
 
     monkeypatch.setattr(web_agent_service, "recover_plan8_final_v3", first_web)
-    failed = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    failed = _run(db_session)
     assert failed["error"] == "plan8_final_v3_commit_failed_no_retry"
     assert phases == ["inspect", "commit"]
-    replay = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    replay = _run(db_session)
     assert replay["error"] == "plan8_final_v3_already_claimed_no_retry"
     assert phases == ["inspect", "commit"]
 
+    readback_payloads = []
+
+    def readback_web(_db, *, payload, **_kwargs):
+        readback_payloads.append(payload)
+        return _web_result(payload, phase="readback")
+
     monkeypatch.setattr(
-        web_agent_service, "recover_plan8_final_v3",
-        lambda _db, *, payload, **_kwargs:
-        _web_result(payload, phase="readback"))
-    verified = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3,
-        mode="readback")
+        web_agent_service, "recover_plan8_final_v3", readback_web)
+    verified = _run(db_session, mode="readback")
     assert verified["ok"] is True
     assert verified["readback_only"] is True
     assert verified["execution_boundary"]["platform_write"] is False
+    verified_attempt = db_session.get(
+        CampaignExecutionAttempt, failed["attempt_id"])
+    assert verified_attempt.platform_write_observed is None
+    assert readback_payloads == [{
+        "phase": "readback",
+        "scope_sha256": db_session.execute(
+            select(CampaignExecutionAttempt).where(
+                CampaignExecutionAttempt.operation == recovery.OPERATION)
+        ).scalar_one().scope_sha256,
+        "manifest": db_session.execute(
+            select(CampaignExecutionAttempt).where(
+                CampaignExecutionAttempt.operation == recovery.OPERATION)
+        ).scalar_one().result_summary["manifest"],
+        "attempt_id": failed["attempt_id"],
+    }]
 
 
 def test_plan8_v3_rejects_discount_amount_drift(db_session, monkeypatch):
@@ -320,9 +400,7 @@ def test_plan8_v3_rejects_discount_amount_drift(db_session, monkeypatch):
         web_agent_service, "recover_plan8_final_v3",
         lambda *_a, **_k: (_ for _ in ()).throw(
             AssertionError("price drift must stop before Web-Agent")))
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["error"] == "plan8_final_v3_discount_amount_drift"
 
 
@@ -341,9 +419,7 @@ def test_plan8_v3_inspection_rejects_price_or_extra_record_before_claim(
 
     monkeypatch.setattr(
         web_agent_service, "recover_plan8_final_v3", bad_inspect)
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["error"] == "plan8_final_v3_inspection_blocked"
     assert db_session.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.operation == recovery.OPERATION,
@@ -369,9 +445,7 @@ def test_plan8_v3_rechecks_erp_scope_after_reservation_before_claim(
         web_agent_service, "recover_plan8_final_v3",
         lambda _db, *, payload, **_kwargs:
         _web_result(payload, phase="inspect"))
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["error"] == (
         "plan8_final_v3_erp_scope_changed_after_reservation")
     assert db_session.execute(select(CampaignExecutionAttempt).where(
@@ -389,9 +463,7 @@ def test_plan8_v3_multiple_attempt_scopes_fail_closed(db_session):
             write_claimed=True, automatic_retry_allowed=False,
         ))
     db_session.commit()
-    result = recovery.recover_plan8_final_v3(
-        db_session, workflow_key=recovery.WORKFLOW_KEY,
-        expected_plan_id=8, expected_status="alarmed", recovery_version=3)
+    result = _run(db_session)
     assert result["error"] == "plan8_final_v3_attempt_scope_ambiguous"
     assert result["attempt_count"] == 2
 
@@ -409,11 +481,26 @@ def test_web_agent_v3_busy_response_is_normalized_without_job(monkeypatch):
     assert result["platform_write"] is False
 
 
+def test_web_agent_v3_carries_reservation_expiry_from_inspect_envelope(
+        monkeypatch):
+    monkeypatch.setattr(web_agent_service, "_post", lambda *_a, **_k: {
+        "ok": True, "job": "job1", "lease_expires_at_epoch": 12345.0,
+    })
+    monkeypatch.setattr(web_agent_service, "wait_job", lambda *_a, **_k: {
+        "result": {"ok": True, "reservation_token": "opaque"},
+    })
+    result = web_agent_service.recover_plan8_final_v3(
+        object(), payload={"phase": "inspect"})
+    assert result["lease_expires_at_epoch"] == 12345.0
+
+
 def test_plan8_v3_cli_accepts_only_fixed_execute_or_readback(monkeypatch):
     valid = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
         "expected_status": "alarmed", "recovery_version": 3,
         "mode": "readback",
+        "confirmation": recovery.READBACK_CONFIRMATION,
+        "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
     }
     monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
         "buffer": io.BytesIO(json.dumps(valid).encode())})())
@@ -427,3 +514,137 @@ def test_plan8_v3_cli_accepts_only_fixed_execute_or_readback(monkeypatch):
         assert "固化范围" in str(exc)
     else:
         raise AssertionError("drifted payload must be rejected")
+
+    script = Path(__file__).parents[2] / "scripts" / (
+        "campaign_recover_plan8_final_v3_nas.ps1")
+    text = script.read_text(encoding="utf-8-sig")
+    assert "[switch]$ExecuteOnce" in text
+    assert "if ($ExecuteOnce -eq $ReadbackOnly)" in text
+    assert recovery.EXECUTE_CONFIRMATION in text
+    assert recovery.READBACK_CONFIRMATION in text
+
+
+def test_plan8_v3_candidate_price_evidence_is_fresh_and_hard_gated(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_prerequisites(db_session)
+    _patch_scope(db_session, monkeypatch)
+
+    def stale(_db, *, payload, **_kwargs):
+        result = _web_result(payload, phase="inspect")
+        evidence = result["candidate_price_evidence"]
+        evidence["observed_at"] = (
+            datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+        evidence["records"][0]["current_list_price"] = "999.00"
+        return result
+
+    monkeypatch.setattr(web_agent_service, "recover_plan8_final_v3", stale)
+    result = _run(db_session)
+    assert result["error"] == "plan8_final_v3_inspection_blocked"
+    problems = result["inspection"]["candidate_price_evidence"]["problems"]
+    assert any("evidence_stale_or_future" in row.get("reasons", [])
+               for row in problems)
+    assert any("current_live_price_not_erp_daily_price" in row.get("reasons", [])
+               for row in problems)
+    assert db_session.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.operation == recovery.OPERATION,
+    )).scalar_one_or_none() is None
+
+
+def test_plan8_v3_commit_accepts_written_plus_already_correct_exact_union(
+        monkeypatch):
+    rows = _signup_rows()
+    monkeypatch.setattr(
+        campaign_execution_service, "scope_sha256",
+        lambda **_kwargs: recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    normalized_discounts = [{
+        "item_id": item_id, "sku_id": sku_id, "expected_deduct": value,
+    } for (item_id, sku_id), value
+        in recovery.EXPECTED_DISCOUNT_DEDUCTS.items()]
+    manifest = recovery._fixed_manifest(
+        rows, normalized_discounts, recovery.EXPECTED_POLICY_SHA256)
+    legacy = [{
+        "item_id": "1036312802226", "sku_id": str(8000000000000 + index),
+        "actual_deduct": "10.00", "activity_id": "143900000002",
+        "activity_status": "进行中",
+    } for index in range(53)]
+    manifest["inspection_baseline"] = {
+        "legacy_discount_rows": legacy,
+        "legacy_discount_sha256": recovery._hash(legacy),
+    }
+    scope_sha = recovery._hash(manifest)
+    ordered = sorted(recovery.ADD_PAIRS)
+    result = {
+        "ok": True, "platform_write": True, "scope_sha256": scope_sha,
+        "inspection_baseline": manifest["inspection_baseline"],
+        "discount_pairs_written": [list(pair) for pair in ordered[:4]],
+        "discount_pairs_already_correct": [list(pair) for pair in ordered[4:]],
+        "discount_rows_written": 4, "discount_rows_already_correct": 4,
+        "draft_records_updated": 2, "draft_records_published": 6,
+        "patched_record_ids": sorted([
+            recovery.DRAFT_RECORDS["1036279566778"]["record_id"],
+            recovery.DRAFT_RECORDS["1074244132390"]["record_id"],
+        ]),
+        "published_record_ids": sorted(
+            row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
+        "checkpoints": recovery.EXPECTED_COMMIT_CHECKPOINTS,
+        "inspect_scope_unchanged": True, "reservation_consumed": True,
+    }
+    assert recovery.validate_commit(result, manifest, scope_sha)[0] is True
+    result["discount_pairs_already_correct"] = []
+    assert recovery.validate_commit(result, manifest, scope_sha)[0] is False
+
+
+def test_plan8_v3_claim_verification_is_exact_and_read_only(db_session):
+    manifest = {"inspection_baseline": {
+        "inspect_scope_sha256": "1" * 64,
+        "reservation_token_sha256": "2" * 64,
+        "reservation_expires_at_epoch": (
+            datetime.now(timezone.utc) + timedelta(hours=1)).timestamp(),
+    }}
+    scope_sha = recovery._hash(manifest)
+    attempt = CampaignExecutionAttempt(
+        id="e" * 24, plan_id=8, workflow_key=recovery.WORKFLOW_KEY,
+        operation=recovery.OPERATION, scope_sha256=scope_sha,
+        state="write_claimed", write_claimed=True,
+        write_claimed_at=datetime.now(timezone.utc),
+        request_id="plan8-v3-claim-test", automatic_retry_allowed=False,
+        result_summary={"manifest": manifest},
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    common = {
+        "attempt_id": attempt.id, "workflow_key": recovery.WORKFLOW_KEY,
+        "plan_id": 8, "operation": recovery.OPERATION,
+        "scope_sha256": scope_sha, "inspect_scope_sha256": "1" * 64,
+        "reservation_token_sha256": "2" * 64,
+    }
+    verified = recovery.verify_plan8_final_v3_claim(db_session, **common)
+    assert verified["ok"] is True
+    assert verified["execution_boundary"]["platform_write"] is False
+    assert "manifest" not in verified
+    assert recovery.verify_plan8_final_v3_claim(
+        db_session, **{**common, "scope_sha256": "3" * 64})["ok"] is False
+
+
+def test_plan8_v3_request_requires_explicit_mode_confirmation_and_scope(
+        db_session):
+    denied = recovery.recover_plan8_final_v3(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=3, mode="execute",
+        confirmation="", target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert denied["error"] == "plan8_final_v3_request_not_allowed"
+
+
+def test_plan8_v3_claim_verify_machine_identity_is_path_scoped(monkeypatch):
+    monkeypatch.setattr(
+        dependencies.settings_service, "get",
+        lambda _db, key, **_kwargs: "secret" if key == "web_agent_token" else None)
+    path = dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_CLAIM_VERIFY_PATH
+    assert dependencies.machine_identity_for_key(
+        "secret", object(), path=path
+    ) == "machine:web-agent-plan8-v3-claim-verify"
+    assert dependencies.machine_identity_for_key(
+        "secret", object(), path="/api/campaigns"
+    ) is None
