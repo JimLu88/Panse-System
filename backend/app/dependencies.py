@@ -32,6 +32,9 @@ CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH = (
 CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH = (
     "/api/campaigns/recover-super88-plan8-final-v2"
 )
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v3"
+)
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
@@ -103,6 +106,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN8_EXECUTE_PATH,
     CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH,
+    CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH,
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH,
@@ -347,6 +351,8 @@ def require_campaign_prepare_principal(
                 "campaign.super88.plan8.signup_recovery"),
             CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH: (
                 "campaign.super88.plan8.final_recovery_v2"),
+            CAMPAIGN_PLAN8_FINAL_RECOVERY_V3_PATH: (
+                "campaign.super88.plan8.final_recovery_v3"),
             CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH: (
                 "campaign.super_reduce.plan7.discount_audit"),
             CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH: (

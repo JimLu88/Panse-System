@@ -170,6 +170,7 @@ def test_plan8_v2_requires_fresh_complete_candidate_evidence():
 
 def test_plan8_v2_supplements_only_eight_then_enrolls_78(
         db_session, monkeypatch):
+    monkeypatch.setattr(recovery, "V2_RETIRED", False)
     db_session.add(_plan())
     db_session.commit()
     _seed_prerequisites(db_session)

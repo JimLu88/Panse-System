@@ -31,6 +31,7 @@ PLAN_ID = 8
 EXPECTED_STATUS = "alarmed"
 RECOVERY_VERSION = 2
 OPERATION = "plan8_final_recovery_v2"
+V2_RETIRED = True
 EXPECTED_POLICY_SHA256 = (
     "0209e67546c2e20be904a54d16402a32de02d91129bc1cceeda34b6e6fa4483f"
 )
@@ -277,6 +278,13 @@ def recover_plan8_final_v2(
             or expected_status != EXPECTED_STATUS
             or recovery_version != RECOVERY_VERSION):
         return _fail("plan8_final_v2_request_not_allowed")
+    # V2's candidate-picker completeness premise is invalid for products that
+    # already have official draft records.  Keep the historical code and its
+    # failed read-only evidence, but permanently prevent another invocation.
+    if V2_RETIRED:
+        return _fail("plan8_final_v2_retired_use_v3")
+
+    # Historical implementation remains covered as immutable audit context.
     plan = db.execute(select(CampaignPlan).where(
         CampaignPlan.id == PLAN_ID,
         CampaignPlan.workflow_key == WORKFLOW_KEY,

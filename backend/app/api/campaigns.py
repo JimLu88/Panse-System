@@ -133,6 +133,18 @@ class CampaignPlan8FinalRecoveryV2In(BaseModel):
     recovery_version: int = Field(ge=2, le=2)
 
 
+class CampaignPlan8FinalRecoveryV3In(BaseModel):
+    """Fixed request for in-place completion of six bound plan-8 drafts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    recovery_version: int = Field(ge=3, le=3)
+    mode: str = Field(pattern=r"^(execute|readback)$")
+
+
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
     """Exact read-only delayed verification for the submitted plan-7 attempt."""
 
@@ -809,6 +821,33 @@ def recover_super88_plan8_final_v2(
         if error in {
                 "plan8_final_v2_request_not_allowed",
                 "plan8_final_v2_identity_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-final-v3")
+def recover_super88_plan8_final_v3(
+        body: CampaignPlan8FinalRecoveryV3In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Complete or read back exactly the six existing plan-8 draft records."""
+    from app.services import campaign_plan8_final_recovery_v3_service
+
+    result = campaign_plan8_final_recovery_v3_service.recover_plan8_final_v3(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        recovery_version=body.recovery_version,
+        mode=body.mode,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "plan8_final_v3_request_not_allowed",
+                "plan8_final_v3_identity_not_allowed"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result
