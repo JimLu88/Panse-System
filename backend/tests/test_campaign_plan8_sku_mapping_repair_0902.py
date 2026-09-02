@@ -10,6 +10,8 @@ from app.models.sku_identity import SkuIdentity, SkuIdentityObservation
 from app.services import (
     campaign_plan8_sku_mapping_repair_service as repair,
     campaign_sku_slot_service,
+    delisted_sku_service,
+    settings_service,
     sku_identity_service,
 )
 
@@ -19,6 +21,10 @@ def _seed(db):
         id=repair.PLAN_ID, name="超级88现货", campaign_type="big88", tier="big",
         workflow_key=repair.WORKFLOW_KEY, status="alarmed",
     ))
+    settings_service.set_value(
+        db, "delisted_skuids",
+        '["1111111111111", "6287431318354", "6287431318356", '
+        '"6287431318358", "6287431318360"]')
     for row in repair.ROWS:
         db.add(PricingSku(
             product_code=row["source"][:14], product_name="测试产品",
@@ -66,10 +72,12 @@ def _seed(db):
 
 def test_fixed_payload_is_exact_and_stable():
     assert repair.SCOPE_SHA256 == (
-        "53fdc3f82a338e8e526491782c6e06791eeebd7ef50bead385a8541b31ef765c")
+        "305c17ca1097fade9614da428fd947ea17925fd49e418335ff05e000d08292bd")
     assert repair.fixed_payload()["official_product_export_sha256"] == (
         "fb9e552254f29f8e022f799edd5a6a01b7dfc6653112dba3ee5286bb4270b984")
     assert len(repair.ROWS) == 8
+    assert repair.FALSE_DELISTED_SKU_IDS == {
+        "6287431318354", "6287431318356", "6287431318358", "6287431318360"}
 
 
 def test_one_shot_repair_creates_eight_normal_skus_and_retires_four_aliases(db_session):
@@ -117,6 +125,7 @@ def test_one_shot_repair_creates_eight_normal_skus_and_retires_four_aliases(db_s
     assert len(slots) == 8
     assert {slot.sku_code for slot in slots} == target_codes
     assert all(slot.custom_min_final_price is None for slot in slots)
+    assert delisted_sku_service.get_delisted(db_session) == {"1111111111111"}
 
     second = repair.execute(db_session)
     assert second["ok"] is True and second["already_claimed"] is True

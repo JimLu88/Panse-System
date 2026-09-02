@@ -13,12 +13,15 @@ from sqlalchemy.orm import Session
 from app.models.campaign import CampaignExecutionAttempt, CampaignPlan, CampaignSkuSlot
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+from app.models.settings import SystemSetting
 from app.models.sku_identity import SkuIdentity
 from app.services import (
     campaign_execution_service,
     campaign_service,
     campaign_sku_slot_service,
+    delisted_sku_service,
     pricing_calc_service,
+    settings_service,
     sku_identity_service,
 )
 
@@ -40,6 +43,12 @@ EXPECTED_PENDING_ITEM_IDS = {
 }
 EXPECTED_PENDING_ROW_COUNT = 78
 EXPECTED_PENDING_CUSTOM_ROW_COUNT = 18
+FALSE_DELISTED_SKU_IDS = {
+    "6287431318354",
+    "6287431318356",
+    "6287431318358",
+    "6287431318360",
+}
 
 ROWS = (
     {"item_id": "1036279566778", "sku_id": "6234601898881",
@@ -112,6 +121,7 @@ SCOPE_SHA256 = _hash({
     "plan_id": PLAN_ID,
     "official_product_export_sha256": OFFICIAL_PRODUCT_EXPORT_SHA256,
     "authorization_ref": AUTHORIZATION_REF,
+    "false_delisted_sku_ids": sorted(FALSE_DELISTED_SKU_IDS),
     "rows": ROWS,
 })
 
@@ -155,6 +165,10 @@ def _preflight(db: Session) -> dict:
     if db.execute(select(PricingSkuPromo.id).where(
             PricingSkuPromo.sku_code.in_(target_codes))).first():
         raise ValueError("plan8_mapping_repair_target_promo_exists")
+    delisted = delisted_sku_service.get_delisted(db)
+    target_sku_ids = {row["sku_id"] for row in ROWS}
+    if delisted & target_sku_ids != FALSE_DELISTED_SKU_IDS:
+        raise ValueError("plan8_mapping_repair_false_delisted_scope_drift")
     for row in ROWS:
         source = db.execute(select(PricingSku).where(
             PricingSku.sku_code == row["source"])).scalar_one_or_none()
@@ -178,7 +192,43 @@ def _preflight(db: Session) -> dict:
                     or old_promo.taobao_item_id != row["item_id"]
                     or old_promo.taobao_sku_id != row["sku_id"]):
                 raise ValueError("plan8_mapping_repair_legacy_alias_drift")
-    return {"ok": True, "plan_status": plan.status, "row_count": len(ROWS)}
+    return {
+        "ok": True,
+        "plan_status": plan.status,
+        "row_count": len(ROWS),
+        "false_delisted_sku_ids": sorted(FALSE_DELISTED_SKU_IDS),
+    }
+
+
+def _clear_false_delisted(db: Session) -> dict:
+    setting = db.execute(select(SystemSetting).where(
+        SystemSetting.key == "delisted_skuids"
+    ).with_for_update()).scalar_one_or_none()
+    if setting is None or setting.is_secret or not setting.value_plain:
+        raise ValueError("plan8_mapping_repair_delisted_setting_missing")
+    try:
+        current = {
+            str(value).strip() for value in json.loads(setting.value_plain)
+            if str(value).strip()
+        }
+    except (TypeError, ValueError) as exc:
+        raise ValueError("plan8_mapping_repair_delisted_setting_invalid") from exc
+    target_sku_ids = {row["sku_id"] for row in ROWS}
+    if current & target_sku_ids != FALSE_DELISTED_SKU_IDS:
+        raise ValueError("plan8_mapping_repair_false_delisted_scope_drift")
+    remaining = current - FALSE_DELISTED_SKU_IDS
+    settings_service.set_value(
+        db,
+        "delisted_skuids",
+        json.dumps(sorted(remaining), ensure_ascii=False),
+        description="下架SKU登记(报名自动排除: 在售全报、下架不报)",
+    )
+    return {
+        "removed": sorted(FALSE_DELISTED_SKU_IDS),
+        "before_count": len(current),
+        "after_count": len(remaining),
+        "official_product_export_sha256": OFFICIAL_PRODUCT_EXPORT_SHA256,
+    }
 
 
 def _new_pricing_row(db: Session, row: dict) -> tuple[PricingSku, PricingSkuPromo]:
@@ -229,6 +279,7 @@ def _new_pricing_row(db: Session, row: dict) -> tuple[PricingSku, PricingSkuProm
 
 def _repair(db: Session) -> dict:
     evidence_source = "authorized_identity_correction:plan8:2026-09-02"
+    delisted_correction = _clear_false_delisted(db)
     created = []
     retired = []
     corrections = []
@@ -282,6 +333,7 @@ def _repair(db: Session) -> dict:
     return {
         "created": created, "retired_aliases": sorted(retired),
         "identity_corrections": corrections, "slot_seed": seed,
+        "delisted_correction": delisted_correction,
     }
 
 

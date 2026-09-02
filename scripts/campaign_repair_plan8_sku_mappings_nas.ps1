@@ -14,7 +14,7 @@ $payload = [ordered]@{
     workflow_key = 'campaign:super88:49462:49469'
     plan_id = 8
     operation = 'plan8_sku_mapping_repair'
-    scope_sha256 = '53fdc3f82a338e8e526491782c6e06791eeebd7ef50bead385a8541b31ef765c'
+    scope_sha256 = '305c17ca1097fade9614da428fd947ea17925fd49e418335ff05e000d08292bd'
     official_product_export_sha256 = 'fb9e552254f29f8e022f799edd5a6a01b7dfc6653112dba3ee5286bb4270b984'
     authorization_ref = 'user_approved_eight_sku_mapping:2026-09-02'
 }
