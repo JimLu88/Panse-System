@@ -518,6 +518,7 @@ def test_plan8_v3_cli_accepts_only_fixed_execute_or_readback(monkeypatch):
     script = Path(__file__).parents[2] / "scripts" / (
         "campaign_recover_plan8_final_v3_nas.ps1")
     text = script.read_text(encoding="utf-8-sig")
+    assert text.isascii()
     assert "[switch]$ExecuteOnce" in text
     assert "if ($ExecuteOnce -eq $ReadbackOnly)" in text
     assert recovery.EXECUTE_CONFIRMATION in text

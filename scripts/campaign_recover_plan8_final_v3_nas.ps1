@@ -9,11 +9,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ($ExecuteOnce -eq $ReadbackOnly) {
-    throw '必须且只能显式选择 -ExecuteOnce 或 -ReadbackOnly；无参数不会执行'
+    throw 'Specify exactly one mode: -ExecuteOnce or -ReadbackOnly. No default execution is allowed.'
 }
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'
-if (-not (Test-Path -LiteralPath $ssh)) { throw "找不到 Git SSH: $ssh" }
+if (-not (Test-Path -LiteralPath $ssh)) { throw "Git SSH executable not found: $ssh" }
 $payload = [ordered]@{
     workflow_key = 'campaign:super88:49462:49469'
     plan_id = 8
@@ -35,7 +35,7 @@ try {
     $raw | & $ssh -i $resolvedKey -o BatchMode=yes -o ConnectTimeout=20 `
         -p $SshPort $SshHost $remote
     if ($LASTEXITCODE -ne 0) {
-        throw "计划8最终恢复V3失败，退出码 $LASTEXITCODE；若写入锁已生成，只能加 -ReadbackOnly 只读核验，严禁再次执行"
+        throw "Plan 8 V3 command failed with exit code $LASTEXITCODE. If a write claim exists, use only -ReadbackOnly; never run -ExecuteOnce again."
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding
