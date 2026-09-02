@@ -117,6 +117,38 @@ EXPECTED_DISCOUNT_DEDUCTS = {
     ("1074244132390", "6287431318358"): "1538.04",
     ("1074244132390", "6287431318360"): "1613.68",
 }
+BOUND_DRAFT_EVIDENCE_SOURCE = (
+    "qianniu_bound_draft_plus_official_product_export"
+)
+BOUND_PRODUCT_EXPORT_SHA256 = (
+    "c63dda19f4ea171cfe6ffe0220de9167a50f7164bc5f979569e965769d001af5"
+)
+BOUND_EVIDENCE_ROWS = {
+    ("1036279566778", "6234601898881"): (
+        "10031117357515", "PPS2633008032223", "6940.00", 100,
+        "5205.00", "6234601898880", "7940.00", "5955.00"),
+    ("1036279566778", "6234601898883"): (
+        "10031117357515", "PPS2633008032224", "7060.00", 100,
+        "5295.00", "6234601898882", "8060.00", "6045.00"),
+    ("1036279566778", "6234601898885"): (
+        "10031117357515", "PPS2633008032225", "7350.00", 100,
+        "5512.50", "6234601898884", "8350.00", "6262.50"),
+    ("1036279566778", "6234601898887"): (
+        "10031117357515", "PPS2633008032226", "7630.00", 100,
+        "5722.50", "6234601898886", "8630.00", "6472.50"),
+    ("1074244132390", "6287431318354"): (
+        "10031118975435", "PPS2633010022523", "7040.00", 100,
+        "5280.00", "6287431318353", "8040.00", "6030.00"),
+    ("1074244132390", "6287431318356"): (
+        "10031118975435", "PPS2633010022524", "7240.00", 100,
+        "5430.00", "6287431318355", "8240.00", "6180.00"),
+    ("1074244132390", "6287431318358"): (
+        "10031118975435", "PPS2633010022525", "7480.00", 100,
+        "5610.00", "6287431318357", "8480.00", "6360.00"),
+    ("1074244132390", "6287431318360"): (
+        "10031118975435", "PPS2633010022526", "7810.00", 100,
+        "5857.50", "6287431318359", "8810.00", "6607.50"),
+}
 EXPECTED_TARGET_ROW_COUNT = 78
 EXPECTED_TARGET_CUSTOM_ROW_COUNT = 18
 EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V3_6_ITEMS_78_SKUS_18_CUSTOM"
@@ -428,6 +460,8 @@ def _validate_candidate_price_evidence(
         result: dict, manifest: dict) -> tuple[bool, dict]:
     """Apply current-price and selectable-candidate R17-equivalent gates."""
     evidence = result.get("candidate_price_evidence") or {}
+    if str(evidence.get("source") or "") == BOUND_DRAFT_EVIDENCE_SOURCE:
+        return _validate_bound_draft_price_evidence(evidence, manifest)
     raw_rows = evidence.get("records") or []
     expected_rows = {
         (row["item_id"], row["sku_id"]): row
@@ -516,10 +550,143 @@ def _validate_candidate_price_evidence(
         "observed_at": evidence.get("observed_at"),
         "source": evidence.get("source"),
         "selection_guard": selection,
+        "missing_sku_ids": evidence.get("missing_sku_ids") or [],
+        "requested_sku_count": evidence.get("requested_sku_count"),
+        "observed_sku_count": evidence.get("observed_sku_count"),
+        "candidate_sha256": evidence.get("candidate_sha256"),
+        "official_product_export_sha256": evidence.get(
+            "official_product_export_sha256"),
         "max_age_hours": max_age_hours,
         "problems": problems,
         "missing_pairs": sorted(set(expected_rows) - set(actual)),
         "unexpected_pairs": sorted(set(actual) - set(expected_rows)),
+    }
+
+
+def _validate_bound_draft_price_evidence(
+        evidence: dict, manifest: dict) -> tuple[bool, dict]:
+    """Validate the exact two-draft exception without inventing SKU floors."""
+    raw_rows = evidence.get("records") or []
+    expected_manifest = {
+        (row["item_id"], row["sku_id"]): row
+        for record in manifest["draft_records"] for row in record["add_rows"]
+    }
+    expected_fields = {
+        "item_id", "sku_id", "draft_record_id", "target_merchant_code",
+        "target_product_list_price", "target_stock", "target_signup_price",
+        "source_sku_id", "source_product_list_price", "source_min_list_price",
+        "platform_rule_ratio",
+    }
+    actual = {}
+    problems = []
+    observed = _observed_at(evidence.get("observed_at"))
+    max_age_hours = campaign_policy_service.floor_evidence_max_age_hours()
+    age_hours = ((datetime.now(timezone.utc) - observed).total_seconds() / 3600
+                 if observed is not None else None)
+    for raw in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(raw, dict) or set(raw) != expected_fields:
+            problems.append({"error": "bound_price_evidence_fields_invalid"})
+            continue
+        pair = (str(raw.get("item_id") or ""), str(raw.get("sku_id") or ""))
+        if pair in actual:
+            problems.append({"pair": pair, "error": "duplicate_bound_price_evidence"})
+            continue
+        actual[pair] = raw
+        fixed = BOUND_EVIDENCE_ROWS.get(pair)
+        manifest_row = expected_manifest.get(pair)
+        reasons = []
+        try:
+            values = (
+                str(raw.get("draft_record_id") or ""),
+                str(raw.get("target_merchant_code") or ""),
+                _money(raw.get("target_product_list_price")),
+                int(raw.get("target_stock")),
+                _money(raw.get("target_signup_price")),
+                str(raw.get("source_sku_id") or ""),
+                _money(raw.get("source_product_list_price")),
+                _money(raw.get("source_min_list_price")),
+            )
+            target_list = Decimal(values[2])
+            target_signup = Decimal(values[4])
+            source_list = Decimal(values[6])
+            source_min = Decimal(values[7])
+            ratio = Decimal(str(raw.get("platform_rule_ratio")))
+            manifest_signup = Decimal(str((manifest_row or {}).get("signup_price")))
+        except (TypeError, ValueError, ArithmeticError):
+            problems.append({"pair": pair, "error": "bound_price_evidence_value_invalid"})
+            continue
+        if fixed is None or manifest_row is None:
+            reasons.append("unexpected_pair")
+        if fixed is not None and values != fixed:
+            reasons.append("fixed_export_or_draft_fact_drift")
+        if target_signup != manifest_signup:
+            reasons.append("target_signup_not_manifest_price")
+        if target_list * Decimal("0.75") != target_signup:
+            reasons.append("target_price_not_75_percent_of_official_product_price")
+        if source_list * Decimal("0.75") != source_min:
+            reasons.append("live_source_sku_rule_not_75_percent")
+        if ratio != Decimal("0.75"):
+            reasons.append("platform_rule_ratio_drift")
+        if age_hours is None or age_hours < -0.05 or age_hours > max_age_hours:
+            reasons.append("evidence_stale_or_future")
+        if reasons:
+            problems.append({
+                "item_id": pair[0], "sku_id": pair[1], "reasons": reasons,
+                "observed_at": evidence.get("observed_at"),
+            })
+    normalized_rows = sorted([{
+        "item_id": pair[0], "sku_id": pair[1],
+        "draft_record_id": str(row.get("draft_record_id") or ""),
+        "target_merchant_code": str(row.get("target_merchant_code") or ""),
+        "target_product_list_price": _money(row.get("target_product_list_price")),
+        "target_stock": int(row.get("target_stock")),
+        "target_signup_price": _money(row.get("target_signup_price")),
+        "source_sku_id": str(row.get("source_sku_id") or ""),
+        "source_product_list_price": _money(row.get("source_product_list_price")),
+        "source_min_list_price": _money(row.get("source_min_list_price")),
+        "platform_rule_ratio": _money(row.get("platform_rule_ratio")),
+    } for pair, row in actual.items() if pair in BOUND_EVIDENCE_ROWS], key=lambda row: (
+        row["item_id"], row["sku_id"])) if not any(
+            problem.get("error") == "bound_price_evidence_value_invalid"
+            for problem in problems) else []
+    selection = evidence.get("selection_guard") or {}
+    expected_missing = sorted(pair[1] for pair in BOUND_EVIDENCE_ROWS)
+    digest = str(evidence.get("sha256") or "")
+    candidate_digest = str(evidence.get("candidate_sha256") or "")
+    ok = bool(
+        evidence.get("ok") is True
+        and set(actual) == set(BOUND_EVIDENCE_ROWS) == set(expected_manifest)
+        and len(normalized_rows) == 8 and not problems
+        and _valid_sha(digest) and _valid_sha(candidate_digest)
+        and evidence.get("official_product_export_sha256")
+        == BOUND_PRODUCT_EXPORT_SHA256
+        and sorted(evidence.get("missing_sku_ids") or []) == expected_missing
+        and evidence.get("requested_sku_count") == 8
+        and evidence.get("observed_sku_count") == 0
+        and int(evidence.get("candidate_items_scanned") or 0) > 0
+        and int(evidence.get("page_count") or 0) > 0
+        and selection.get("checked") == 0
+        and selection.get("zero_selected") is True
+    )
+    return ok, {
+        "rows": normalized_rows,
+        "rows_sha256": _hash(normalized_rows),
+        "sha256": digest,
+        "observed_at": evidence.get("observed_at"),
+        "source": evidence.get("source"),
+        "selection_guard": selection,
+        "missing_sku_ids": evidence.get("missing_sku_ids") or [],
+        "requested_sku_count": evidence.get("requested_sku_count"),
+        "observed_sku_count": evidence.get("observed_sku_count"),
+        "candidate_items_scanned": evidence.get("candidate_items_scanned"),
+        "page_count": evidence.get("page_count"),
+        "candidate_sha256": candidate_digest,
+        "official_product_export_sha256": evidence.get(
+            "official_product_export_sha256"),
+        "max_age_hours": max_age_hours,
+        "problems": problems,
+        "missing_pairs": sorted(set(BOUND_EVIDENCE_ROWS) - set(actual)),
+        "unexpected_pairs": sorted(set(actual) - set(BOUND_EVIDENCE_ROWS)),
     }
 
 

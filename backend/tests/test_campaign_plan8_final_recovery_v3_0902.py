@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from app import dependencies
@@ -575,6 +576,109 @@ def test_plan8_v3_candidate_price_evidence_is_fresh_and_hard_gated(
                for row in problems)
     assert any("current_live_price_not_erp_daily_price" in row.get("reasons", [])
                for row in problems)
+    assert db_session.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.operation == recovery.OPERATION,
+    )).scalar_one_or_none() is None
+
+
+def _bound_candidate_evidence(manifest):
+    rows = []
+    for pair, fixed in sorted(recovery.BOUND_EVIDENCE_ROWS.items()):
+        rows.append({
+            "item_id": pair[0], "sku_id": pair[1],
+            "draft_record_id": fixed[0],
+            "target_merchant_code": fixed[1],
+            "target_product_list_price": fixed[2],
+            "target_stock": fixed[3],
+            "target_signup_price": fixed[4],
+            "source_sku_id": fixed[5],
+            "source_product_list_price": fixed[6],
+            "source_min_list_price": fixed[7],
+            "platform_rule_ratio": "0.75",
+        })
+    return {
+        "ok": True, "records": rows,
+        "missing_sku_ids": sorted(pair[1] for pair in recovery.BOUND_EVIDENCE_ROWS),
+        "requested_sku_count": 8, "observed_sku_count": 0,
+        "candidate_items_scanned": 50, "page_count": 6,
+        "candidate_sha256": "b" * 64,
+        "official_product_export_sha256": recovery.BOUND_PRODUCT_EXPORT_SHA256,
+        "sha256": "a" * 64,
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "source": recovery.BOUND_DRAFT_EVIDENCE_SOURCE,
+        "selection_guard": {"checked": 0, "zero_selected": True},
+    }
+
+
+def _bound_manifest(monkeypatch):
+    rows = _signup_rows()
+    for row in rows:
+        fixed = recovery.BOUND_EVIDENCE_ROWS.get(
+            (row["taobao_item_id"], row["taobao_sku_id"]))
+        if fixed is not None:
+            row["price"] = float(fixed[4])
+    monkeypatch.setattr(
+        campaign_execution_service, "scope_sha256",
+        lambda **_kwargs: recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    return recovery._fixed_manifest(
+        rows, [{"item_id": item, "sku_id": sku, "expected_deduct": amount}
+               for (item, sku), amount in recovery.EXPECTED_DISCOUNT_DEDUCTS.items()],
+        recovery.EXPECTED_POLICY_SHA256)
+
+
+def test_plan8_v3_accepts_exact_bound_draft_evidence(monkeypatch):
+    manifest = _bound_manifest(monkeypatch)
+    ok, detail = recovery._validate_candidate_price_evidence(
+        {"candidate_price_evidence": _bound_candidate_evidence(manifest)}, manifest)
+    assert ok is True
+    assert detail["source"] == recovery.BOUND_DRAFT_EVIDENCE_SOURCE
+    assert len(detail["rows"]) == 8
+    assert detail["missing_sku_ids"]
+
+
+@pytest.mark.parametrize("drift", [
+    "export_sha", "merchant_code", "stock", "target_ratio",
+    "source_ratio", "platform_ratio", "candidate_missing",
+])
+def test_plan8_v3_bound_draft_evidence_drift_is_rejected(monkeypatch, drift):
+    manifest = _bound_manifest(monkeypatch)
+    evidence = _bound_candidate_evidence(manifest)
+    if drift == "export_sha":
+        evidence["official_product_export_sha256"] = "0" * 64
+    elif drift == "merchant_code":
+        evidence["records"][0]["target_merchant_code"] = "WRONG"
+    elif drift == "stock":
+        evidence["records"][0]["target_stock"] = 99
+    elif drift == "target_ratio":
+        evidence["records"][0]["target_product_list_price"] = "6941.00"
+    elif drift == "source_ratio":
+        evidence["records"][0]["source_min_list_price"] = "5954.00"
+    elif drift == "platform_ratio":
+        evidence["records"][0]["platform_rule_ratio"] = "0.74"
+    else:
+        evidence["missing_sku_ids"] = evidence["missing_sku_ids"][1:]
+    ok, detail = recovery._validate_candidate_price_evidence(
+        {"candidate_price_evidence": evidence}, manifest)
+    assert ok is False
+    assert detail["problems"] or drift in {"export_sha", "candidate_missing"}
+
+
+def test_plan8_v3_bound_drift_creates_no_attempt(db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_prerequisites(db_session)
+    _patch_scope(db_session, monkeypatch)
+
+    def drift(_db, *, payload, **_kwargs):
+        result = _web_result(payload, phase="inspect")
+        result["candidate_price_evidence"] = _bound_candidate_evidence(
+            payload["manifest"])
+        result["candidate_price_evidence"]["records"][0]["target_stock"] = 99
+        return result
+
+    monkeypatch.setattr(web_agent_service, "recover_plan8_final_v3", drift)
+    result = _run(db_session)
+    assert result["error"] == "plan8_final_v3_inspection_blocked"
     assert db_session.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.operation == recovery.OPERATION,
     )).scalar_one_or_none() is None
