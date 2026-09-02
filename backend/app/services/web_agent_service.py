@@ -772,6 +772,41 @@ def recover_plan8_final_v3(
     return result
 
 
+def recover_plan8_final_v5(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """Run one phase of the independent plan-8 V5 recovery."""
+    started = _post(
+        db, "/api/campaign/plan8-final-recovery-v5", payload, timeout=30)
+    if not started.get("ok") or not started.get("job"):
+        busy = (
+            started.get("error") == "taobao_profile_busy"
+            and started.get("step") == "pre_write_busy"
+        )
+        return {
+            **started,
+            "ok": False,
+            "busy": busy,
+            "pre_write_busy": busy,
+            "platform_write": False if busy else started.get("platform_write"),
+        }
+    job_id = str(started["job"])
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    result["web_agent_job_id"] = job_id
+    if payload.get("phase") == "inspect":
+        result["lease_expires_at_epoch"] = started.get("lease_expires_at_epoch")
+    if result.get("need_scan"):
+        return {
+            "ok": False,
+            "need_scan": True,
+            "error": result.get("error") or "淘宝登录态已失效",
+            "web_agent_job_id": job_id,
+            "platform_write": result.get("platform_write", False),
+            "execution_boundary": result.get("execution_boundary"),
+        }
+    return result
+
+
 def correct_plan7_small_promo(
         db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
     """Run the fixed two-item / 20-SKU existing-activity correction once."""

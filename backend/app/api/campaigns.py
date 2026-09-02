@@ -36,6 +36,7 @@ from app.dependencies import (
     get_current_user,
     require_campaign_prepare_principal,
     require_web_agent_plan8_v4_claim_verifier,
+    require_web_agent_plan8_v5_claim_verifier,
     require_role,
 )
 from app.models.auth import User
@@ -160,6 +161,25 @@ class CampaignPlan8FinalRecoveryV4ClaimVerifyIn(BaseModel):
     scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     inspect_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     reservation_token_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CampaignPlan8FinalRecoveryV5In(BaseModel):
+    """Fixed request for the independent V5 recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    recovery_version: int = Field(ge=5, le=5)
+    mode: str = Field(pattern=r"^(execute|readback)$")
+    confirmation: str
+    target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CampaignPlan8FinalRecoveryV5ClaimVerifyIn(
+        CampaignPlan8FinalRecoveryV4ClaimVerifyIn):
+    """Web-Agent V5 read-only claim proof request."""
 
 
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
@@ -892,6 +912,56 @@ def verify_super88_plan8_final_v4_claim(
     from app.services import campaign_plan8_final_recovery_v3_service
 
     result = campaign_plan8_final_recovery_v3_service.verify_plan8_final_v3_claim(
+        db, attempt_id=body.attempt_id, workflow_key=body.workflow_key,
+        plan_id=body.plan_id, operation=body.operation,
+        scope_sha256=body.scope_sha256,
+        inspect_scope_sha256=body.inspect_scope_sha256,
+        reservation_token_sha256=body.reservation_token_sha256,
+    )
+    if not result.get("ok"):
+        raise HTTPException(409, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-final-v5")
+def recover_super88_plan8_final_v5(
+        body: CampaignPlan8FinalRecoveryV5In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Independent V5 after V4 proved it stopped before platform write."""
+    from app.services import campaign_plan8_final_recovery_v5_service
+
+    result = campaign_plan8_final_recovery_v5_service.recover_plan8_final_v3(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        recovery_version=body.recovery_version,
+        mode=body.mode,
+        confirmation=body.confirmation,
+        target_scope_sha256=body.target_scope_sha256,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "plan8_final_v3_request_not_allowed",
+                "plan8_final_v3_identity_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-final-v5/claim-verification")
+def verify_super88_plan8_final_v5_claim(
+        body: CampaignPlan8FinalRecoveryV5ClaimVerifyIn,
+        db: Session = Depends(get_db),
+        _: ServicePrincipal = Depends(
+            require_web_agent_plan8_v5_claim_verifier)):
+    """Let V5 Web-Agent prove the exact durable ERP claim."""
+    from app.services import campaign_plan8_final_recovery_v5_service
+
+    result = campaign_plan8_final_recovery_v5_service.verify_plan8_final_v3_claim(
         db, attempt_id=body.attempt_id, workflow_key=body.workflow_key,
         plan_id=body.plan_id, operation=body.operation,
         scope_sha256=body.scope_sha256,
