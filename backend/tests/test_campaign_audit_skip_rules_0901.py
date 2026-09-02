@@ -155,14 +155,18 @@ def test_exact_placeholder_allowlist_enables_only_named_sku(db_session):
     signup, stats = campaign.build_signup_rows(db_session, plan)
 
     # Both ERP-authoritative placeholders accompany the whole item.  The
-    # second row has no current platform price, so R16 will block the complete
-    # manifest before upload instead of silently omitting that SKU.
+    # second row has no current platform price, so the durable user rule uses
+    # its coupon-floor-derived safe cap instead of omitting or blocking it.
     assert {row["taobao_sku_id"] for row in signup} == {
         "881880807", "881880808"}
     assert stats["excluded_unselected_custom_placeholder_skus"] == []
     assert stats["placeholder_candidate_sku_ids"] == ["881880807", "881880808"]
-    assert [row["taobao_sku_id"] for row in
-            stats["placeholder_missing_live_price"]] == ["881880808"]
+    assert stats["placeholder_missing_live_price"] == []
+    assert any(
+        row["taobao_sku_id"] == "881880808"
+        and row["authorization"] == "durable_user_policy_missing_live_price"
+        for row in stats["placeholder_price_lowered"]
+    )
 
 
 def test_authoritative_placeholder_is_included_and_safe_lowered_without_allowlist(

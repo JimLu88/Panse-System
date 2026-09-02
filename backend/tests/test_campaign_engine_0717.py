@@ -114,7 +114,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     # 下架SKU (R4): 过滤且不破坏整品完整性
     _mk(db_session, "PPSSA001", "PPSSA00103", "9201", "72003", daily=1600)
     ds.add_delisted(db_session, ["72003"])
-    # 占位无线: 可生成保守候选，但缺官方券后线时整品必须停止
+    # 占位无线: 按用户固化规则使用日常×0.8反推的保守报名价
     _mk(db_session, "PPSSB001", "PPSSB00101", "9202", "72011", daily=2000)
     _mk(db_session, "PPSSB001", "PPSSB00190", "9202", "72091", daily=1000, placeholder=True)
     db_session.commit()
@@ -125,16 +125,18 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert by_sid["72001"]["price"] == 2827.5                 # 报名价 = 日常价 (铁则1)
     assert by_sid["72002"]["price"] == 1500.0
     assert by_sid["72090"]["price"] == 488.0                  # min(现行500, floor(线/0.88)=488)
-    assert "72091" not in by_sid and "72011" not in by_sid
+    assert by_sid["72091"]["price"] == 500.0
+    assert by_sid["72011"]["price"] == 2000.0
     assert stats["placeholder_no_line"] == [{
         "sku_code": "PPSSB00190",
         "remark": "无券后线, 按日常价×0.8保守值封顶",
     }]
-    assert stats["custom_floor_guard_items"][0]["reason"] == (
-        "custom_coupon_floor_missing")
+    assert stats["custom_floor_guard_items"] == []
+    assert stats["placeholder_price_lowered"][-1]["authorization"] == (
+        "durable_user_policy_missing_floor_and_live_price")
     assert "72003" not in by_sid and stats["skipped_delisted"] == 1   # R4 过滤
     assert stats["incomplete_items"] == []                    # 下架不算缺 → 整品仍完整
-    assert stats["rows"] == len(rows) == 3
+    assert stats["rows"] == len(rows) == 5
 
 
 def test_signup_rows_quietly_skip_registered_terminal_no_sales(db_session):
@@ -1147,7 +1149,7 @@ def test_placeholder_price_block_notification_is_precise_and_deduped(
     ))
 
 
-def test_placeholder_signup_without_live_price_is_blocked(db_session):
+def test_placeholder_signup_without_live_price_uses_authoritative_safe_cap(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
@@ -1161,11 +1163,10 @@ def test_placeholder_signup_without_live_price_is_blocked(db_session):
 
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
 
-    assert checks["R16"]["level"] == "error"
-    assert checks["R16"]["items"][0]["taobao_sku_id"] == "73091"
+    assert checks["R16"]["level"] == "pass"
 
 
-def test_placeholder_missing_live_price_stays_blocked_after_user_authorization(db_session):
+def test_placeholder_missing_live_price_uses_safe_cap_after_user_authorization(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
@@ -1183,10 +1184,11 @@ def test_placeholder_missing_live_price_stays_blocked_after_user_authorization(d
 
     placeholder = next(row for row in rows if row["taobao_sku_id"] == "73092")
     assert placeholder["price"] == 284.0
-    assert placeholder["remark"] is None
-    assert stats["placeholder_price_lowered"] == []
-    assert stats["placeholder_missing_live_price"][0]["taobao_sku_id"] == "73092"
-    assert checks["R16"]["level"] == "error"
+    assert placeholder["remark"].startswith("用户已授权权威定制规格")
+    assert stats["placeholder_price_lowered"][0]["authorization"] == (
+        "durable_user_policy_missing_live_price")
+    assert stats["placeholder_missing_live_price"] == []
+    assert checks["R16"]["level"] == "pass"
 
 
 def test_placeholder_known_high_live_price_uses_safe_cap_after_user_authorization(

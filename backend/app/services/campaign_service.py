@@ -1441,6 +1441,10 @@ def build_signup_rows(
         (policy.get("pricing") or {}).get(
             "placeholder_missing_floor_with_known_live_price_enabled") is True
     )
+    missing_live_price_fallback = bool(
+        (policy.get("pricing") or {}).get(
+            "placeholder_safe_cap_without_live_price_enabled") is True
+    )
     plan_placeholder_lowering = placeholder_price_lowering_authorized(plan)
     placeholder_lowering = bool(
         allow_placeholder_safe_lowering
@@ -1552,12 +1556,14 @@ def build_signup_rows(
             generated_final = (generated - official).quantize(_CENT)
             if coupon_floor is None or coupon_floor <= 0:
                 if (
-                    missing_floor_with_live_price
+                    (missing_floor_with_live_price or missing_live_price_fallback)
                     and placeholder_lowering
-                    and live_price is not None
-                    and live_price > 0
+                    and (live_price is None or live_price > 0)
                 ):
-                    selected = min(generated, live_price).quantize(_CENT)
+                    selected = (
+                        min(generated, live_price)
+                        if live_price is not None else generated
+                    ).quantize(_CENT)
                     row["price"] = float(selected)
                     row["remark"] = (
                         "用户已授权定制规格在缺券后线时按已知平台现价与保守上限孰低报名"
@@ -1567,10 +1573,16 @@ def build_signup_rows(
                         "taobao_sku_id": sid,
                         "sku_code": row["sku_code"],
                         "safe_cap": float(generated),
-                        "current_live_price": float(live_price),
+                        "current_live_price": (
+                            float(live_price) if live_price is not None else None
+                        ),
                         "selected_signup_price": float(selected),
                         "official_coupon_floor_price": None,
-                        "authorization": "durable_user_policy_missing_coupon_floor",
+                        "authorization": (
+                            "durable_user_policy_missing_coupon_floor"
+                            if live_price is not None else
+                            "durable_user_policy_missing_floor_and_live_price"
+                        ),
                     })
                     continue
                 reason = "custom_coupon_floor_missing"
@@ -1617,6 +1629,17 @@ def build_signup_rows(
                     "safe_cap": row["price"],
                     "current_live_price": None,
                 }
+                if missing_live_price_fallback and placeholder_lowering:
+                    row["remark"] = (
+                        "用户已授权权威定制规格在缺平台当前价时直接使用安全报名价"
+                    )
+                    stats["placeholder_price_lowered"].append({
+                        **detail,
+                        "selected_signup_price": float(generated),
+                        "official_coupon_floor_price": float(coupon_floor),
+                        "authorization": "durable_user_policy_missing_live_price",
+                    })
+                    continue
                 # The current-plan authorization covers only a *known* live
                 # price that is above the already-computed safe cap.  It must
                 # never turn missing platform evidence into an inferred price.

@@ -75,7 +75,7 @@ def test_terminal_no_sales_is_quietly_excluded_from_later_campaigns(db_session):
     assert stats["excluded_terminal_no_sales_items"] == ["1000009209"]
 
 
-def test_mixed_item_keeps_authoritative_placeholder_and_blocks_without_floor(
+def test_mixed_item_keeps_authoritative_placeholder_with_conservative_fallback(
         db_session):
     plan = _plan(remark="placeholder_price_lowering_authorized=true")
     db_session.add(plan)
@@ -91,12 +91,12 @@ def test_mixed_item_keeps_authoritative_placeholder_and_blocks_without_floor(
 
     assert "792992319206" not in exclusions
     assert "1001358847694" in exclusions
-    # The authoritative placeholder can no longer be silently dropped to make
-    # a partial whole-item manifest.  Without its coupon-floor evidence the
-    # complete item stops before upload instead.
-    assert rows == []
-    assert {row["taobao_item_id"]
-            for row in stats["custom_floor_guard_items"]} == {"792992319206"}
+    # The authoritative placeholder accompanies the complete item and uses the
+    # user-authorized conservative fallback when its coupon floor is absent.
+    assert {row["taobao_sku_id"] for row in rows} == {"R1", "P1"}
+    assert stats["custom_floor_guard_items"] == []
+    assert stats["placeholder_price_lowered"][0]["authorization"] == (
+        "durable_user_policy_missing_floor_and_live_price")
     assert {item["taobao_item_id"] for item in stats["excluded_whole_items"]} == {
         "1001358847694"}
 
