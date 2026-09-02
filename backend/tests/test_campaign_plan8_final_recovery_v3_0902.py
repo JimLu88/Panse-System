@@ -115,12 +115,10 @@ def _web_result(payload, *, phase):
             "discount_rows_already_correct": len(correct),
             "discount_pairs_written": [list(pair) for pair in missing],
             "discount_pairs_already_correct": [list(pair) for pair in correct],
-            "draft_records_updated": 2,
+            "draft_records_updated": 6,
             "draft_records_published": 6, "reservation_consumed": True,
-            "patched_record_ids": sorted([
-                recovery.DRAFT_RECORDS["1036279566778"]["record_id"],
-                recovery.DRAFT_RECORDS["1074244132390"]["record_id"],
-            ]),
+            "patched_record_ids": sorted(
+                row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
             "published_record_ids": sorted(
                 row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
             "checkpoints": recovery.EXPECTED_COMMIT_CHECKPOINTS,
@@ -435,7 +433,32 @@ def test_plan8_v3_rejects_discount_amount_drift(db_session, monkeypatch):
     assert result["error"] == "plan8_final_v3_discount_amount_drift"
 
 
-def test_plan8_v3_inspection_rejects_price_or_extra_record_before_claim(
+def test_plan8_v3_inspection_accepts_empty_activity_prices_before_full_patch(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_prerequisites(db_session)
+    _patch_scope(db_session, monkeypatch)
+
+    def empty_price_inspect(_db, *, payload, **_kwargs):
+        phase = payload["phase"]
+        result = _web_result(payload, phase=phase)
+        if phase == "inspect":
+            for record in result["draft_records"]:
+                for row in record["sku_rows"]:
+                    row["signup_price"] = None
+        return result
+
+    monkeypatch.setattr(
+        web_agent_service, "recover_plan8_final_v3", empty_price_inspect)
+    result = _run(db_session)
+    assert result["ok"] is True
+    assert result["verification"]["record_count"] == 6
+    assert result["verification"]["sku_count"] == 78
+    assert result["verification"]["custom_sku_count"] == 18
+
+
+def test_plan8_v3_inspection_rejects_sku_or_extra_record_before_claim(
         db_session, monkeypatch):
     db_session.add(_plan())
     db_session.commit()
@@ -444,7 +467,7 @@ def test_plan8_v3_inspection_rejects_price_or_extra_record_before_claim(
 
     def bad_inspect(_db, *, payload, **_kwargs):
         result = _web_result(payload, phase="inspect")
-        result["draft_records"][0]["sku_rows"][0]["signup_price"] = "0.01"
+        result["draft_records"][0]["sku_rows"][0]["sku_id"] = "9999999999999"
         result["all_record_ids"].append("unexpected-record")
         return result
 
@@ -716,11 +739,9 @@ def test_plan8_v3_commit_accepts_written_plus_already_correct_exact_union(
         "discount_pairs_written": [list(pair) for pair in ordered[:4]],
         "discount_pairs_already_correct": [list(pair) for pair in ordered[4:]],
         "discount_rows_written": 4, "discount_rows_already_correct": 4,
-        "draft_records_updated": 2, "draft_records_published": 6,
-        "patched_record_ids": sorted([
-            recovery.DRAFT_RECORDS["1036279566778"]["record_id"],
-            recovery.DRAFT_RECORDS["1074244132390"]["record_id"],
-        ]),
+        "draft_records_updated": 6, "draft_records_published": 6,
+        "patched_record_ids": sorted(
+            row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
         "published_record_ids": sorted(
             row["record_id"] for row in recovery.DRAFT_RECORDS.values()),
         "checkpoints": recovery.EXPECTED_COMMIT_CHECKPOINTS,

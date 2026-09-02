@@ -703,6 +703,20 @@ def _sku_price_map(rows: list[dict]) -> dict[str, str] | None:
     return result
 
 
+def _optional_sku_price_map(rows: list[dict]) -> dict[str, str | None] | None:
+    result = {}
+    try:
+        for row in rows:
+            sku_id = str(row.get("sku_id") or "")
+            if not sku_id or sku_id in result:
+                return None
+            value = row.get("signup_price")
+            result[sku_id] = None if value in (None, "") else _money(value)
+    except (TypeError, ValueError, ArithmeticError):
+        return None
+    return result
+
+
 def _discount_value_map(rows: list[dict]) -> dict[tuple[str, str], str] | None:
     result = {}
     try:
@@ -733,7 +747,7 @@ def validate_inspection(result: dict, manifest: dict,
             set(expected_record["final_sku_ids"])
             - set(expected_record["add_sku_ids"])
         )
-        actual_price_map = _sku_price_map(row.get("sku_rows") or [])
+        actual_price_map = _optional_sku_price_map(row.get("sku_rows") or [])
         expected_price_map = {
             value["sku_id"]: value["signup_price"]
             for value in expected_record["expected_sku_rows"]
@@ -744,11 +758,21 @@ def validate_inspection(result: dict, manifest: dict,
             and str(row.get("status") or "") == "草稿"
             and row.get("sku_count") == spec["current_sku_count"]
             and sku_ids == expected_current_skus
-            and actual_price_map == expected_price_map
+            and actual_price_map is not None
+            and set(actual_price_map) == set(expected_price_map)
             and _valid_sha(row.get("before_hash"))
             and row.get("before_hash") == _hash(row.get("snapshot"))
         )
-        record_detail[item_id] = {"ok": row_ok, **row}
+        current_price_mismatches = ({
+            sku_id: {"actual": actual_price_map.get(sku_id),
+                     "target": expected_price_map[sku_id]}
+            for sku_id in expected_price_map
+            if actual_price_map.get(sku_id) != expected_price_map[sku_id]
+        } if actual_price_map is not None else {})
+        record_detail[item_id] = {
+            "ok": row_ok, "current_price_mismatches": current_price_mismatches,
+            **row,
+        }
         records_ok = records_ok and row_ok
     discount_rows = result.get("discount_rows") or []
     discount_pairs = {(str(row.get("item_id") or ""),
@@ -886,8 +910,7 @@ def validate_commit(result: dict, manifest: dict,
     patched_ids = {str(value) for value in result.get("patched_record_ids") or []}
     published_ids = {str(value) for value in result.get("published_record_ids") or []}
     expected_patched = {
-        DRAFT_RECORDS["1036279566778"]["record_id"],
-        DRAFT_RECORDS["1074244132390"]["record_id"],
+        spec["record_id"] for spec in DRAFT_RECORDS.values()
     }
     expected_published = {
         spec["record_id"] for spec in DRAFT_RECORDS.values()
@@ -918,7 +941,7 @@ def validate_commit(result: dict, manifest: dict,
         and written | already_correct == ADD_PAIRS
         and result.get("discount_rows_written") == len(written)
         and result.get("discount_rows_already_correct") == len(already_correct)
-        and result.get("draft_records_updated") == 2
+        and result.get("draft_records_updated") == 6
         and result.get("draft_records_published") == 6
         and patched_ids == expected_patched
         and published_ids == expected_published
