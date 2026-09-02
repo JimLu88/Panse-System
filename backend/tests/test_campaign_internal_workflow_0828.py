@@ -75,7 +75,8 @@ def test_terminal_no_sales_is_quietly_excluded_from_later_campaigns(db_session):
     assert stats["excluded_terminal_no_sales_items"] == ["1000009209"]
 
 
-def test_whole_item_exclusion_never_keyword_guesses_mixed_link(db_session):
+def test_mixed_item_keeps_authoritative_placeholder_and_blocks_without_floor(
+        db_session):
     plan = _plan(remark="placeholder_price_lowering_authorized=true")
     db_session.add(plan)
     _pair(db_session, item_id="792992319206", sku_code="REAL1", sku_id="R1")
@@ -90,7 +91,12 @@ def test_whole_item_exclusion_never_keyword_guesses_mixed_link(db_session):
 
     assert "792992319206" not in exclusions
     assert "1001358847694" in exclusions
-    assert {row["taobao_item_id"] for row in rows} == {"792992319206"}
+    # The authoritative placeholder can no longer be silently dropped to make
+    # a partial whole-item manifest.  Without its coupon-floor evidence the
+    # complete item stops before upload instead.
+    assert rows == []
+    assert {row["taobao_item_id"]
+            for row in stats["custom_floor_guard_items"]} == {"792992319206"}
     assert {item["taobao_item_id"] for item in stats["excluded_whole_items"]} == {
         "1001358847694"}
 

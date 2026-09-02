@@ -940,7 +940,16 @@ def _is_explicit_custom_price_sku(s) -> bool:
 
 
 def _custom_placeholder_sku_is_selected(plan, s, sku_id: object) -> bool:
-    """Normal SKUs are always selected; custom/placeholder SKUs need exact ID."""
+    """Select authoritative placeholders with their whole item.
+
+    ``is_custom_placeholder`` is the ERP authority: these rows must accompany
+    every targeted whole-item signup and their lower safe activity price is not
+    an exclusion.  Legacy suffix-only custom codes still require the exact
+    per-plan allowlist so a misleading code suffix cannot reclassify a normal
+    SKU.
+    """
+    if bool(getattr(s, "is_custom_placeholder", False)):
+        return True
     return (
         not _is_explicit_custom_price_sku(s)
         or str(sku_id or "").strip() in custom_placeholder_sku_allowlist(plan)
@@ -1419,14 +1428,20 @@ def build_signup_rows(
 
     # The repository-root contract is a runtime dependency, not documentation.
     # Missing/malformed policy must stop every generator that can create a signup file.
-    campaign_policy_service.require_policy()
+    policy = campaign_policy_service.require_policy()
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
     placeholder_live_prices = placeholder_live_prices_for_plan(db, plan)
     placeholder_expired = placeholder_price_protection_expired(plan)
+    durable_placeholder_lowering = bool(
+        (policy.get("pricing") or {}).get(
+            "authoritative_placeholder_safe_lowering_enabled") is True
+    )
+    plan_placeholder_lowering = placeholder_price_lowering_authorized(plan)
     placeholder_lowering = bool(
         allow_placeholder_safe_lowering
-        or placeholder_price_lowering_authorized(plan)
+        or plan_placeholder_lowering
+        or durable_placeholder_lowering
     )
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
@@ -1450,6 +1465,8 @@ def build_signup_rows(
              "placeholder_missing_live_price": [],
              "placeholder_price_protection_expired": placeholder_expired,
              "placeholder_price_lowering_authorized": placeholder_lowering,
+             "placeholder_price_lowering_policy": (
+                 "durable_user_policy" if durable_placeholder_lowering else None),
              "placeholder_candidate_sku_ids": [],
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
@@ -1590,16 +1607,19 @@ def build_signup_rows(
                 }
                 if placeholder_expired or placeholder_lowering:
                     row["remark"] = (
-                        "用户已授权定制咨询规格使用保护报名价"
-                        if placeholder_lowering else
                         "价保已确认到期，按最低普惠券后价安全上限报名"
+                        if placeholder_expired else
+                        "用户已授权定制咨询规格使用保护报名价"
                     )
                     stats["placeholder_price_lowered"].append({
                         **detail,
                         "authorization": (
-                            "current_plan_user_decision"
-                            if placeholder_lowering else
                             "price_protection_expired"
+                            if placeholder_expired else
+                            "current_plan_user_decision"
+                            if allow_placeholder_safe_lowering
+                            or plan_placeholder_lowering else
+                            "durable_user_policy"
                         ),
                     })
                 else:

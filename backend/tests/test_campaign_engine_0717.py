@@ -1031,7 +1031,7 @@ def test_preflight_historical_nosales_does_not_require_official_scope(db_session
     assert checks["R15"]["items"][0]["no_sales_items"] == []
 
 
-def test_placeholder_signup_blocks_high_live_price_without_expiry_confirmation(db_session):
+def test_placeholder_signup_uses_safe_lower_price_from_durable_user_policy(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (
         "official_active_items=9300; "
@@ -1047,16 +1047,12 @@ def test_placeholder_signup_blocks_high_live_price_without_expiry_confirmation(d
     rows, stats = cs.build_signup_rows(db_session, plan)
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
 
-    assert rows == []
-    assert stats["placeholder_price_blocked_items"][0]["placeholders"][0] == {
-        "taobao_item_id": "9310",
-        "taobao_sku_id": "73081",
-        "sku_code": "PPSPH00199",
-        "safe_cap": 284.0,
-        "current_live_price": 397.0,
-    }
-    assert checks["R16"]["level"] == "warn"
-    assert "整品暂缓1品" in checks["R16"]["title"]
+    placeholder = next(row for row in rows if row["taobao_sku_id"] == "73081")
+    assert placeholder["price"] == 284.0
+    assert stats["placeholder_price_blocked_items"] == []
+    assert stats["placeholder_price_lowered"][0]["authorization"] == (
+        "durable_user_policy")
+    assert checks["R16"]["level"] == "pass"
 
 
 def test_placeholder_signup_uses_safe_cap_after_expiry_confirmation(db_session):

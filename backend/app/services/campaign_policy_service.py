@@ -131,9 +131,16 @@ def require_policy() -> dict[str, Any]:
             "without_signup_discount_retry_or_unresolved"):
         raise RuntimeError("活动报名规则未锁定平台终态无动销静默排除，已停止")
     if pricing.get("custom_placeholder_sku_handling") != (
-            "fail_closed_exact_taobao_sku_id_allowlist_only; "
-            "no_item_level_or_boolean_expansion"):
-        raise RuntimeError("活动报名规则未锁定定制/占位SKU精确白名单，已停止")
+            "erp_is_custom_placeholder_is_authoritative_and_included; "
+            "suffix_only_custom_codes_still_require_exact_taobao_sku_id_allowlist; "
+            "never_name_keyword_inference"):
+        raise RuntimeError("活动报名规则未锁定权威定制SKU随整品报名，已停止")
+    if pricing.get("authoritative_placeholder_safe_lowering_enabled") is not True:
+        raise RuntimeError("活动报名规则未允许权威定制SKU使用更低安全报名价，已停止")
+    if pricing.get("placeholder_safe_cap_authorization") != (
+            "authoritative_is_custom_placeholder_with_known_current_platform_price_"
+            "may_use_safe_lower_cap; never_missing_evidence; never_changes_daily_price"):
+        raise RuntimeError("活动报名规则未锁定定制SKU只改活动报名价，已停止")
     if (scope.get("custom_placeholder_safe_cap_without_live_price")
             != "block_and_report; current_plan_authorization_never_replaces_missing_platform_evidence"):
         raise RuntimeError("活动报名规则未锁定占位SKU缺平台现价时停止，已停止")

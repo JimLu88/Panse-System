@@ -154,13 +154,50 @@ def test_exact_placeholder_allowlist_enables_only_named_sku(db_session):
 
     signup, stats = campaign.build_signup_rows(db_session, plan)
 
-    assert {row["taobao_sku_id"] for row in signup} == {"881880807"}
-    assert stats["excluded_unselected_custom_placeholder_skus"] == [{
+    # Both ERP-authoritative placeholders accompany the whole item.  The
+    # second row has no current platform price, so R16 will block the complete
+    # manifest before upload instead of silently omitting that SKU.
+    assert {row["taobao_sku_id"] for row in signup} == {
+        "881880807", "881880808"}
+    assert stats["excluded_unselected_custom_placeholder_skus"] == []
+    assert stats["placeholder_candidate_sku_ids"] == ["881880807", "881880808"]
+    assert [row["taobao_sku_id"] for row in
+            stats["placeholder_missing_live_price"]] == ["881880808"]
+
+
+def test_authoritative_placeholder_is_included_and_safe_lowered_without_allowlist(
+        db_session):
+    plan = _plan(
+        db_session,
+        "placeholder_live_prices=881880807:500",
+    )
+    _sku(
+        db_session, product_code="PPSPLACE", sku_code="PPSPLACE99",
+        item_id="991880806", sku_id="881880807", placeholder=True,
+        daily=1000, big=700, coupon_floor=250,
+    )
+    _sku(
+        db_session, product_code="PPSPLACE", sku_code="PPSPLACE11",
+        item_id="991880806", sku_id="881880801",
+        daily=1000, big=700, coupon_floor=700,
+    )
+
+    signup, stats = campaign.build_signup_rows(
+        db_session, plan, enforce_price_holds=False)
+    custom_rows = [row for row in signup if row["is_placeholder"]]
+
+    assert custom_rows == [{
         "taobao_item_id": "991880806",
-        "taobao_sku_id": "881880808",
+        "taobao_sku_id": "881880807",
         "sku_code": "PPSPLACE99",
+        "price": 284.0,
         "is_placeholder": True,
+        "remark": "用户已授权定制咨询规格使用保护报名价",
     }]
+    assert stats["excluded_unselected_custom_placeholder_skus"] == []
+    assert stats["placeholder_price_lowering_policy"] == "durable_user_policy"
+    assert stats["placeholder_price_lowered"][0]["authorization"] == (
+        "durable_user_policy")
 
 
 def test_warehouse_user_rule_is_permanent_across_campaign_surfaces(db_session):
