@@ -122,6 +122,17 @@ class CampaignPlan8SignupRecoveryIn(BaseModel):
     expected_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan8FinalRecoveryV2In(BaseModel):
+    """Fixed request for the full-SKU plan-8 recovery."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    recovery_version: int = Field(ge=2, le=2)
+
+
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
     """Exact read-only delayed verification for the submitted plan-7 attempt."""
 
@@ -772,6 +783,32 @@ def recover_super88_plan8_signup(
         if error in {
                 "plan8_signup_recovery_request_not_allowed",
                 "plan8_signup_recovery_identity_not_allowed"}:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/recover-super88-plan8-final-v2")
+def recover_super88_plan8_final_v2(
+        body: CampaignPlan8FinalRecoveryV2In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Refresh evidence, add eight discounts, then enroll 6 items / 78 SKUs."""
+    from app.services import campaign_plan8_final_recovery_v2_service
+
+    result = campaign_plan8_final_recovery_v2_service.recover_plan8_final_v2(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        recovery_version=body.recovery_version,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+                "plan8_final_v2_request_not_allowed",
+                "plan8_final_v2_identity_not_allowed"}:
             code = 422
         raise HTTPException(code, detail=result)
     return result
