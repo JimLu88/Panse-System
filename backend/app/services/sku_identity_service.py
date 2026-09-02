@@ -142,6 +142,81 @@ def observe(db: Session, rows: list[dict], *, evidence_source: str,
     return {"created": inserted, "refreshed": refreshed, "conflicts": conflicts, "skipped": skipped}
 
 
+def authorize_canonical_correction(
+        db: Session, *, expected: dict, corrected: dict,
+        evidence_source: str, evidence_sha256: str,
+        authorization_ref: str, daily_price,
+        sale_state: str = "authorized_erp_mapping") -> dict:
+    """Correct one proven legacy projection while preserving its audit trail.
+
+    ``observe`` intentionally treats changed meaning as a conflict.  This
+    separate path is only for an exact, user-authorized correction whose old
+    canonical meaning is supplied in full and locked with ``FOR UPDATE``.
+    """
+    if len(str(evidence_sha256 or "")) != 64:
+        raise ValueError("sku_identity_evidence_sha256_required")
+    if not str(evidence_source or "").startswith("authorized_identity_correction:"):
+        raise ValueError("sku_identity_authorized_source_required")
+    if not _clean(authorization_ref):
+        raise ValueError("sku_identity_authorization_ref_required")
+    old_meaning = _identity_payload(expected)
+    new_meaning = _identity_payload(corrected)
+    if (old_meaning["taobao_item_id"] != new_meaning["taobao_item_id"]
+            or old_meaning["taobao_sku_id"] != new_meaning["taobao_sku_id"]
+            or not new_meaning["taobao_item_id"].isdigit()
+            or not new_meaning["taobao_sku_id"].isdigit()
+            or not new_meaning["sku_code"]
+            or new_meaning["merchant_code"] != new_meaning["sku_code"]):
+        raise ValueError("sku_identity_authorized_scope_invalid")
+    current = db.execute(select(SkuIdentity).where(
+        SkuIdentity.taobao_item_id == old_meaning["taobao_item_id"],
+        SkuIdentity.taobao_sku_id == old_meaning["taobao_sku_id"],
+    ).with_for_update()).scalar_one_or_none()
+    if current is None:
+        raise ValueError("sku_identity_authorized_current_missing")
+    current_meaning = {
+        key: getattr(current, key) for key in old_meaning
+    }
+    if current_meaning != old_meaning or current.identity_sha256 != _hash(old_meaning):
+        raise ValueError("sku_identity_authorized_current_drift")
+    previous_sha256 = current.identity_sha256
+    corrected_sha256 = _hash(new_meaning)
+    now = datetime.now(timezone.utc)
+    for key, value in new_meaning.items():
+        setattr(current, key, value)
+    current.identity_sha256 = corrected_sha256
+    current.last_observed_at = now
+    current.latest_sale_state = _clean(sale_state)
+    current.latest_daily_price = daily_price
+    current.latest_evidence_source = evidence_source
+    current.latest_evidence_sha256 = evidence_sha256
+    current.conflict_detected = False
+    db.add(SkuIdentityObservation(
+        identity_id=current.id,
+        **new_meaning,
+        daily_price=daily_price,
+        sale_state=_clean(sale_state),
+        observed_at=now,
+        evidence_source=evidence_source,
+        evidence_sha256=evidence_sha256,
+        identity_sha256=corrected_sha256,
+        disposition="authorized_correction",
+        detail={
+            "authorization_ref": authorization_ref,
+            "previous_identity": old_meaning,
+            "previous_identity_sha256": previous_sha256,
+            "canonical_identity_sha256": corrected_sha256,
+        },
+    ))
+    db.flush()
+    return {
+        "identity_id": current.id,
+        "previous_identity_sha256": previous_sha256,
+        "identity_sha256": corrected_sha256,
+        "disposition": "authorized_correction",
+    }
+
+
 def backfill_from_erp(db: Session) -> dict:
     """Database-only backfill. Unknown historical data stays unknown."""
     sku_by_code = {row.sku_code: row for row in db.execute(select(PricingSku)).scalars()}

@@ -201,3 +201,38 @@ def test_official_export_does_not_hide_spec_drift_after_official_identity_exists
     assert result["conflicts"] == 1
     assert row.sku_spec == base["sku_spec"]
     assert row.conflict_detected is True
+
+
+def test_user_authorized_identity_correction_updates_canonical_and_keeps_old_event():
+    db = _db()
+    old = {
+        "taobao_item_id": "1074244132390", "taobao_sku_id": "6287431318354",
+        "merchant_code": "PPS2633010022595",
+        "sku_spec": "床板材质:松木;颜色分类:齐边床-软包款-1.2米;",
+        "sku_code": "PPS2633010022595", "product_code": "PPS26330100225",
+        "is_custom_placeholder": True,
+    }
+    corrected = {
+        **old, "merchant_code": "PPS2633010022523",
+        "sku_code": "PPS2633010022523", "is_custom_placeholder": False,
+    }
+    sku_identity_service.observe(
+        db, [old], evidence_source="erp_database_backfill:0147",
+        evidence_sha256="5" * 64)
+    result = sku_identity_service.authorize_canonical_correction(
+        db, expected=old, corrected=corrected,
+        evidence_source="authorized_identity_correction:plan8:2026-09-02",
+        evidence_sha256="6" * 64,
+        authorization_ref="user_approved_eight_sku_mapping:2026-09-02",
+        daily_price="5280.00")
+    row = db.execute(select(SkuIdentity)).scalar_one()
+    history = db.execute(select(SkuIdentityObservation).order_by(
+        SkuIdentityObservation.id)).scalars().all()
+
+    assert result["disposition"] == "authorized_correction"
+    assert row.sku_code == "PPS2633010022523"
+    assert row.merchant_code == "PPS2633010022523"
+    assert row.is_custom_placeholder is False
+    assert row.conflict_detected is False
+    assert [event.disposition for event in history] == ["created", "authorized_correction"]
+    assert history[-1].detail["previous_identity"]["sku_code"] == "PPS2633010022595"
