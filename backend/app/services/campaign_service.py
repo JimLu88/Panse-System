@@ -1437,6 +1437,10 @@ def build_signup_rows(
         (policy.get("pricing") or {}).get(
             "authoritative_placeholder_safe_lowering_enabled") is True
     )
+    missing_floor_with_live_price = bool(
+        (policy.get("pricing") or {}).get(
+            "placeholder_missing_floor_with_known_live_price_enabled") is True
+    )
     plan_placeholder_lowering = placeholder_price_lowering_authorized(plan)
     placeholder_lowering = bool(
         allow_placeholder_safe_lowering
@@ -1542,13 +1546,51 @@ def build_signup_rows(
                 _d(getattr(pair[1], "coupon_floor_price", None))
                 if pair else None
             )
+            live_price = placeholder_live_prices.get(sid)
             official = official_deduction(
                 generated, lev, generated >= Decimal("100"))
             generated_final = (generated - official).quantize(_CENT)
-            if coupon_floor is None or coupon_floor <= 0 or generated_final > coupon_floor:
+            if coupon_floor is None or coupon_floor <= 0:
+                if (
+                    missing_floor_with_live_price
+                    and placeholder_lowering
+                    and live_price is not None
+                    and live_price > 0
+                ):
+                    selected = min(generated, live_price).quantize(_CENT)
+                    row["price"] = float(selected)
+                    row["remark"] = (
+                        "用户已授权定制规格在缺券后线时按已知平台现价与保守上限孰低报名"
+                    )
+                    stats["placeholder_price_lowered"].append({
+                        "taobao_item_id": item_id,
+                        "taobao_sku_id": sid,
+                        "sku_code": row["sku_code"],
+                        "safe_cap": float(generated),
+                        "current_live_price": float(live_price),
+                        "selected_signup_price": float(selected),
+                        "official_coupon_floor_price": None,
+                        "authorization": "durable_user_policy_missing_coupon_floor",
+                    })
+                    continue
+                reason = "custom_coupon_floor_missing"
+                stats["custom_floor_guard_items"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": row["sku_code"],
+                    "official_coupon_floor_price": None,
+                    "generated_final_price": float(generated_final),
+                    "reason": reason,
+                })
+                blocked_placeholders.append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": row["sku_code"],
+                    "reason": reason,
+                })
+                continue
+            if generated_final > coupon_floor:
                 reason = (
-                    "custom_coupon_floor_missing"
-                    if coupon_floor is None or coupon_floor <= 0 else
                     "custom_coupon_after_above_official_floor"
                 )
                 stats["custom_floor_guard_items"].append({
@@ -1567,7 +1609,6 @@ def build_signup_rows(
                     "reason": reason,
                 })
                 continue
-            live_price = placeholder_live_prices.get(sid)
             if live_price is None:
                 detail = {
                     "taobao_item_id": item_id,

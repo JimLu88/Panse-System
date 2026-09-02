@@ -137,12 +137,16 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定权威定制SKU随整品报名，已停止")
     if pricing.get("authoritative_placeholder_safe_lowering_enabled") is not True:
         raise RuntimeError("活动报名规则未允许权威定制SKU使用更低安全报名价，已停止")
+    if pricing.get("placeholder_missing_floor_with_known_live_price_enabled") is not True:
+        raise RuntimeError("活动报名规则未允许已有平台现价的权威定制SKU使用保守价，已停止")
     if pricing.get("placeholder_safe_cap_authorization") != (
             "authoritative_is_custom_placeholder_with_known_current_platform_price_"
-            "may_use_safe_lower_cap; never_missing_evidence; never_changes_daily_price"):
+            "may_use_the_lower_of_current_live_price_and_conservative_fallback_cap_"
+            "even_when_coupon_floor_is_missing; never_missing_live_price; "
+            "never_changes_daily_price"):
         raise RuntimeError("活动报名规则未锁定定制SKU只改活动报名价，已停止")
     if (scope.get("custom_placeholder_safe_cap_without_live_price")
-            != "block_and_report; current_plan_authorization_never_replaces_missing_platform_evidence"):
+            != "block_and_report; current_plan_authorization_never_replaces_missing_platform_live_price"):
         raise RuntimeError("活动报名规则未锁定占位SKU缺平台现价时停止，已停止")
     if scope.get("accepted_item_action") != "single_item_discount_first_then_final_campaign_signup":
         raise RuntimeError("活动报名规则未锁定先单品立减、后正式活动报名，已停止")

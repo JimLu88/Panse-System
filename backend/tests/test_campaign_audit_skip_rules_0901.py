@@ -200,6 +200,31 @@ def test_authoritative_placeholder_is_included_and_safe_lowered_without_allowlis
         "durable_user_policy")
 
 
+def test_authoritative_placeholder_missing_floor_uses_known_live_price_fallback(
+        db_session):
+    plan = _plan(db_session, "placeholder_live_prices=881880809:500")
+    _sku(
+        db_session, product_code="PPSPLACE2", sku_code="PPSPLACE299",
+        item_id="991880809", sku_id="881880809", placeholder=True,
+        daily=500, big=350, coupon_floor=None,
+    )
+    _sku(
+        db_session, product_code="PPSPLACE2", sku_code="PPSPLACE211",
+        item_id="991880809", sku_id="881880801",
+        daily=1000, big=700, coupon_floor=700,
+    )
+
+    signup, stats = campaign.build_signup_rows(
+        db_session, plan, enforce_price_holds=False)
+    custom = next(row for row in signup if row["is_placeholder"])
+
+    assert custom["price"] == 450.0
+    assert custom["remark"].startswith("用户已授权定制规格在缺券后线时")
+    assert stats["placeholder_price_blocked_items"] == []
+    assert stats["placeholder_price_lowered"][0]["authorization"] == (
+        "durable_user_policy_missing_coupon_floor")
+
+
 def test_warehouse_user_rule_is_permanent_across_campaign_surfaces(db_session):
     plan = _plan(db_session)
     item_id = campaign_item_exclusion_service.WAREHOUSE_USER_RULE_ITEM_ID

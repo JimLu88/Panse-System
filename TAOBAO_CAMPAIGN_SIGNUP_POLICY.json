@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-09-02.1",
-  "updated_at": "2026-09-02T12:00:00+08:00",
+  "version": "2026-09-02.2",
+  "updated_at": "2026-09-02T14:10:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -36,7 +36,8 @@
     "placeholder_sku_signup_price": "authoritative_is_custom_placeholder_rows_always_accompany_targeted_whole_item_and_use_existing_accepted_price_or_safe_lower_cap",
     "custom_placeholder_sku_handling": "erp_is_custom_placeholder_is_authoritative_and_included; suffix_only_custom_codes_still_require_exact_taobao_sku_id_allowlist; never_name_keyword_inference",
     "authoritative_placeholder_safe_lowering_enabled": true,
-    "placeholder_safe_cap_authorization": "authoritative_is_custom_placeholder_with_known_current_platform_price_may_use_safe_lower_cap; never_missing_evidence; never_changes_daily_price",
+    "placeholder_missing_floor_with_known_live_price_enabled": true,
+    "placeholder_safe_cap_authorization": "authoritative_is_custom_placeholder_with_known_current_platform_price_may_use_the_lower_of_current_live_price_and_conservative_fallback_cap_even_when_coupon_floor_is_missing; never_missing_live_price; never_changes_daily_price",
     "super_reduce": {
       "official_rate": 0.10,
       "final_target": "erp_mid_promo_price"
@@ -95,7 +96,7 @@
     "accepted_items_are_excluded_from_later_manifest_batches": true,
     "published_wrong_price_or_missing_sku_action": "isolate_item_report_and_continue_safe_items",
     "target_scope_must_be_complete_and_mapped": true,
-    "custom_placeholder_safe_cap_without_live_price": "block_and_report; current_plan_authorization_never_replaces_missing_platform_evidence",
+    "custom_placeholder_safe_cap_without_live_price": "block_and_report; current_plan_authorization_never_replaces_missing_platform_live_price",
     "historical_no_sales_pre_submit_treatment": "exclude_only_platform_terminal_recorded_item_ids_from_later_campaigns",
     "whole_item_link_exclusion": "explicit_item_marker_or_all_mapped_skus_authoritatively_marked_custom_placeholder_only; never_keyword_inference",
     "sku_rotation_enabled": "controlled_new_slot_pool_only",
@@ -171,6 +172,7 @@
     "用户逐SKU明确授权时，程序可通过计划标记把1元以内（含1元）的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
     "只有权威占位标记或定制SKU编码才允许使用定制让价；商品或规格名称中的定制、咨询字样不得自动改变价格分类。定制最终价不得低于首次接管原价的20%。",
     "ERP权威字段标记的定制或占位SKU必须随目标整品完整报名，可使用更低的安全报名价，不得因此排除、阻断或列为未解决；只凭编码尾号识别的旧定制SKU仍须计划中的精确淘宝SKUID白名单，商品和规格名称不得推断。",
+    "权威定制SKU缺最低券后线但已有本场平台当前价时，按平台当前价与程序保守活动价孰低报名；这只降低活动报名价，不修改ERP日常价。平台当前价也缺失时仍整品停止。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",
     "资格通过后逐 SKU 验算：报名价减官方立减再减单品立减，必须等于 ERP 本场目标到手价。",
     "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、保留当前报名并报告；禁止以撤销后重报作为自动恢复手段。",

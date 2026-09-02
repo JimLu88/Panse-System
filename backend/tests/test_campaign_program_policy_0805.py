@@ -58,6 +58,8 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
         "erp_daily_price_unless_audited_combined_conflict_adjustment_lte_2_yuan")
     assert policy["pricing"][
         "authoritative_placeholder_safe_lowering_enabled"] is True
+    assert policy["pricing"][
+        "placeholder_missing_floor_with_known_live_price_enabled"] is True
     assert policy["pricing"]["custom_placeholder_sku_handling"] == (
         "erp_is_custom_placeholder_is_authoritative_and_included; "
         "suffix_only_custom_codes_still_require_exact_taobao_sku_id_allowlist; "
