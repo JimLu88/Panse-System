@@ -49,6 +49,7 @@ export default function FactoryOrdersPage() {
   const [q, setQ] = useState('');   // 产品名/SKU/产品编码 模糊搜索
   const [editing, setEditing] = useState<FactoryOrderRow | null>(null);
   const [form] = Form.useForm();
+  const formCostType = Form.useWatch('factory_cost_type', form);
 
   const params = useMemo(() => ({
     factory,
@@ -73,6 +74,8 @@ export default function FactoryOrdersPage() {
         alipay_flow_no: vals.alipay_flow_no ?? undefined,
         remark: vals.remark ?? undefined,
         unpaid_reason_note: vals.unpaid_reason_note ?? undefined,
+        factory_cost_type: vals.factory_cost_type ?? undefined,
+        related_primary_order_no: vals.related_primary_order_no ?? undefined,
       }),
     onSuccess: () => {
       message.success('已核对');
@@ -100,7 +103,7 @@ export default function FactoryOrdersPage() {
         content: (
           <div>
             <p>
-              更新工厂实际 <b>{r.updated}</b> 单 · 未变 {r.unchanged} · 未匹配 {r.unmatched_count}
+              更新工厂实际 <b>{r.updated}</b> 单 · 关联补差免计费 <b>{r.topup_linked}</b> 单 · 未变 {r.unchanged} · 未匹配 {r.unmatched_count}
               (备货/售后/查无订单/价格非数字) · 备货售后行 {r.stock_or_aftersales_skipped}
             </p>
             {r.unmatched_count > 0 && (
@@ -125,6 +128,8 @@ export default function FactoryOrdersPage() {
       alipay_flow_no: r.alipay_flow_no ?? undefined,
       remark: r.remark ?? undefined,
       unpaid_reason_note: r.unpaid_reason_note ?? undefined,
+      factory_cost_type: r.factory_cost_type,
+      related_primary_order_no: r.related_primary_order_no ?? undefined,
     });
   };
 
@@ -132,6 +137,12 @@ export default function FactoryOrdersPage() {
   const columns = [
     { title: '工厂单号', dataIndex: 'factory_order_no', width: 150, fixed: 'left' as const },
     { title: '平台订单号', dataIndex: 'platform_order_no', width: 170, render: (v: string) => v || '—' },
+    {
+      title: '工厂费用类型', dataIndex: 'factory_cost_type', width: 160,
+      render: (v: FactoryOrderRow['factory_cost_type']) =>
+        v === 'same_order_topup' ? <Tag color="purple">同订单补差·不计费</Tag> : <Tag>正常计费</Tag>,
+    },
+    { title: '关联订单1', dataIndex: 'related_primary_order_no', width: 170, render: (v: string) => v || '—' },
     { title: '工厂', dataIndex: 'factory_name', width: 130, render: (v: string) => v || '—' },
     { title: '下单日期', dataIndex: 'order_date', width: 110, render: (v: string) => v || '—' },
     { title: '产品', dataIndex: 'product_name', ellipsis: true },
@@ -141,25 +152,27 @@ export default function FactoryOrdersPage() {
     { title: '工厂实际', dataIndex: 'factory_bill_amount', width: 110, align: 'right' as const, render: money },
     {
       title: '差异', dataIndex: 'diff', width: 110, align: 'right' as const,
-      render: (v: number | null) =>
-        v === null ? <Text type="secondary">待核对</Text>
+      render: (v: number | null, r: FactoryOrderRow) =>
+        r.no_factory_cost ? <Tag color="purple">不计费</Tag>
+          : v === null ? <Text type="secondary">待核对</Text>
           : Math.abs(v) < 0.01 ? <Tag color="green">一致</Tag>
             : <Text type="danger" strong>{money(v)}</Text>,
     },
     {
       title: '支付', dataIndex: 'payment_status', width: 110,
       render: (v: string, r: FactoryOrderRow) =>
-        v === 'paid' ? <Tag color="blue">已付{r.payment_date ? ` ${r.payment_date}` : ''}</Tag> : <Tag>未付</Tag>,
+        r.no_factory_cost ? <Tag color="purple">无需支付</Tag>
+          : v === 'paid' ? <Tag color="blue">已付{r.payment_date ? ` ${r.payment_date}` : ''}</Tag> : <Tag>未付</Tag>,
     },
     {
       title: '待付初判原因', dataIndex: 'unpaid_reason', width: 250,
       render: (v: string | null, r: FactoryOrderRow) =>
-        r.payment_status === 'paid' ? <Text type="secondary">—</Text> : <Text>{v || '待人工判断'}</Text>,
+        r.no_factory_cost || r.payment_status === 'paid' ? <Text type="secondary">—</Text> : <Text>{v || '待人工判断'}</Text>,
     },
     {
       title: '人工排查备注', dataIndex: 'unpaid_reason_note', width: 220, ellipsis: true,
       render: (v: string | null, r: FactoryOrderRow) =>
-        r.payment_status === 'paid' ? <Text type="secondary">—</Text>
+        r.no_factory_cost || r.payment_status === 'paid' ? <Text type="secondary">—</Text>
           : v ? <Text>{v}</Text> : <Tag color="orange">待填写</Tag>,
     },
     {
@@ -188,6 +201,7 @@ export default function FactoryOrdersPage() {
           <Row gutter={12} style={{ margin: '12px 0' }}>
             <Col xs={24} sm={12}><Card size="small"><Statistic title="已付(工厂)" value={s.paid_sum} precision={2} prefix="¥" suffix={` · ${s.paid_count}单`} valueStyle={{ color: '#1677ff' }} /></Card></Col>
             <Col xs={24} sm={12}><Card size="small"><Statistic title="未付(待付)" value={s.unpaid_sum} precision={2} prefix="¥" suffix={` · ${s.unpaid_count}单`} valueStyle={{ color: s.unpaid_sum >= 1 ? '#fa8c16' : undefined }} /></Card></Col>
+            <Col xs={24}><Text type="secondary">另有 {s.no_factory_cost_count} 单为同订单补差价，已单独记录且不计入工厂应付。</Text></Col>
           </Row>
           <Card
             size="small"
@@ -204,6 +218,7 @@ export default function FactoryOrdersPage() {
               columns={[
                 { title: '下单月', dataIndex: 'month', width: 100, fixed: 'left' },
                 { title: '总单数', dataIndex: 'count', width: 80, align: 'right' },
+                { title: '补差免计费', dataIndex: 'no_factory_cost_count', width: 110, align: 'right', render: (v) => v ? <Tag color="purple">{v} 单</Tag> : '—' },
                 { title: '推算应付', dataIndex: 'expected_sum', width: 130, align: 'right', render: money },
                 { title: '工厂实际', dataIndex: 'actual_sum', width: 130, align: 'right', render: money },
                 { title: '已付', width: 150, render: (_, r) => `${money(r.paid_sum)} · ${r.paid_count}单` },
@@ -279,7 +294,7 @@ export default function FactoryOrdersPage() {
             fields={[
               { label: '工厂单', value: r.factory_order_no },
               { label: '工厂', value: r.factory_name || '—' },
-              { label: '支付', value: r.payment_status === 'paid' ? '已付' : '未付' },
+              { label: '支付', value: r.no_factory_cost ? '无需支付' : r.payment_status === 'paid' ? '已付' : '未付' },
               ...(r.payment_status === 'paid' ? [] : [{ label: '待付原因', value: r.unpaid_reason || '待人工判断' }]),
             ]}
             amount={money(r.factory_bill_amount ?? r.expected_amount)}
@@ -293,7 +308,7 @@ export default function FactoryOrdersPage() {
             dataSource={data?.rows || []}
             columns={columns}
             size="small"
-            scroll={{ x: 1850 }}
+            scroll={{ x: 2200 }}
             pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 单` }}
             expandable={{
               expandedRowRender: (r) => <AccessoryPanel no={r.factory_order_no} />,
@@ -316,8 +331,28 @@ export default function FactoryOrdersPage() {
           </Text>
         )}
         <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+          <Form.Item label="工厂费用类型" name="factory_cost_type" rules={[{ required: true, message: '请选择工厂费用类型' }]}>
+            <Select options={[
+              { label: '正常工厂订单（计入工厂费用）', value: 'normal' },
+              { label: '同订单补差价（工厂不产生费用）', value: 'same_order_topup' },
+            ]} />
+          </Form.Item>
+          {formCostType === 'same_order_topup' && (
+            <Form.Item
+              label="关联订单1"
+              name="related_primary_order_no"
+              rules={[{ required: true, whitespace: true, message: '请填写产生工厂费用的订单1' }]}
+              extra="当前订单作为订单2单独保留，但工厂费用按 0 处理，不进入待付和异常统计。"
+            >
+              <Input placeholder="填写订单1的平台订单号" />
+            </Form.Item>
+          )}
           <Form.Item label="工厂实际成本(账单)" name="factory_bill_amount">
-            <InputNumber style={{ width: '100%' }} min={0} precision={2} addonBefore="¥" placeholder="工厂账单实际金额" />
+            <InputNumber
+              style={{ width: '100%' }} min={0} precision={2} addonBefore="¥"
+              placeholder={formCostType === 'same_order_topup' ? '补差订单固定为 0' : '工厂账单实际金额'}
+              disabled={formCostType === 'same_order_topup'}
+            />
           </Form.Item>
           <Form.Item label="支付状态" name="payment_status">
             <Select options={[{ label: '未付', value: 'unpaid' }, { label: '已付', value: 'paid' }]} allowClear />

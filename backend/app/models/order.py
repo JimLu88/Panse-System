@@ -217,6 +217,10 @@ class FactoryOrder(Base, TimestampMixin):
     remark: Mapped[Optional[str]] = mapped_column(Text)
     # 待付排查专用备注：与订单/工厂业务备注分开，避免核查原因覆盖原始资料。
     unpaid_reason_note: Mapped[Optional[str]] = mapped_column(Text)
+    # 工厂费用归类：same_order_topup = 同一订单的补差价单，工厂不重复计费。
+    # 仍保留本行及关联主订单，避免为了对平而删除真实平台订单。
+    factory_cost_type: Mapped[str] = mapped_column(String(32), default="normal", nullable=False)
+    related_primary_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
     # Phase 2 扩展
     voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

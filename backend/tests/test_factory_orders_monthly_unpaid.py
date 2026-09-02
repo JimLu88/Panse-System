@@ -5,7 +5,10 @@ from app.api.factory_orders import _monthly_summary, _row
 from app.models.order import FactoryOrder
 
 
-def _factory_order(no: str, *, day: date, expected=None, actual=None, status="unpaid", note=None, flow=None):
+def _factory_order(
+    no: str, *, day: date, expected=None, actual=None, status="unpaid", note=None,
+    flow=None, cost_type="normal", primary_no=None,
+):
     return FactoryOrder(
         factory_order_no=no,
         order_date=day,
@@ -14,6 +17,8 @@ def _factory_order(no: str, *, day: date, expected=None, actual=None, status="un
         payment_status=status,
         unpaid_reason_note=note,
         alipay_flow_no=flow,
+        factory_cost_type=cost_type,
+        related_primary_order_no=primary_no,
     )
 
 
@@ -48,3 +53,29 @@ def test_monthly_summary_keeps_paid_unpaid_and_investigation_counts():
     assert june["unpaid_sum"] == 280
     assert june["missing_bill_count"] == 1
     assert june["unresolved_count"] == 1
+
+
+def test_same_order_topup_is_kept_but_excluded_from_factory_payables():
+    rows = [
+        _row(_factory_order("F1", day=date(2026, 8, 1), expected=1000, actual=900)),
+        _row(_factory_order(
+            "F2", day=date(2026, 8, 2), expected=300, status="unpaid",
+            cost_type="same_order_topup", primary_no="ORDER-1",
+        )),
+    ]
+
+    topup = rows[1]
+    assert topup["no_factory_cost"] is True
+    assert topup["reconciled"] is True
+    assert topup["diff"] is None
+    assert topup["unpaid_reason"] is None
+
+    august = _monthly_summary(rows)[0]
+    assert august["count"] == 2
+    assert august["no_factory_cost_count"] == 1
+    assert august["expected_sum"] == 1000
+    assert august["actual_sum"] == 900
+    assert august["unpaid_count"] == 1
+    assert august["unpaid_sum"] == 900
+    assert august["missing_bill_count"] == 0
+    assert august["unresolved_count"] == 1

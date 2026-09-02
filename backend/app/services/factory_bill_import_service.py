@@ -82,7 +82,11 @@ def _build_colmap(header: list[Any]) -> dict[str, int]:
     cmap: dict[str, int] = {}
     for i, c in enumerate(header):
         cc = (_norm(c) or "").replace(" ", "")
-        if "订单号" in cc and "追加" not in cc and "order_no" not in cmap:
+        # 部分工厂表把追加单直接写成「订单号2/订单2」；它是同一订单补差，
+        # 账单价格只属于订单1，不能再给订单2生成一笔工厂待付。
+        if any(token in cc for token in ("订单号2", "订单2")):
+            cmap["extra1" if "extra1" not in cmap else "extra2"] = i
+        elif "订单号" in cc and "追加" not in cc and "order_no" not in cmap:
             cmap["order_no"] = i
         elif "追加" in cc:
             cmap["extra1" if "extra1" not in cmap else "extra2"] = i
@@ -173,7 +177,7 @@ def _apply(db: Session, lines: list[BillLine]) -> dict:
     for fo in db.execute(select(FactoryOrder).where(FactoryOrder.voided_at.is_(None))).scalars().all():
         if fo.platform_order_no:
             fo_by_no.setdefault(fo.platform_order_no, fo)
-    updated = unchanged = non_numeric = 0
+    updated = unchanged = non_numeric = topup_linked = 0
     unmatched: list[dict] = []
     for ln in lines:
         if ln.price is None:
@@ -181,7 +185,8 @@ def _apply(db: Session, lines: list[BillLine]) -> dict:
             unmatched.append({"order_no": ln.order_no, "product": (ln.product or "")[:30],
                               "reason": f"价格非数字({str(ln.price_raw)[:16]})"})
             continue
-        fo = fo_by_no.get(ln.order_no)
+        primary_fo = fo_by_no.get(ln.order_no)
+        fo = primary_fo
         if fo is None:
             for ex in ln.extra_nos:
                 fo = fo_by_no.get(ex)
@@ -191,12 +196,28 @@ def _apply(db: Session, lines: list[BillLine]) -> dict:
             unmatched.append({"order_no": ln.order_no, "product": (ln.product or "")[:30],
                               "reason": "系统无对应工厂单"})
             continue
+        # 当订单1在系统中存在时，工厂表的订单2/追加订单号只作为关联凭证：
+        # 该平台单仍保留，但单独工厂费用为 0，不再进入待付、缺账单或异常统计。
+        if primary_fo is not None:
+            for extra_no in ln.extra_nos:
+                extra_fo = fo_by_no.get(extra_no)
+                if extra_fo is None or extra_fo.id == primary_fo.id:
+                    continue
+                if (
+                    (extra_fo.factory_cost_type or "normal") != "same_order_topup"
+                    or extra_fo.related_primary_order_no != ln.order_no
+                    or Decimal(str(extra_fo.factory_bill_amount or 0)) != Decimal("0")
+                ):
+                    topup_linked += 1
+                extra_fo.factory_cost_type = "same_order_topup"
+                extra_fo.related_primary_order_no = ln.order_no
+                extra_fo.factory_bill_amount = Decimal("0")
         if fo.factory_bill_amount is not None and Decimal(str(fo.factory_bill_amount)) == ln.price:
             unchanged += 1
             continue
         fo.factory_bill_amount = ln.price
         updated += 1
-    return {"updated": updated, "unchanged": unchanged,
+    return {"updated": updated, "unchanged": unchanged, "topup_linked": topup_linked,
             "non_numeric": non_numeric, "unmatched": unmatched}
 
 
@@ -217,8 +238,8 @@ def import_bill(db: Session, file_bytes: bytes, *, sheet_name: Optional[str] = N
         "unmatched": res["unmatched"][:50],
         "dry_run": dry_run,
     })
-    _log.info("import_bill: 行=%d 更新=%d 不变=%d 非数字=%d 未匹配=%d dry=%s",
-              len(lines), res["updated"], res["unchanged"], res["non_numeric"],
+    _log.info("import_bill: 行=%d 更新=%d 不变=%d 关联补差=%d 非数字=%d 未匹配=%d dry=%s",
+              len(lines), res["updated"], res["unchanged"], res["topup_linked"], res["non_numeric"],
               res["unmatched_count"], dry_run)
     return res
 

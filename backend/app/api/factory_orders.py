@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -26,6 +26,11 @@ from app.services import factory_settlement_service
 
 router = APIRouter(prefix="/api/factory-orders", tags=["factory-orders"])
 _CENTS = Decimal("0.01")
+_NO_FACTORY_COST_TYPE = "same_order_topup"
+
+
+def _has_no_factory_cost(fo: FactoryOrder) -> bool:
+    return (fo.factory_cost_type or "normal") == _NO_FACTORY_COST_TYPE
 
 
 def _expected(fo: FactoryOrder) -> Optional[Decimal]:
@@ -39,6 +44,8 @@ def _expected(fo: FactoryOrder) -> Optional[Decimal]:
 
 def _unpaid_reason(fo: FactoryOrder, exp: Optional[Decimal], act: Optional[Decimal]) -> Optional[str]:
     """按当前可核验字段生成待付初判；仅作排查线索，不改业务数据。"""
+    if _has_no_factory_cost(fo):
+        return None
     if fo.payment_status == "paid":
         return None
     if act is None and exp is None:
@@ -55,7 +62,8 @@ def _unpaid_reason(fo: FactoryOrder, exp: Optional[Decimal], act: Optional[Decim
 def _row(fo: FactoryOrder) -> dict:
     exp = _expected(fo)
     act = Decimal(str(fo.factory_bill_amount)).quantize(_CENTS) if fo.factory_bill_amount is not None else None
-    diff = (exp - act).quantize(_CENTS) if (exp is not None and act is not None) else None
+    no_factory_cost = _has_no_factory_cost(fo)
+    diff = None if no_factory_cost else ((exp - act).quantize(_CENTS) if (exp is not None and act is not None) else None)
     return {
         "id": fo.id,
         "factory_order_no": fo.factory_order_no,
@@ -71,15 +79,28 @@ def _row(fo: FactoryOrder) -> dict:
         "payment_status": fo.payment_status,
         "payment_date": fo.payment_date.isoformat() if fo.payment_date else None,
         "alipay_flow_no": fo.alipay_flow_no,
-        "reconciled": act is not None,                                # 录了工厂实际即视为已核对
+        "reconciled": no_factory_cost or act is not None,             # 免计费分类本身即完成核对
         "remark": fo.remark,
         "unpaid_reason": _unpaid_reason(fo, exp, act),
         "unpaid_reason_note": fo.unpaid_reason_note,
+        "factory_cost_type": fo.factory_cost_type or "normal",
+        "related_primary_order_no": fo.related_primary_order_no,
+        "no_factory_cost": no_factory_cost,
     }
 
 
 def _payable_amount(row: dict) -> float:
+    if row.get("no_factory_cost"):
+        return 0
     return row["factory_bill_amount"] if row["factory_bill_amount"] is not None else (row["expected_amount"] or 0)
+
+
+def _effective_expected_amount(row: dict) -> float:
+    return 0 if row.get("no_factory_cost") else (row["expected_amount"] or 0)
+
+
+def _effective_actual_amount(row: dict) -> float:
+    return 0 if row.get("no_factory_cost") else (row["factory_bill_amount"] or 0)
 
 
 def _monthly_summary(rows: list[dict]) -> list[dict]:
@@ -91,13 +112,15 @@ def _monthly_summary(rows: list[dict]) -> list[dict]:
 
     result: list[dict] = []
     for month, items in groups.items():
-        paid = [row for row in items if row["payment_status"] == "paid"]
-        unpaid = [row for row in items if row["payment_status"] != "paid"]
+        chargeable = [row for row in items if not row.get("no_factory_cost")]
+        paid = [row for row in chargeable if row["payment_status"] == "paid"]
+        unpaid = [row for row in chargeable if row["payment_status"] != "paid"]
         result.append({
             "month": month,
             "count": len(items),
-            "expected_sum": round(sum((row["expected_amount"] or 0) for row in items), 2),
-            "actual_sum": round(sum((row["factory_bill_amount"] or 0) for row in items), 2),
+            "no_factory_cost_count": len(items) - len(chargeable),
+            "expected_sum": round(sum(_effective_expected_amount(row) for row in items), 2),
+            "actual_sum": round(sum(_effective_actual_amount(row) for row in items), 2),
             "paid_count": len(paid),
             "paid_sum": round(sum(_payable_amount(row) for row in paid), 2),
             "unpaid_count": len(unpaid),
@@ -137,19 +160,23 @@ def list_factory_orders(
     all_rows = [_row(fo) for fo in db.execute(stmt).scalars().all()]
     rows = all_rows
     if payment_status:
-        rows = [r for r in rows if r["payment_status"] == payment_status]
+        rows = [
+            r for r in rows
+            if not r["no_factory_cost"] and r["payment_status"] == payment_status
+        ]
     if month:
         rows = [r for r in rows if (r["order_date"] or "").startswith(month)]
     if only_unreconciled:
         rows = [r for r in rows if not r["reconciled"]]
     if only_diff:
         rows = [r for r in rows if r["diff"] is not None and abs(r["diff"]) >= 0.01]
-    exp_sum = sum((r["expected_amount"] or 0) for r in rows)
-    act_sum = sum((r["factory_bill_amount"] or 0) for r in rows)
+    exp_sum = sum(_effective_expected_amount(r) for r in rows)
+    act_sum = sum(_effective_actual_amount(r) for r in rows)
     rec = sum(1 for r in rows if r["reconciled"])
     # 支付维度: 已付金额取工厂实际(账单), 无账单则退回推算(应付); 答用户"不然不知道"
-    paid_rows = [r for r in rows if r["payment_status"] == "paid"]
-    unpaid_rows = [r for r in rows if r["payment_status"] != "paid"]
+    chargeable_rows = [r for r in rows if not r["no_factory_cost"]]
+    paid_rows = [r for r in chargeable_rows if r["payment_status"] == "paid"]
+    unpaid_rows = [r for r in chargeable_rows if r["payment_status"] != "paid"]
     return {
         "rows": rows,
         "summary": {
@@ -161,6 +188,7 @@ def list_factory_orders(
             "reconciled_pct": round(rec / len(rows) * 100, 1) if rows else 0,
             "paid_count": len(paid_rows),
             "unpaid_count": len(unpaid_rows),
+            "no_factory_cost_count": len(rows) - len(chargeable_rows),
             "paid_sum": round(sum(_payable_amount(r) for r in paid_rows), 2),
             "unpaid_sum": round(sum(_payable_amount(r) for r in unpaid_rows), 2),
         },
@@ -210,6 +238,8 @@ class ReconcileIn(BaseModel):
     alipay_flow_no: Optional[str] = None
     remark: Optional[str] = None
     unpaid_reason_note: Optional[str] = None
+    factory_cost_type: Optional[Literal["normal", "same_order_topup"]] = None
+    related_primary_order_no: Optional[str] = None
 
 
 @router.post("/{factory_order_no}/reconcile")
@@ -225,8 +255,21 @@ def reconcile_factory_order(
     ).scalar_one_or_none()
     if fo is None:
         raise HTTPException(404, "工厂单不存在")
-    if body.factory_bill_amount is not None:
-        fo.factory_bill_amount = body.factory_bill_amount
+    target_cost_type = body.factory_cost_type or fo.factory_cost_type or "normal"
+    if target_cost_type == _NO_FACTORY_COST_TYPE:
+        primary_order_no = (body.related_primary_order_no or fo.related_primary_order_no or "").strip()
+        if not primary_order_no:
+            raise HTTPException(400, "同订单补差价必须填写关联订单1")
+        if primary_order_no == (fo.platform_order_no or "").strip():
+            raise HTTPException(400, "关联订单1不能与当前补差订单相同")
+        fo.factory_cost_type = _NO_FACTORY_COST_TYPE
+        fo.related_primary_order_no = primary_order_no
+        fo.factory_bill_amount = Decimal("0")
+    else:
+        fo.factory_cost_type = "normal"
+        fo.related_primary_order_no = None
+        if body.factory_bill_amount is not None:
+            fo.factory_bill_amount = body.factory_bill_amount
     if body.payment_status is not None:
         fo.payment_status = body.payment_status
     if body.payment_date is not None:
