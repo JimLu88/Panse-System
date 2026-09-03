@@ -648,8 +648,6 @@ def execute_plan7_final_closeout_v4(db: Session, payload: dict) -> dict:
         _finish_invocation(
             db, invocation.id, state="blocked_prewrite", result=failure)
         return failure
-    bundle.consumed_at = datetime.now(timezone.utc)
-    bundle.consumed_attempt_id = attempt.id
     plan.status = "resume_executing"
     db.commit()
     context = {
@@ -669,6 +667,11 @@ def execute_plan7_final_closeout_v4(db: Session, payload: dict) -> dict:
             prepared_bundle_context=context)
     except Exception as exc:  # noqa: BLE001 - claimed outcome must fail closed
         db.rollback()
+        consumed_bundle = db.get(CampaignPreparationBundle, bundle.id)
+        if consumed_bundle is not None:
+            consumed_bundle.consumed_at = datetime.now(timezone.utc)
+            consumed_bundle.consumed_attempt_id = attempt.id
+            db.commit()
         plan = db.get(CampaignPlan, PLAN_ID)
         if plan is not None:
             plan.status = "alarmed"
@@ -692,6 +695,11 @@ def execute_plan7_final_closeout_v4(db: Session, payload: dict) -> dict:
         _finish_invocation(
             db, invocation.id, state="unknown_no_retry", result=failure)
         return failure
+    consumed_bundle = db.get(CampaignPreparationBundle, bundle.id)
+    if consumed_bundle is not None:
+        consumed_bundle.consumed_at = datetime.now(timezone.utc)
+        consumed_bundle.consumed_attempt_id = attempt.id
+        db.commit()
     if not result.get("ok"):
         failure = {
             "ok": False,

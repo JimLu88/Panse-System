@@ -1,5 +1,32 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-7 V4 pre-write residue recovery (V5)
+
+- The sole V4 invocation (`a531725a704ce1a910ddc008`) passed the exact
+  14-signup-row / 10-discount-row identity checks but stopped before platform
+  write because V4 consumed bundle `d7c563f9a793233e1ceab7b4` immediately
+  before its own push-context validator required that bundle to be unconsumed.
+  Signup attempt `c7df358081734428cbf05cea` remains `prepared`, with
+  `write_claimed=false` and no observed platform write; plan 7 was left in
+  `resume_executing`.
+- V4 now consumes its bundle only after the guarded push returns (and also on
+  its fail-closed exception path), preventing this ordering defect in future
+  code paths. V1--V4 remain non-replayable.
+- The new V5 route and CLI accept only the exact plan, V4 invocation, prepared
+  attempt, consumed bundle, source/manifest hashes, request id and archived
+  receipt hash above. V5 rechecks that no write was claimed, releases the
+  bundle only inside the same guarded call, delegates to the unchanged V4
+  price/SKU/official-readback gates, and consumes it again before returning.
+  It cannot touch plan 8, alter prices, rotate SKUs, or withdraw/pause items;
+  any drift stops before platform write and V5 itself is one-shot.
+- Formal operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_execute_plan7_final_closeout_v5_nas.ps1`.
+  Maintenance does not execute this command; task 03 owns the sole business
+  invocation after production version and script-fingerprint verification.
+- Verification: the focused V4/V5/auth set passed 34 tests; the complete
+  campaign-named backend suite exited successfully with two intentional skips.
+  Python compilation and scoped diff checks passed. No migration is required.
+
 ## 2026-09-03 活动报名统一准备包与提交前流水线已正式上线
 
 - ERP GitHub 主干代码提交和生产版本均为 `e1dbb6cc78a7a3917eee66433e77b4881f904901`。

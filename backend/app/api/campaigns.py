@@ -155,6 +155,24 @@ class CampaignPlan7FinalCloseoutV4In(BaseModel):
     expected_extra_sku_id: str = Field(pattern=r"^[0-9]+$")
 
 
+class CampaignPlan7FinalCloseoutV5In(BaseModel):
+    """Exact V4 pre-write residue identity; no arbitrary repair input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_plan_status: str
+    failed_v4_invocation_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    prepared_attempt_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    prepared_bundle_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_bundle_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_bundle_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    failed_v4_request_id: str = Field(pattern=r"^[0-9a-f]{12}$")
+    failed_v4_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    recovery_id: str = Field(min_length=1, max_length=80)
+
+
 class CampaignPlan8ExecuteIn(BaseModel):
     """Exact CAS input for the approved September Super88 execution."""
 
@@ -990,6 +1008,24 @@ def execute_super_reduce_plan7_final_closeout_v4(
         } else 409
         if result.get("error") == "final_closeout_v4_request_not_allowed":
             code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/execute-super-reduce-plan7-final-closeout-v5")
+def execute_super_reduce_plan7_final_closeout_v5(
+        body: CampaignPlan7FinalCloseoutV5In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Recover only the exact V4 pre-write bundle-consumption residue."""
+    from app.services import campaign_plan7_final_closeout_v5_service as service
+
+    payload = body.model_dump()
+    payload["workflow_key"] = _validate_workflow_key(body.workflow_key)
+    result = service.execute_plan7_final_closeout_v5(db, payload)
+    if not result.get("ok"):
+        code = 422 if result.get("error") == (
+            "final_closeout_v5_request_not_allowed") else 409
         raise HTTPException(code, detail=result)
     return result
 
