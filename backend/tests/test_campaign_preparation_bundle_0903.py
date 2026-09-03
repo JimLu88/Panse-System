@@ -250,6 +250,77 @@ def test_global_gate_blocks_all_and_claimed_unknown_attempt_stays_fail_closed(
     assert result["execution_boundary"]["automatic_retry"] is False
 
 
+def test_completed_recovery_chain_resolves_only_explicit_predecessors(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    _install_common(monkeypatch)
+    rows = [
+        CampaignExecutionAttempt(
+            id="failed-root", plan_id=plan.id, workflow_key=plan.workflow_key,
+            operation="first", scope_sha256="1" * 64, state="failed",
+            write_claimed=True, automatic_retry_allowed=False,
+        ),
+        CampaignExecutionAttempt(
+            id="unknown-middle", plan_id=plan.id, workflow_key=plan.workflow_key,
+            operation="recovery", scope_sha256="2" * 64, state="unknown",
+            write_claimed=True, platform_write_observed=True,
+            automatic_retry_allowed=False,
+            result_summary={"failed_attempt_id": "failed-root"},
+        ),
+        CampaignExecutionAttempt(
+            id="completed-final", plan_id=plan.id, workflow_key=plan.workflow_key,
+            operation="recovery_v2", scope_sha256="3" * 64,
+            state="completed", write_claimed=True,
+            platform_write_observed=True, automatic_retry_allowed=False,
+            result_summary={
+                "request": {"expected_failed_attempt_id": "unknown-middle"}},
+        ),
+        CampaignExecutionAttempt(
+            id="unresolved-unknown", plan_id=plan.id,
+            workflow_key=plan.workflow_key, operation="other",
+            scope_sha256="4" * 64, state="unknown", write_claimed=True,
+            automatic_retry_allowed=False,
+        ),
+    ]
+    db_session.add_all(rows)
+    db_session.commit()
+
+    result = service.compile_bundle(
+        db_session, workflow_key=plan.workflow_key, expected_plan_id=plan.id)
+
+    blockers = result["summary"]["global_blockers"]
+    claim_blocker = next(row for row in blockers if row["code"] == (
+        "existing_claimed_attempt_requires_readback_or_scoped_recovery"))
+    assert [row["attempt_id"] for row in claim_blocker["attempts"]] == [
+        "unresolved-unknown"]
+    guards = {row["attempt_id"]: row
+              for row in result["summary"]["attempt_guards"]}
+    assert guards["failed-root"]["resolved_by_completed_attempt_id"] == (
+        "completed-final")
+    assert guards["unknown-middle"]["resolved_by_completed_attempt_id"] == (
+        "completed-final")
+    assert guards["unresolved-unknown"][
+        "resolved_by_completed_attempt_id"] is None
+
+
+def test_exact_item_scope_excludes_every_other_item_from_bundle(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    _install_common(monkeypatch)
+
+    result = service.compile_bundle(
+        db_session, workflow_key=plan.workflow_key, expected_plan_id=plan.id,
+        exact_item_scope={"793202812082"})
+
+    assert result["ready_for_final_submission"] is True
+    assert {row["taobao_item_id"] for row in result["signup_rows"]} == {
+        "793202812082"}
+    assert {row["taobao_item_id"] for row in result["item_decisions"]} == {
+        "793202812082"}
+    assert result["summary"]["exact_item_scope"] == ["793202812082"]
+    assert result["summary"]["exact_item_scope_sha256"]
+
+
 def test_latest_ready_bundle_expires_without_becoming_executable(
         db_session, monkeypatch):
     plan = _plan(db_session)

@@ -27,7 +27,8 @@ def _read_payload() -> bytes:
         raise ValueError(f"最终准备包 JSON 无效: {exc}") from exc
     if not isinstance(body, dict):
         raise ValueError("最终准备包输入必须是 JSON 对象")
-    allowed = {"workflow_key", "plan_id", "expected_status", "mode"}
+    allowed = {
+        "workflow_key", "plan_id", "expected_status", "exact_item_scope", "mode"}
     extra = sorted(set(body) - allowed)
     if extra:
         raise ValueError(f"最终准备包输入含不允许字段: {extra}")
@@ -46,6 +47,17 @@ def _read_payload() -> bytes:
     body["mode"] = mode
     if body.get("expected_status") is None:
         body.pop("expected_status", None)
+    scope = body.get("exact_item_scope") or []
+    if not isinstance(scope, list):
+        raise ValueError("exact_item_scope 必须是商品ID数组")
+    normalized_scope = sorted({str(item or "").strip() for item in scope})
+    if any(not item.isdigit() or not 8 <= len(item) <= 20
+           for item in normalized_scope):
+        raise ValueError("exact_item_scope 只允许8至20位数字商品ID")
+    if normalized_scope:
+        body["exact_item_scope"] = normalized_scope
+    else:
+        body.pop("exact_item_scope", None)
     return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode(
         "utf-8")
 

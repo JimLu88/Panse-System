@@ -8,6 +8,7 @@ param(
     [int]$PlanId,
     [ValidateSet('compile', 'refresh_and_compile', 'read_latest')]
     [string]$Mode = 'compile',
+    [string[]]$ExactItemScope = @(),
     [string]$ExpectedStatus,
     [string]$SshHost = '15068803006@DS923plus',
     [int]$SshPort = 2222,
@@ -28,6 +29,15 @@ $payload = [ordered]@{
 }
 if ($PSBoundParameters.ContainsKey('ExpectedStatus')) {
     $payload.expected_status = $ExpectedStatus
+}
+if ($ExactItemScope.Count -gt 0) {
+    $invalidItemIds = @($ExactItemScope | Where-Object {
+        [string]$_ -notmatch '^\d{8,20}$'
+    })
+    if ($invalidItemIds.Count -gt 0) {
+        throw "ExactItemScope 只允许8至20位数字商品ID: $($invalidItemIds -join ',')"
+    }
+    $payload.exact_item_scope = @($ExactItemScope | Sort-Object -Unique)
 }
 $raw = $payload | ConvertTo-Json -Compress
 $remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_prepare_final_bundle'

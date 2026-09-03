@@ -87,6 +87,7 @@ class CampaignPreparationBundleIn(BaseModel):
     workflow_key: str
     plan_id: int = Field(ge=1)
     expected_status: Optional[str] = None
+    exact_item_scope: list[str] = Field(default_factory=list)
     mode: str = Field(pattern=r"^(compile|refresh_and_compile|read_latest)$")
 
 
@@ -842,6 +843,7 @@ def prepare_final_campaign_bundle(
             expected_plan_id=body.plan_id,
             expected_status=body.expected_status,
             refresh_evidence=body.mode == "refresh_and_compile",
+            exact_item_scope=set(body.exact_item_scope),
             prepared_by=principal.username,
         )
     if not result.get("ok"):

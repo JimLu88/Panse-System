@@ -34,7 +34,12 @@ from app.services import (
 READY_STATE = "ready_for_final_submission"
 BLOCKED_STATE = "blocked_before_submission"
 MAX_BUNDLE_LIFETIME_HOURS = 6
-COMPILER_SCHEMA_VERSION = "2026-09-03.2"
+COMPILER_SCHEMA_VERSION = "2026-09-03.3"
+_ATTEMPT_RECOVERY_LINK_KEYS = {
+    "failed_attempt_id",
+    "expected_failed_attempt_id",
+    "recovered_from_attempt_id",
+}
 
 
 def _jsonable(value):
@@ -134,19 +139,62 @@ def _latest_evidence(db: Session, plan: CampaignPlan) -> list[dict]:
     } for row in rows]
 
 
+def _attempt_recovery_links(value) -> set[str]:
+    """Collect only explicit predecessor-attempt references from receipts."""
+    links: set[str] = set()
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key in _ATTEMPT_RECOVERY_LINK_KEYS:
+                attempt_id = str(nested or "").strip()
+                if attempt_id:
+                    links.add(attempt_id)
+            else:
+                links.update(_attempt_recovery_links(nested))
+    elif isinstance(value, (list, tuple)):
+        for nested in value:
+            links.update(_attempt_recovery_links(nested))
+    return links
+
+
 def _attempt_guards(db: Session, plan: CampaignPlan) -> list[dict]:
     rows = db.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.plan_id == plan.id,
         CampaignExecutionAttempt.workflow_key == plan.workflow_key,
     ).order_by(CampaignExecutionAttempt.created_at)).scalars().all()
+    by_id = {str(row.id): row for row in rows}
+    predecessors = {
+        str(row.id): {
+            attempt_id for attempt_id in _attempt_recovery_links(
+                row.result_summary or {})
+            if attempt_id in by_id and attempt_id != str(row.id)
+        }
+        for row in rows
+    }
+    resolved_by: dict[str, str] = {}
+    for root in rows:
+        if str(root.state or "") != "completed":
+            continue
+        root_id = str(root.id)
+        stack = list(predecessors.get(root_id) or set())
+        visited: set[str] = set()
+        while stack:
+            attempt_id = stack.pop()
+            if attempt_id in visited:
+                continue
+            visited.add(attempt_id)
+            resolved_by.setdefault(attempt_id, root_id)
+            stack.extend(predecessors.get(attempt_id) or set())
     return [{
-        "attempt_id": row.id,
+        "attempt_id": str(row.id),
         "operation": row.operation,
         "state": row.state,
         "scope_sha256": row.scope_sha256,
         "write_claimed": bool(row.write_claimed),
         "platform_write_observed": row.platform_write_observed,
         "automatic_retry_allowed": bool(row.automatic_retry_allowed),
+        "recovery_predecessor_attempt_ids": sorted(
+            predecessors.get(str(row.id)) or set()),
+        "resolved_by_completed_attempt_id": resolved_by.get(str(row.id)),
     } for row in rows]
 
 
@@ -299,6 +347,7 @@ def compile_bundle(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_status: str | None = None,
         refresh_evidence: bool = False,
+        exact_item_scope: set[str] | None = None,
         prepared_by: str = "system:campaign-preparation-compiler") -> dict:
     """Create/reuse the immutable preparation package for one exact plan."""
     plan = db.execute(select(CampaignPlan).where(
@@ -312,6 +361,20 @@ def compile_bundle(
             "ok": False, "error": "plan_status_compare_failed",
             "expected_status": expected_status, "actual_status": plan.status,
         }
+    requested_scope = {
+        str(item_id or "").strip() for item_id in (exact_item_scope or set())
+        if str(item_id or "").strip()
+    }
+    invalid_scope = sorted(
+        item_id for item_id in requested_scope
+        if not item_id.isdigit() or not 8 <= len(item_id) <= 20
+    )
+    if invalid_scope:
+        return {
+            "ok": False,
+            "error": "invalid_exact_item_scope",
+            "invalid_item_ids": invalid_scope,
+        }
     if refresh_evidence:
         refreshed = campaign_workflow_service.refresh_evidence_and_prepare(
             db, workflow_key=workflow_key, expected_plan_id=expected_plan_id)
@@ -323,7 +386,17 @@ def compile_bundle(
     inventory, inventory_by_sku = _inventory_snapshot(db, plan)
     signup_rows, signup_stats = campaign_service.build_signup_rows(db, plan)
     discount_rows, discount_stats = campaign_service.build_discount_rows(db, plan)
-    checks = campaign_service.preflight(db, plan)
+    if requested_scope:
+        signup_rows = [
+            row for row in signup_rows
+            if str(row.get("taobao_item_id") or "") in requested_scope
+        ]
+        discount_rows = [
+            row for row in discount_rows
+            if str(row.get("taobao_item_id") or "") in requested_scope
+        ]
+    checks = campaign_service.preflight(
+        db, plan, exact_item_scope=requested_scope or None)
     evidence = _latest_evidence(db, plan)
     attempts = _attempt_guards(db, plan)
 
@@ -333,11 +406,18 @@ def compile_bundle(
     for item_id, rows in discount_reasons.items():
         for row in rows:
             _add_reason(reasons, item_id, row)
+    if requested_scope:
+        reasons = defaultdict(
+            list,
+            {item_id: rows for item_id, rows in reasons.items()
+             if item_id in requested_scope},
+        )
+        excluded_items &= requested_scope
     generated_items = {
         str(row.get("taobao_item_id") or "") for row in signup_rows
         if str(row.get("taobao_item_id") or "")
     }
-    all_items = {
+    all_items = requested_scope or {
         str(row["taobao_item_id"]) for row in inventory
         if str(row.get("taobao_item_id") or "")
     }
@@ -359,6 +439,7 @@ def compile_bundle(
     claimed_attempts = [
         row for row in attempts
         if row["write_claimed"] and row["state"] != "completed"
+        and not row.get("resolved_by_completed_attempt_id")
     ]
     if claimed_attempts:
         global_blockers.append({
@@ -438,6 +519,7 @@ def compile_bundle(
         campaign_policy_service.floor_evidence_max_age_hours())
     source_payload = {
         "compiler_schema_version": COMPILER_SCHEMA_VERSION,
+        "exact_item_scope": sorted(requested_scope),
         "identity": identity,
         "plan_status": plan.status,
         "policy_sha256": policy.get("_sha256"),
@@ -476,6 +558,10 @@ def compile_bundle(
         identity=identity,
         summary={
             "compiler_schema_version": COMPILER_SCHEMA_VERSION,
+            "exact_item_scope": sorted(requested_scope),
+            "exact_item_scope_sha256": (
+                _canonical_sha256(sorted(requested_scope))
+                if requested_scope else None),
             "plan_status": plan.status,
             "total_item_count": len(item_decisions),
             "mapped_item_count": len(all_items),
