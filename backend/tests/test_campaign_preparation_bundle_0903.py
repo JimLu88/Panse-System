@@ -136,6 +136,8 @@ def test_ready_bundle_is_immutable_idempotent_and_never_claims_write(db_session,
     assert second["bundle_id"] == first["bundle_id"]
     assert second["reused"] is True
     assert first["summary"]["prior_no_sales_advisory_count"] == 1
+    assert first["summary"]["compiler_schema_version"] == (
+        service.COMPILER_SCHEMA_VERSION)
     assert {row["taobao_item_id"] for row in first["signup_rows"]} == {
         "793202812082", "805268708396"}
     assert first["execution_boundary"] == {

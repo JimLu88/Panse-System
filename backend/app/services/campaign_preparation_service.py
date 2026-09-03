@@ -34,6 +34,7 @@ from app.services import (
 READY_STATE = "ready_for_final_submission"
 BLOCKED_STATE = "blocked_before_submission"
 MAX_BUNDLE_LIFETIME_HOURS = 6
+COMPILER_SCHEMA_VERSION = "2026-09-03.2"
 
 
 def _jsonable(value):
@@ -436,6 +437,7 @@ def compile_bundle(
         MAX_BUNDLE_LIFETIME_HOURS,
         campaign_policy_service.floor_evidence_max_age_hours())
     source_payload = {
+        "compiler_schema_version": COMPILER_SCHEMA_VERSION,
         "identity": identity,
         "plan_status": plan.status,
         "policy_sha256": policy.get("_sha256"),
@@ -473,6 +475,7 @@ def compile_bundle(
         manifest_sha256=manifest_sha,
         identity=identity,
         summary={
+            "compiler_schema_version": COMPILER_SCHEMA_VERSION,
             "plan_status": plan.status,
             "total_item_count": len(item_decisions),
             "mapped_item_count": len(all_items),
