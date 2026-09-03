@@ -63,14 +63,16 @@ EXPECTED_COMMIT_CHECKPOINTS = [
 EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V8_RESUME_V7_ZERO_WRITE"
 READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V8_NO_PLATFORM_WRITE"
 PRECLAIM_RESUME_CONFIRMATION = (
-    "RESUME_ONCE_PLAN8_V8_AFTER_EDITOR_LOCATOR_FIX_V2"
+    "RESUME_ONCE_PLAN8_V8_AFTER_MANIFEST_PHASE_FIX_V3"
 )
 PRECLAIM_ATTEMPT_ID = "edaf6b609dad46fbab90c7e8"
 PRECLAIM_SCOPE_SHA256 = (
-    "a8092bde3caeec5ab166cea4cf49aff41308f4bb4aa81c4787cb176d9d6fe2da"
+    "08170d64d354c1e50f7f87270de118874b6e9db2513aae46cec94e9f5db8eb3a"
 )
 PRECLAIM_REQUEST_ID = "plan8-final-v8-67b588e1b5278ff4"
 PRECLAIM_WEB_AGENT_JOB_ID = "job2"
+PRECLAIM_LAST_STEP = "plan8_final_v8_commit"
+PRECLAIM_ERROR_CODE = "ValueError: plan8_v6_manifest_fields_invalid"
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -305,8 +307,8 @@ def _validate_preclaim_resume_attempt(
         and attempt.platform_write_observed is None
         and attempt.automatic_retry_allowed is False
         and attempt.request_id == PRECLAIM_REQUEST_ID
-        and attempt.last_step == "readback_not_complete"
-        and attempt.error_code == "post_submit_readback_not_complete"
+        and attempt.last_step == PRECLAIM_LAST_STEP
+        and attempt.error_code == PRECLAIM_ERROR_CODE
         and attempt.web_agent_job_id == PRECLAIM_WEB_AGENT_JOB_ID
         and isinstance(manifest, dict)
         and v6._hash(manifest) == PRECLAIM_SCOPE_SHA256
@@ -351,7 +353,8 @@ def _commit_and_readback(
                      or committed.get("step") or "plan8_final_v8_commit"),
             error_code=str(committed.get("error") or "commit_failed"),
             job_id=str(committed.get("web_agent_job_id") or "") or None,
-            result_summary={"manifest": manifest,
+            result_summary={**dict(attempt.result_summary or {}),
+                            "manifest": manifest,
                             "inspection": inspection_detail,
                             "commit": commit_detail})
         return _fail("plan8_final_v8_commit_failed_no_retry",
@@ -404,7 +407,7 @@ def recover_plan8_final_v8(
     confirmations = {
         "execute": EXECUTE_CONFIRMATION,
         "readback": READBACK_CONFIRMATION,
-        "resume_preclaim_v2": PRECLAIM_RESUME_CONFIRMATION,
+        "resume_preclaim_v3": PRECLAIM_RESUME_CONFIRMATION,
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -431,7 +434,7 @@ def recover_plan8_final_v8(
         if not existing.write_claimed:
             return _fail("plan8_final_v8_readback_attempt_not_found")
         return _readback_existing(db, plan, existing)
-    is_preclaim_resume = mode == "resume_preclaim_v2"
+    is_preclaim_resume = mode == "resume_preclaim_v3"
     if is_preclaim_resume:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_preclaim_attempt_ambiguous",
@@ -542,7 +545,7 @@ def recover_plan8_final_v8(
         attempt.write_claimed_at = datetime.now(timezone.utc)
         attempt.platform_write_observed = None
         attempt.automatic_retry_allowed = False
-        attempt.last_step = "platform_write_claim_preclaim_resume"
+        attempt.last_step = "platform_write_claim_preclaim_resume_v3"
         attempt.error_code = None
         attempt.web_agent_job_id = None
         attempt.result_summary = {
@@ -553,7 +556,9 @@ def recover_plan8_final_v8(
                 "scope_sha256": PRECLAIM_SCOPE_SHA256,
                 "request_id": PRECLAIM_REQUEST_ID,
                 "web_agent_job_id": PRECLAIM_WEB_AGENT_JOB_ID,
-                "prior_last_readback": prior.get("last_readback"),
+                "prior_last_step": PRECLAIM_LAST_STEP,
+                "prior_error_code": PRECLAIM_ERROR_CODE,
+                "prior_commit": prior.get("commit"),
             },
         }
     else:

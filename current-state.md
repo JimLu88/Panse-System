@@ -1,6 +1,19 @@
 # Current state — logistics bill product analytics
 
-## 2026-09-04 plan-8 V8 verified pre-claim continuation
+## 2026-09-04 plan-8 V8 verified pre-claim continuation V3
+
+- V2 passed the repaired exact editor binding, then Web-Agent stopped before
+  creating its durable V8 claim because the enriched commit manifest carried
+  `inspection_baseline` into V8's final zero-write inspect adapter. V6 correctly
+  rejected that phase-invalid field with
+  `ValueError: plan8_v6_manifest_fields_invalid`; no platform write occurred.
+- V3 removes `inspection_baseline` only from that derived inspect manifest. It
+  does not alter the original bound commit manifest or any activity, price,
+  SKU, identity, policy, claim, readback or one-shot gate. The formal V3 command
+  is `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_manifest_fix_v3_nas.ps1`.
+  V1/V2 commands are retired and must not be rerun.
+
+## Superseded V1/V2 history
 
 - The first pre-claim continuation inspection (`request_id=8ec5e20be478`)
   stopped before any claim or platform write because QianNiu exposed nested or

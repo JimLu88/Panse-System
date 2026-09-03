@@ -181,8 +181,8 @@ def _seed_v8_preclaim_failure(db, monkeypatch):
         scope_sha256=old_scope, state="unknown_no_retry", write_claimed=True,
         platform_write_observed=None, automatic_retry_allowed=False,
         request_id=recovery.PRECLAIM_REQUEST_ID,
-        last_step="readback_not_complete",
-        error_code="post_submit_readback_not_complete",
+        last_step=recovery.PRECLAIM_LAST_STEP,
+        error_code=recovery.PRECLAIM_ERROR_CODE,
         web_agent_job_id=recovery.PRECLAIM_WEB_AGENT_JOB_ID,
         result_summary={"manifest": old_manifest, "last_readback": {
             "error": "claim_not_found"}},
@@ -238,7 +238,7 @@ def test_v8_preclaim_resume_reuses_same_attempt_once(db_session, monkeypatch):
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_preclaim_v2",
+        mode="resume_preclaim_v3",
         confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert result["ok"] is True
@@ -256,7 +256,7 @@ def test_v8_preclaim_resume_stops_when_agent_claim_exists(
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_preclaim_v2",
+        mode="resume_preclaim_v3",
         confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert result["ok"] is False
@@ -287,11 +287,11 @@ def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
         pass
     else:
         raise AssertionError("V8 accepted the wrong execution confirmation")
-    payload["mode"] = "resume_preclaim_v2"
+    payload["mode"] = "resume_preclaim_v3"
     payload["confirmation"] = recovery.PRECLAIM_RESUME_CONFIRMATION
     monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
-    assert json.loads(cli._read_payload())["mode"] == "resume_preclaim_v2"
+    assert json.loads(cli._read_payload())["mode"] == "resume_preclaim_v3"
 
 
 def test_v8_inspection_preserves_web_agent_failure_diagnostics():
