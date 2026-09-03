@@ -113,6 +113,21 @@ class CampaignPlan7ResumeExecuteIn(BaseModel):
     expected_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7FinalCloseoutIn(BaseModel):
+    """Immutable-bundle identity for the last plan-7 safe item."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    bundle_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_item_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class CampaignPlan8ExecuteIn(BaseModel):
     """Exact CAS input for the approved September Super88 execution."""
 
@@ -883,6 +898,32 @@ def resume_super_reduce_plan7(
                 "resume_identity_not_allowed", "resume_request_not_allowed",
                 "resume_scope_not_allowed"}:
             code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
+@router.post("/execute-super-reduce-plan7-final-closeout")
+def execute_super_reduce_plan7_final_closeout(
+        body: CampaignPlan7FinalCloseoutIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Consume the reviewed plan-7 bundle and submit its one ready item once."""
+    from app.services import campaign_plan7_final_closeout_service as service
+
+    result = service.execute_plan7_final_closeout(
+        db,
+        workflow_key=_validate_workflow_key(body.workflow_key),
+        expected_plan_id=body.plan_id,
+        expected_status=body.expected_status,
+        bundle_id=body.bundle_id,
+        expected_source_sha256=body.expected_source_sha256,
+        expected_policy_sha256=body.expected_policy_sha256,
+        expected_manifest_sha256=body.expected_manifest_sha256,
+        expected_item_scope_sha256=body.expected_item_scope_sha256,
+    )
+    if not result.get("ok"):
+        code = 404 if result.get("error") in {
+            "workflow_not_found", "final_closeout_bundle_not_found"} else 409
         raise HTTPException(code, detail=result)
     return result
 

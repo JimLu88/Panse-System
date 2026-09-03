@@ -5053,6 +5053,7 @@ def push_signup(
         allow_terminal_no_sales_fallback: bool = True,
         prepared_current_activity: Optional[dict] = None,
         prepared_official_product_identity: Optional[dict] = None,
+        prepared_bundle_context: Optional[dict] = None,
 ) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     只允许活动自动化程序调用；失败记录事实并停在 alarmed，绝不自动改价或重试。"""
@@ -5069,10 +5070,13 @@ def push_signup(
         })
     allowed_source = execution_source in {
         "campaign_automation", "campaign_super_reduce_plan7_resume",
+        "campaign_super_reduce_plan7_final_closeout",
         "campaign_super88_plan8_signup_recovery",
         "campaign_super88_plan8_final_recovery_v2",
     }
     resume_source = execution_source == "campaign_super_reduce_plan7_resume"
+    plan7_final_closeout_source = (
+        execution_source == "campaign_super_reduce_plan7_final_closeout")
     plan8_recovery_source = (
         execution_source == "campaign_super88_plan8_signup_recovery")
     plan8_final_v2_source = (
@@ -5103,6 +5107,43 @@ def push_signup(
             "automatic_retry": False,
             "ai_may_adjust_or_resubmit": False,
         }
+    if plan7_final_closeout_source:
+        from app.services import campaign_plan7_final_closeout_service
+
+        expected_context = {
+            "bundle_id": campaign_plan7_final_closeout_service.BUNDLE_ID,
+            "source_sha256": campaign_plan7_final_closeout_service.SOURCE_SHA256,
+            "policy_sha256": campaign_plan7_final_closeout_service.POLICY_SHA256,
+            "manifest_sha256": campaign_plan7_final_closeout_service.MANIFEST_SHA256,
+            "item_scope_sha256": (
+                campaign_plan7_final_closeout_service.ITEM_SCOPE_SHA256),
+        }
+        if (
+            getattr(plan, "status", None) != "resume_executing"
+            or getattr(plan, "id", None) != 7
+            or getattr(plan, "workflow_key", None)
+            != campaign_plan7_final_closeout_service.WORKFLOW_KEY
+            or getattr(plan, "campaign_type", None) != "super_reduce"
+            or not reuse_fresh_plan_evidence
+            or exact_item_scope
+            != {campaign_plan7_final_closeout_service.TARGET_ITEM_ID}
+            or policy.get("_sha256")
+            != campaign_plan7_final_closeout_service.POLICY_SHA256
+            or prepared_bundle_context != expected_context
+            or not isinstance(prepared_official_product_identity, dict)
+            or not prepared_official_product_identity.get("ok")
+            or prepared_official_product_identity.get("checked_items") != 1
+            or prepared_official_product_identity.get("checked_skus")
+            != campaign_plan7_final_closeout_service.EXPECTED_SIGNUP_ROWS
+        ):
+            return {
+                "ok": False,
+                "step": "plan7_final_closeout_policy_guard",
+                "error": "计划7最终收口上下文不完整，拒绝进入平台写入",
+                "requires_user_decision": True,
+                "automatic_retry": False,
+                "ai_may_adjust_or_resubmit": False,
+            }
     if plan8_recovery_source:
         from app.services import campaign_plan8_signup_recovery_service
 
@@ -5192,7 +5233,7 @@ def push_signup(
     # preflight. Plan 7 reuses stored plan-scoped evidence; the plan-8 signup
     # recovery reuses the exact current export returned by its read-first
     # wrapper. Neither recovery launches a second pre-submit campaign export.
-    if resume_source:
+    if resume_source or plan7_final_closeout_source:
         current = {
             "ok": True,
             "rows": [],
@@ -5280,7 +5321,15 @@ def push_signup(
         # or as a reason to block the supplement.  Unknown active rows remain a
         # hard stop because they have not passed this plan's platform probe.
         preserved_active_items: list[str] = []
-        if supplement_scope:
+        if plan7_final_closeout_source:
+            # The immutable bundle contains only the new item. Existing active
+            # rows are preserved by omission; this path has no withdraw/remove
+            # capability and therefore does not treat them as upload scope.
+            preserved_active_items = sorted(active_outside_upload)
+            unexpected_active_items = []
+            stats["preserved_active_items_outside_final_closeout"] = (
+                preserved_active_items)
+        elif supplement_scope:
             preserved_active_items = sorted(active_outside_upload & qualified_scope)
             unexpected_active_items = sorted(
                 active_outside_upload - qualified_scope
@@ -5486,7 +5535,8 @@ def push_signup(
 
     official_identity = (
         prepared_official_product_identity
-        if plan8_recovery_source or plan8_final_v2_source
+        if plan7_final_closeout_source or plan8_recovery_source
+        or plan8_final_v2_source
         else _refresh_official_product_sku_identity(db, pending)
     )
     stats["official_product_sku_identity"] = official_identity
