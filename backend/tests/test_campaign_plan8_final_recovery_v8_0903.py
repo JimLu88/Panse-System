@@ -69,6 +69,23 @@ def test_web_agent_v8_preserves_terminal_job_error(monkeypatch):
     }
 
 
+def test_web_agent_v9_uses_dedicated_claim_bound_path(monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-v9"}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_a, **_k: {"result": {"ok": True}})
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v9(
+        object(), payload={"phase": "inspect"})
+    assert result["ok"] is True
+    assert captured["path"].endswith("preupload-resume-v9")
+
+
 def _seed_v7_zero_write(db):
     manifest = {"recovery_version": 7, "evidence": "zero-write"}
     scope = recovery.v6._hash(manifest)
@@ -337,6 +354,13 @@ def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
     assert json.loads(cli._read_payload())["mode"] == (
         "resume_claimed_preupload_v8")
+    payload["mode"] = "resume_claimed_preupload_v9"
+    payload["confirmation"] = (
+        recovery.CLAIMED_PREUPLOAD_DIALOG_FIX_CONFIRMATION)
+    monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
+        "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
+    assert json.loads(cli._read_payload())["mode"] == (
+        "resume_claimed_preupload_v9")
 
 
 def _seed_v8_claimed_preupload_failure(db, monkeypatch):
@@ -734,6 +758,160 @@ def test_v8_lease_expiry_resume_accepts_only_frozen_zero_write_stop(
     ok, _ = recovery._validate_claimed_preupload_after_lease_expiry_attempt(
         attempt)
     assert ok is False
+
+
+def test_v9_dialog_mismatch_resume_accepts_only_frozen_zero_write_stop(
+        db_session, monkeypatch):
+    manifest, _, old_claim_sha = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    inspection = {
+        "resume_claim_sha256": old_claim_sha,
+        "inspect_scope_sha256": "a" * 64,
+        "reservation_token_sha256": "b" * 64,
+        "lease_expires_at_epoch": 4102444800.0,
+        "web_agent_job_id": "job1",
+    }
+    commit = {
+        "platform_write": False, "reservation_consumed": True,
+        "claim_created": True, "last_checkpoint": "draft_patch_terminal",
+        "web_agent_error": "plan8_v8_unknown_outcome_no_retry",
+        "patched_record_ids": [], "published_record_ids": [],
+        "discount_pairs_written": [],
+    }
+    attempt.state = "failed_no_retry"
+    attempt.platform_write_observed = False
+    attempt.request_id = recovery.PRECLAIM_REQUEST_ID
+    attempt.last_step = "draft_patch_terminal"
+    attempt.error_code = "plan8_v8_unknown_outcome_no_retry"
+    attempt.web_agent_job_id = "job2"
+    attempt.result_summary = {
+        "manifest": manifest, "inspection": inspection, "commit": commit}
+    db_session.commit()
+    monkeypatch.setattr(
+        recovery, "V8_RESULT_SUMMARY_SHA256",
+        recovery.v6._hash(attempt.result_summary))
+    monkeypatch.setattr(
+        recovery, "V8_INSPECTION_SHA256", recovery.v6._hash(inspection))
+    monkeypatch.setattr(
+        recovery, "V8_COMMIT_SHA256", recovery.v6._hash(commit))
+
+    ok, detail = recovery._validate_claimed_preupload_after_dialog_mismatch_attempt(
+        attempt)
+    assert ok is True, detail
+    attempt.platform_write_observed = True
+    ok, _ = recovery._validate_claimed_preupload_after_dialog_mismatch_attempt(
+        attempt)
+    assert ok is False
+
+
+def test_v9_dialog_mismatch_resume_uses_new_claim_and_endpoint(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _patch_scope(db_session, monkeypatch)
+    monkeypatch.setattr(
+        recovery.campaign_policy_service, "require_policy",
+        lambda: {"_sha256": recovery.EXPECTED_POLICY_SHA256})
+    monkeypatch.setattr(
+        recovery.v7, "_target_rows",
+        lambda *_a, **_k: (_signup_rows(), None))
+    monkeypatch.setattr(
+        recovery.v7, "_discount_scope",
+        lambda *_a, **_k: (_discount_rows(), None))
+    manifest, _, old_claim_sha = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    frozen_base = {key: value for key, value in manifest.items()
+                   if key != "inspection_baseline"}
+    monkeypatch.setattr(
+        recovery, "_fixed_manifest", lambda *_a, **_k: frozen_base)
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    inspection = {
+        "resume_claim_sha256": old_claim_sha,
+        "inspect_scope_sha256": "a" * 64,
+        "reservation_token_sha256": "b" * 64,
+        "lease_expires_at_epoch": 4102444800.0,
+        "web_agent_job_id": "job1",
+    }
+    commit = {
+        "platform_write": False, "reservation_consumed": True,
+        "claim_created": True, "last_checkpoint": "draft_patch_terminal",
+        "web_agent_error": "plan8_v8_unknown_outcome_no_retry",
+        "patched_record_ids": [], "published_record_ids": [],
+        "discount_pairs_written": [],
+    }
+    attempt.state = "failed_no_retry"
+    attempt.platform_write_observed = False
+    attempt.request_id = recovery.PRECLAIM_REQUEST_ID
+    attempt.last_step = "draft_patch_terminal"
+    attempt.error_code = "plan8_v8_unknown_outcome_no_retry"
+    attempt.web_agent_job_id = "job2"
+    attempt.result_summary = {
+        "manifest": manifest, "inspection": inspection, "commit": commit}
+    db_session.commit()
+    monkeypatch.setattr(
+        recovery, "V8_RESULT_SUMMARY_SHA256",
+        recovery.v6._hash(attempt.result_summary))
+    monkeypatch.setattr(
+        recovery, "V8_INSPECTION_SHA256", recovery.v6._hash(inspection))
+    monkeypatch.setattr(
+        recovery, "V8_COMMIT_SHA256", recovery.v6._hash(commit))
+    new_claim_sha = "9" * 64
+    monkeypatch.setattr(
+        recovery, "CLAIMED_PREUPLOAD_V9_CLAIM_SHA256", new_claim_sha)
+    inspect_scope = {"bound": "v9-modal-fix"}
+
+    def fake_v9(_db, *, payload, timeout_s=2400):
+        assert payload["phase"] == "inspect"
+        return {
+            "ok": True, "platform_write": False, "claim_created": True,
+            "resume_claim_sha256": new_claim_sha,
+            "last_checkpoint": recovery.CLAIMED_PREUPLOAD_LAST_STEP,
+            "inspect_scope": inspect_scope,
+            "inspect_scope_sha256": recovery.v6._hash(inspect_scope),
+            "reservation_token": "v9-reservation-token",
+            "lease_expires_at_epoch": 4102444800.0,
+            "web_agent_job_id": "job-v9-inspect",
+        }
+
+    captured = {}
+
+    def fake_commit(_db, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(
+        web_agent_service, "recover_plan8_final_v8_preupload_resume_v9",
+        fake_v9)
+    monkeypatch.setattr(recovery, "_commit_and_readback", fake_commit)
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v9",
+        confirmation=recovery.CLAIMED_PREUPLOAD_DIALOG_FIX_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+
+    assert result["ok"] is True, result
+    assert captured["resume_claim_sha256"] == new_claim_sha
+    assert captured["use_preupload_v9_endpoint"] is True
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    assert attempt.last_step == (
+        "platform_write_claim_claimed_preupload_resume_v9")
+    assert attempt.result_summary["claimed_preupload_resume"][
+        "source_claim_sha256"] == new_claim_sha
+
+
+def test_v9_request_schema_accepts_only_exact_mode_and_confirmation():
+    body = campaigns.CampaignPlan8FinalRecoveryV8In(
+        workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v9",
+        confirmation=recovery.CLAIMED_PREUPLOAD_DIALOG_FIX_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert body.mode == "resume_claimed_preupload_v9"
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():

@@ -932,10 +932,24 @@ def recover_plan8_final_v8(
 def recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
     """Run the exact post-claim/pre-upload V8 recovery phases."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume")
+
+
+def recover_plan8_final_v8_preupload_resume_v9(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """Resume only the frozen V8 pre-file-selection modal mismatch."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v9")
+
+
+def _recover_plan8_final_v8_preupload_resume(
+        db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)
     started = _post(
-        db, "/api/campaign/plan8-final-recovery-v8-preupload-resume",
-        payload, timeout=start_timeout_s)
+        db, path, payload, timeout=start_timeout_s)
     if not started.get("ok") or not started.get("job"):
         busy = (started.get("error") == "taobao_profile_busy"
                 and started.get("step") == "preupload_resume_busy")
