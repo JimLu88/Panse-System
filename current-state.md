@@ -1,5 +1,41 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-03 活动报名统一准备包与提交前流水线已正式上线
+
+- ERP GitHub 主干代码提交和生产版本均为 `e1dbb6cc78a7a3917eee66433e77b4881f904901`。
+  正式统一发布验收通过：`/api/health`、`/api/ready` 正常，API/Web 同一提交，
+  数据库为 `0152 (head)`，API/Web/DB/backup 四个容器正常；回滚镜像为
+  `panse-system-api:rollback-20260903-134844` 和
+  `panse-system-web:rollback-20260903-135214`。
+- 新增不可变的活动最终准备包：固定 plan/workflow/活动身份，保存 ERP 日常价、活动目标价、
+  SKU 映射、只读平台证据、逐商品决定、门禁结果、策略/来源/清单哈希和有效期。准备包最长
+  有效 6 小时；编译器语义版本为 `2026-09-03.2`，规则或口径升级后不会复用旧包。
+- 机器身份 `service:campaign-preparation-bundle` 只允许调用
+  `POST /api/campaigns/prepare-final-bundle`。正式脚本为
+  `scripts/campaign_prepare_final_bundle_nas.ps1`，只支持 `compile`、
+  `refresh_and_compile` 和 `read_latest`；没有上传、提交、改价、SKU 轮换、通知或
+  自动重试能力。
+- 永久原则已写入策略与代码：真实 SKU 报名价必须逐分等于 ERP 日常价，任何差异都整品暂缓；
+  不自动轮换真实 SKU；定制/占位 SKU 只能在不可变原始日常价 20% 的永久最终价保护线以上
+  调整；历史无动销仅提示，本场失败可安静排除，下场重新纳入；单个商品缺证据/价格冲突/SKU
+  不完整只暂缓该商品，活动身份不完整或已有写入 claim 未收口才阻断全场。
+- 对架构、证据时效、无动销、价格冲突、SKU 轮换、局部隔离、幂等、平台异步、UI 漂移、
+  机器权限、并发、通知降噪、迁移/回滚做了 13 轮反方检查；结论与可复核门禁见
+  `docs/活动报名统一准备包与自动化流水线_20260903.md`。程序层没有遗留反方意见；
+  平台登录/验证码、平台不可用、官方规则不允许和官方没有只读证据仍是不可绕过的外部硬门。
+- 全部活动命名回归测试通过并保留 2 条原有 skip；Python 编译和 diff 检查通过。全后端的
+  31 个成本/库存/供应商/旧 Excel/重复订单历史失败已在未修改的 V6 基线复现，确认不是本次
+  引入，不把它们伪报为本次通过。
+- 03 的在途 Web-Agent `job3` 已先等待到安全终态再发布：只读发现计划 8 的 6 个草稿共
+  70 个 SKU（预期 78），新增 8 条单品立减实际为 0，返回
+  `plan8_v6_read_facts_not_exact`；`claim_created=false`，平台写入、账号动作、改价、
+  SKU 轮换、撤回/暂停/移出、通知和自动重试均为 false。
+- 已在生产只读编译计划 8 准备包 revision 3：
+  `bundle_id=1c37f48a2d82968ad402d069`，总决策商品 60 = 暂缓 58 + 明确排除 2，
+  其中有 ERP SKU 映射 58，可提交 0。状态为 `blocked_before_submission`；历史写入
+  attempt（包括 V5/V6 unknown-no-retry）未正式收口前，03 不得重报。该包没有读取平台，
+  没有创建写入 claim，也没有平台动作。
+
 ## 2026-09-02 计划8六条既有草稿原位恢复 V3（程序已准备，未执行业务）
 
 - V2 已确认错误地用候选页完整性判断已有草稿，现永久退役；V3 改为固定绑定 6 条官方
