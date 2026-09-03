@@ -17,6 +17,32 @@ from backend.tests.test_campaign_plan8_final_recovery_v6_0903 import (
 )
 
 
+def test_web_agent_v8_start_wait_covers_cold_lazy_import(monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-v8", "lease_expires_at_epoch": 123}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda _db, _job_id, timeout_s: {
+            "result": {"ok": True, "need_scan": False}
+        },
+    )
+
+    result = web_agent_service.recover_plan8_final_v8(
+        object(), payload={"phase": "inspect"}, timeout_s=2400)
+
+    assert result["ok"] is True
+    assert captured == {
+        "path": "/api/campaign/plan8-final-recovery-v8",
+        "payload": {"phase": "inspect"},
+        "timeout": 420,
+    }
+
+
 def _seed_v7_zero_write(db):
     manifest = {"recovery_version": 7, "evidence": "zero-write"}
     scope = recovery.v6._hash(manifest)

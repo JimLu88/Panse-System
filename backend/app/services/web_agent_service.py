@@ -880,8 +880,15 @@ def recover_plan8_final_v7(
 def recover_plan8_final_v8(
         db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
     """Run one phase of the one-shot plan-8 V8 continuation."""
+    # The V8 engine is intentionally imported lazily by the on-demand Agent.
+    # On a cold Windows host that first import can take several minutes before
+    # the Agent returns the job id, so the ordinary 30-second start timeout can
+    # orphan a safe inspection and strand its Taobao reservation.  Keep this
+    # start wait within the caller's existing long-running phase budget.
+    start_timeout_s = min(max(int(timeout_s), 30), 420)
     started = _post(
-        db, "/api/campaign/plan8-final-recovery-v8", payload, timeout=30)
+        db, "/api/campaign/plan8-final-recovery-v8", payload,
+        timeout=start_timeout_s)
     if not started.get("ok") or not started.get("job"):
         busy = (
             started.get("error") == "taobao_profile_busy"
