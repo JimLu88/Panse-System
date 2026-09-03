@@ -62,6 +62,15 @@ EXPECTED_COMMIT_CHECKPOINTS = [
 ]
 EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V8_RESUME_V7_ZERO_WRITE"
 READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V8_NO_PLATFORM_WRITE"
+PRECLAIM_RESUME_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_VERIFIED_PRECLAIM_FAILURE"
+)
+PRECLAIM_ATTEMPT_ID = "edaf6b609dad46fbab90c7e8"
+PRECLAIM_SCOPE_SHA256 = (
+    "a8092bde3caeec5ab166cea4cf49aff41308f4bb4aa81c4787cb176d9d6fe2da"
+)
+PRECLAIM_REQUEST_ID = "plan8-final-v8-67b588e1b5278ff4"
+PRECLAIM_WEB_AGENT_JOB_ID = "job2"
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -140,6 +149,8 @@ def validate_inspection(result: dict, manifest: dict,
         **detail, "resume_evidence": evidence,
         "web_agent_error": result.get("error"),
         "web_agent_status": result.get("status"),
+        "v8_claim_absent": result.get("v8_claim_absent"),
+        "v8_claim_sha256": result.get("v8_claim_sha256"),
     }
 
 
@@ -152,6 +163,13 @@ def validate_commit(result: dict, manifest: dict,
     return bool(base_ok and checkpoints_ok), {
         **detail, "checkpoints": result.get("checkpoints"),
         "v8_checkpoint_order_ok": checkpoints_ok,
+        "web_agent_error": result.get("error"),
+        "web_agent_error_code": result.get("error_code"),
+        "web_agent_status": result.get("status"),
+        "last_checkpoint": result.get("last_checkpoint"),
+        "claim_created": result.get("claim_created"),
+        "reservation_consumed": result.get("reservation_consumed"),
+        "web_agent_job_id": result.get("web_agent_job_id"),
     }
 
 
@@ -253,138 +271,50 @@ def _readback_existing(db: Session, plan: CampaignPlan,
             "execution_boundary": _boundary(platform_write=False)}
 
 
-def recover_plan8_final_v8(
-        db: Session, *, workflow_key: str, expected_plan_id: int,
-        expected_status: str, recovery_version: int,
-        mode: str = "execute", confirmation: str = "",
-        target_scope_sha256: str = "") -> dict:
-    expected_confirmation = (
-        EXECUTE_CONFIRMATION if mode == "execute" else READBACK_CONFIRMATION)
-    if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
-            or expected_status != EXPECTED_STATUS
-            or recovery_version != RECOVERY_VERSION
-            or mode not in {"execute", "readback"}
-            or confirmation != expected_confirmation
-            or target_scope_sha256 != EXPECTED_TARGET_SCOPE_SHA256):
-        return _fail("plan8_final_v8_request_not_allowed")
-    plan = db.execute(select(CampaignPlan).where(
-        CampaignPlan.id == PLAN_ID,
-        CampaignPlan.workflow_key == WORKFLOW_KEY,
-    ).with_for_update()).scalar_one_or_none()
-    if plan is None:
-        return _fail("workflow_not_found")
-    identity_ok, identity = v6._identity_allowed(plan)
-    if not identity_ok:
-        return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
-    attempts = _attempts(db)
-    if mode == "readback":
-        if len(attempts) != 1:
-            return _fail("plan8_final_v8_readback_attempt_ambiguous",
-                         attempt_count=len(attempts))
-        existing = attempts[0]
-        if not existing.write_claimed:
-            return _fail("plan8_final_v8_readback_attempt_not_found")
-        return _readback_existing(db, plan, existing)
-    if attempts:
-        if len(attempts) != 1:
-            return _fail("plan8_final_v8_attempt_scope_ambiguous",
-                         attempt_count=len(attempts))
-        existing = attempts[0]
-        if existing.state == "completed":
-            manifest = (existing.result_summary or {}).get("manifest")
-            if (not isinstance(manifest, dict)
-                    or v6._hash(manifest) != existing.scope_sha256):
-                return _fail("plan8_final_v8_attempt_scope_mismatch",
-                             attempt_id=existing.id)
-            return {"ok": True, "idempotent_replay": True,
-                    "attempt_id": existing.id, "workflow_key": WORKFLOW_KEY,
-                    "plan_id": PLAN_ID, "plan_status": plan.status,
-                    "result": existing.result_summary or {},
-                    "execution_boundary": _boundary(platform_write=False)}
-        return _fail("plan8_final_v8_already_claimed_no_retry",
-                     attempt_id=existing.id, attempt_state=existing.state,
-                     platform_write_observed=existing.platform_write_observed)
-    if plan.status != EXPECTED_STATUS:
-        return _fail("plan8_final_v8_status_cas_mismatch",
-                     actual_status=plan.status)
-    prerequisite_ok, prerequisite = _validate_prerequisite(db)
-    if not prerequisite_ok:
-        return _fail("plan8_final_v8_prerequisite_attempt_mismatch",
-                     attempt=prerequisite)
-    policy_sha = str(campaign_policy_service.require_policy().get("_sha256") or "")
-    if policy_sha != EXPECTED_POLICY_SHA256:
-        return _fail("plan8_final_v8_policy_changed",
-                     actual_policy_sha256=policy_sha)
-    target_rows, scope_error = v7._target_rows(db, plan, identity, policy_sha)
-    if scope_error:
-        return _fail(**scope_error)
-    discount_rows, discount_error = v7._discount_scope(db, plan)
-    if discount_error:
-        return _fail(**discount_error)
-    manifest = _fixed_manifest(target_rows, discount_rows, policy_sha)
-    inspect_scope_sha = v6._hash(manifest)
-    db.commit()
+def _validate_preclaim_resume_attempt(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    manifest = ((attempt.result_summary or {}).get("manifest")
+                if attempt is not None else None)
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+    }
+    ok = bool(
+        attempt is not None
+        and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID
+        and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == PRECLAIM_SCOPE_SHA256
+        and attempt.state == "unknown_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is None
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "readback_not_complete"
+        and attempt.error_code == "post_submit_readback_not_complete"
+        and attempt.web_agent_job_id == PRECLAIM_WEB_AGENT_JOB_ID
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == PRECLAIM_SCOPE_SHA256
+    )
+    return ok, detail
 
-    inspection = web_agent_service.recover_plan8_final_v8(
-        db, payload={"phase": "inspect", "scope_sha256": inspect_scope_sha,
-                     "manifest": manifest})
-    if inspection.get("busy") or inspection.get("pre_write_busy"):
-        return _fail("plan8_final_v8_pre_write_busy",
-                     busy=inspection, write_claim_created=False)
-    inspection_ok, inspection_detail = validate_inspection(
-        inspection, manifest, inspect_scope_sha)
-    if not inspection_ok:
-        return _fail("plan8_final_v8_inspection_blocked",
-                     inspection=inspection_detail,
-                     need_scan=bool(inspection.get("need_scan")))
-    reservation_token = str(inspection["reservation_token"])
-    manifest = v6.enrich_manifest_with_inspection(
-        manifest, inspection_detail,
-        inspect_scope_sha256=inspect_scope_sha)
-    manifest_sha = v6._hash(manifest)
 
-    plan = db.execute(select(CampaignPlan).where(
-        CampaignPlan.id == PLAN_ID,
-        CampaignPlan.workflow_key == WORKFLOW_KEY,
-    ).with_for_update()).scalar_one_or_none()
-    if plan is None or plan.status != EXPECTED_STATUS:
-        return _fail("plan8_final_v8_state_changed_after_reservation",
-                     actual_status=getattr(plan, "status", None))
-    post_identity_ok, post_identity = v6._identity_allowed(plan)
-    post_policy_sha = str(
-        campaign_policy_service.require_policy().get("_sha256") or "")
-    post_rows, post_scope_error = v7._target_rows(
-        db, plan, post_identity, post_policy_sha)
-    post_discounts, post_discount_error = v7._discount_scope(db, plan)
-    if (not post_identity_ok or post_policy_sha != policy_sha
-            or post_scope_error or post_discount_error
-            or v6._hash(_fixed_manifest(
-                post_rows, post_discounts, post_policy_sha)) != inspect_scope_sha):
-        return _fail("plan8_final_v8_erp_scope_changed_after_reservation",
-                     identity=post_identity, policy_sha256=post_policy_sha,
-                     signup_scope_error=post_scope_error,
-                     discount_scope_error=post_discount_error)
-    raced = _attempts(db)
-    if raced:
-        exact = _attempt_for_scope(db, manifest_sha)
-        return _fail("plan8_final_v8_attempt_raced_no_write",
-                     attempt_count=len(raced), exact_scope_exists=exact is not None)
-    attempt = CampaignExecutionAttempt(
-        id=secrets.token_hex(12), plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
-        operation=OPERATION, scope_sha256=manifest_sha,
-        state="write_claimed", write_claimed=True,
-        write_claimed_at=datetime.now(timezone.utc),
-        platform_write_observed=None, automatic_retry_allowed=False,
-        request_id=f"plan8-final-v8-{secrets.token_hex(8)}",
-        last_step="platform_write_claim",
-        result_summary={"manifest": manifest, "inspection": inspection_detail})
-    db.add(attempt)
-    plan.status = "resume_executing"
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        return _fail("plan8_final_v8_atomic_claim_conflict_no_write")
+def _commit_and_readback(
+        db: Session, *, plan: CampaignPlan,
+        attempt: CampaignExecutionAttempt, manifest: dict,
+        manifest_sha: str, inspect_scope_sha: str,
+        reservation_token: str, inspection_detail: dict) -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID, "operation": OPERATION,
@@ -460,3 +390,194 @@ def recover_plan8_final_v8(
             "plan_status": plan.status, "attempt_id": attempt.id,
             "scope_sha256": manifest_sha, "verification": readback_detail,
             "execution_boundary": _boundary(platform_write=True)}
+
+
+def recover_plan8_final_v8(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_status: str, recovery_version: int,
+        mode: str = "execute", confirmation: str = "",
+        target_scope_sha256: str = "") -> dict:
+    confirmations = {
+        "execute": EXECUTE_CONFIRMATION,
+        "readback": READBACK_CONFIRMATION,
+        "resume_preclaim": PRECLAIM_RESUME_CONFIRMATION,
+    }
+    if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
+            or expected_status != EXPECTED_STATUS
+            or recovery_version != RECOVERY_VERSION
+            or mode not in confirmations
+            or confirmation != confirmations.get(mode)
+            or target_scope_sha256 != EXPECTED_TARGET_SCOPE_SHA256):
+        return _fail("plan8_final_v8_request_not_allowed")
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.id == PLAN_ID,
+        CampaignPlan.workflow_key == WORKFLOW_KEY,
+    ).with_for_update()).scalar_one_or_none()
+    if plan is None:
+        return _fail("workflow_not_found")
+    identity_ok, identity = v6._identity_allowed(plan)
+    if not identity_ok:
+        return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
+    attempts = _attempts(db)
+    if mode == "readback":
+        if len(attempts) != 1:
+            return _fail("plan8_final_v8_readback_attempt_ambiguous",
+                         attempt_count=len(attempts))
+        existing = attempts[0]
+        if not existing.write_claimed:
+            return _fail("plan8_final_v8_readback_attempt_not_found")
+        return _readback_existing(db, plan, existing)
+    is_preclaim_resume = mode == "resume_preclaim"
+    if is_preclaim_resume:
+        if len(attempts) != 1:
+            return _fail("plan8_final_v8_preclaim_attempt_ambiguous",
+                         attempt_count=len(attempts))
+        resume_ok, resume_detail = _validate_preclaim_resume_attempt(attempts[0])
+        if not resume_ok:
+            return _fail("plan8_final_v8_preclaim_attempt_mismatch",
+                         attempt=resume_detail)
+    elif attempts:
+        if len(attempts) != 1:
+            return _fail("plan8_final_v8_attempt_scope_ambiguous",
+                         attempt_count=len(attempts))
+        existing = attempts[0]
+        if existing.state == "completed":
+            manifest = (existing.result_summary or {}).get("manifest")
+            if (not isinstance(manifest, dict)
+                    or v6._hash(manifest) != existing.scope_sha256):
+                return _fail("plan8_final_v8_attempt_scope_mismatch",
+                             attempt_id=existing.id)
+            return {"ok": True, "idempotent_replay": True,
+                    "attempt_id": existing.id, "workflow_key": WORKFLOW_KEY,
+                    "plan_id": PLAN_ID, "plan_status": plan.status,
+                    "result": existing.result_summary or {},
+                    "execution_boundary": _boundary(platform_write=False)}
+        return _fail("plan8_final_v8_already_claimed_no_retry",
+                     attempt_id=existing.id, attempt_state=existing.state,
+                     platform_write_observed=existing.platform_write_observed)
+    if plan.status != EXPECTED_STATUS:
+        return _fail("plan8_final_v8_status_cas_mismatch",
+                     actual_status=plan.status)
+    prerequisite_ok, prerequisite = _validate_prerequisite(db)
+    if not prerequisite_ok:
+        return _fail("plan8_final_v8_prerequisite_attempt_mismatch",
+                     attempt=prerequisite)
+    policy_sha = str(campaign_policy_service.require_policy().get("_sha256") or "")
+    if policy_sha != EXPECTED_POLICY_SHA256:
+        return _fail("plan8_final_v8_policy_changed",
+                     actual_policy_sha256=policy_sha)
+    target_rows, scope_error = v7._target_rows(db, plan, identity, policy_sha)
+    if scope_error:
+        return _fail(**scope_error)
+    discount_rows, discount_error = v7._discount_scope(db, plan)
+    if discount_error:
+        return _fail(**discount_error)
+    manifest = _fixed_manifest(target_rows, discount_rows, policy_sha)
+    inspect_scope_sha = v6._hash(manifest)
+    db.commit()
+
+    inspection = web_agent_service.recover_plan8_final_v8(
+        db, payload={"phase": "inspect", "scope_sha256": inspect_scope_sha,
+                     "manifest": manifest})
+    if inspection.get("busy") or inspection.get("pre_write_busy"):
+        return _fail("plan8_final_v8_pre_write_busy",
+                     busy=inspection, write_claim_created=False)
+    inspection_ok, inspection_detail = validate_inspection(
+        inspection, manifest, inspect_scope_sha)
+    if not inspection_ok:
+        return _fail("plan8_final_v8_inspection_blocked",
+                     inspection=inspection_detail,
+                     need_scan=bool(inspection.get("need_scan")))
+    if is_preclaim_resume and inspection_detail.get("v8_claim_absent") is not True:
+        return _fail("plan8_final_v8_preclaim_resume_not_proven_safe",
+                     inspection=inspection_detail,
+                     write_claim_created=False)
+    reservation_token = str(inspection["reservation_token"])
+    manifest = v6.enrich_manifest_with_inspection(
+        manifest, inspection_detail,
+        inspect_scope_sha256=inspect_scope_sha)
+    manifest_sha = v6._hash(manifest)
+
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.id == PLAN_ID,
+        CampaignPlan.workflow_key == WORKFLOW_KEY,
+    ).with_for_update()).scalar_one_or_none()
+    if plan is None or plan.status != EXPECTED_STATUS:
+        return _fail("plan8_final_v8_state_changed_after_reservation",
+                     actual_status=getattr(plan, "status", None))
+    post_identity_ok, post_identity = v6._identity_allowed(plan)
+    post_policy_sha = str(
+        campaign_policy_service.require_policy().get("_sha256") or "")
+    post_rows, post_scope_error = v7._target_rows(
+        db, plan, post_identity, post_policy_sha)
+    post_discounts, post_discount_error = v7._discount_scope(db, plan)
+    if (not post_identity_ok or post_policy_sha != policy_sha
+            or post_scope_error or post_discount_error
+            or v6._hash(_fixed_manifest(
+                post_rows, post_discounts, post_policy_sha)) != inspect_scope_sha):
+        return _fail("plan8_final_v8_erp_scope_changed_after_reservation",
+                     identity=post_identity, policy_sha256=post_policy_sha,
+                     signup_scope_error=post_scope_error,
+                     discount_scope_error=post_discount_error)
+    raced = _attempts(db)
+    if is_preclaim_resume:
+        if len(raced) != 1:
+            return _fail("plan8_final_v8_preclaim_attempt_raced",
+                         attempt_count=len(raced))
+        attempt = db.execute(select(CampaignExecutionAttempt).where(
+            CampaignExecutionAttempt.id == PRECLAIM_ATTEMPT_ID,
+        ).with_for_update()).scalar_one_or_none()
+        resume_ok, resume_detail = _validate_preclaim_resume_attempt(attempt)
+        if not resume_ok:
+            return _fail("plan8_final_v8_preclaim_attempt_changed",
+                         attempt=resume_detail)
+        prior = dict(attempt.result_summary or {})
+        attempt.scope_sha256 = manifest_sha
+        attempt.state = "write_claimed"
+        attempt.write_claimed = True
+        attempt.write_claimed_at = datetime.now(timezone.utc)
+        attempt.platform_write_observed = None
+        attempt.automatic_retry_allowed = False
+        attempt.last_step = "platform_write_claim_preclaim_resume"
+        attempt.error_code = None
+        attempt.web_agent_job_id = None
+        attempt.result_summary = {
+            "manifest": manifest,
+            "inspection": inspection_detail,
+            "preclaim_resume_source": {
+                "attempt_id": PRECLAIM_ATTEMPT_ID,
+                "scope_sha256": PRECLAIM_SCOPE_SHA256,
+                "request_id": PRECLAIM_REQUEST_ID,
+                "web_agent_job_id": PRECLAIM_WEB_AGENT_JOB_ID,
+                "prior_last_readback": prior.get("last_readback"),
+            },
+        }
+    else:
+        if raced:
+            exact = _attempt_for_scope(db, manifest_sha)
+            return _fail("plan8_final_v8_attempt_raced_no_write",
+                         attempt_count=len(raced),
+                         exact_scope_exists=exact is not None)
+        attempt = CampaignExecutionAttempt(
+            id=secrets.token_hex(12), plan_id=PLAN_ID,
+            workflow_key=WORKFLOW_KEY,
+            operation=OPERATION, scope_sha256=manifest_sha,
+            state="write_claimed", write_claimed=True,
+            write_claimed_at=datetime.now(timezone.utc),
+            platform_write_observed=None, automatic_retry_allowed=False,
+            request_id=f"plan8-final-v8-{secrets.token_hex(8)}",
+            last_step="platform_write_claim",
+            result_summary={"manifest": manifest,
+                            "inspection": inspection_detail})
+        db.add(attempt)
+    plan.status = "resume_executing"
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return _fail("plan8_final_v8_atomic_claim_conflict_no_write")
+    return _commit_and_readback(
+        db, plan=plan, attempt=attempt, manifest=manifest,
+        manifest_sha=manifest_sha, inspect_scope_sha=inspect_scope_sha,
+        reservation_token=reservation_token,
+        inspection_detail=inspection_detail)

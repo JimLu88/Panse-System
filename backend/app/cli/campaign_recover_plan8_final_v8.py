@@ -23,18 +23,21 @@ def _read_payload() -> bytes:
         body = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"计划8最终恢复V8 JSON无效: {exc}") from exc
+    confirmations = {
+        "execute": recovery.EXECUTE_CONFIRMATION,
+        "readback": recovery.READBACK_CONFIRMATION,
+        "resume_preclaim": recovery.PRECLAIM_RESUME_CONFIRMATION,
+    }
     expected = {
         "workflow_key": recovery.WORKFLOW_KEY,
         "plan_id": recovery.PLAN_ID,
         "expected_status": recovery.EXPECTED_STATUS,
         "recovery_version": recovery.RECOVERY_VERSION,
         "mode": body.get("mode"),
-        "confirmation": (recovery.EXECUTE_CONFIRMATION
-                         if body.get("mode") == "execute"
-                         else recovery.READBACK_CONFIRMATION),
+        "confirmation": confirmations.get(body.get("mode")),
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
     }
-    if body != expected or body.get("mode") not in {"execute", "readback"}:
+    if body != expected or body.get("mode") not in confirmations:
         raise ValueError("计划8最终恢复V8输入与程序固化范围不一致")
     return json.dumps(body, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")

@@ -1,5 +1,28 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 verified pre-claim continuation
+
+- The sole V8 attempt `edaf6b609dad46fbab90c7e8` was left
+  `unknown_no_retry` because ERP created its database claim before the
+  Web-Agent job failed, and the transport wrapper discarded the terminal job
+  exception. The subsequent readback returned no official artifact because the
+  Web-Agent durable V8 claim had never been created. The authoritative runtime
+  claim file is absent; the Web-Agent writes that file before any platform
+  write, so this is a verified pre-write stop rather than an ambiguous Taobao
+  submission.
+- Terminal Web-Agent job failures now preserve their status, error code,
+  checkpoint and job id in ERP audit details. A separate
+  `resume_preclaim` mode accepts only the exact attempt, request, old scope,
+  job id, alarmed plan, policy and 78-SKU scope. It re-inspects the live V7
+  zero-write baseline and requires the V8 durable claim to still be absent.
+  Only then does it reuse the same attempt with CAS and enter the unchanged
+  V8 commit/readback pipeline. Any claim, scope, policy or state drift stops
+  before platform write; the original execute/readback commands remain retired.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preclaim_resume_nas.ps1`.
+  Maintenance installs but does not run it; task 03 owns the single business
+  continuation after production and runtime fingerprint verification.
+
 ## 2026-09-04 plan-7 V4 pre-write residue recovery (V5)
 
 - The sole V4 invocation (`a531725a704ce1a910ddc008`) passed the exact

@@ -904,6 +904,16 @@ def recover_plan8_final_v8(
     job_id = str(started["job"])
     final = wait_job(db, job_id, timeout_s=timeout_s)
     result = final.get("result") or {}
+    if not result and str(final.get("status") or "") in {"error", "failed"}:
+        result = {
+            "ok": False,
+            "error": final.get("error") or "plan8_v8_web_agent_job_failed",
+            "error_code": final.get("error_code"),
+            "status": final.get("status"),
+            "last_checkpoint": final.get("last_checkpoint"),
+            "platform_write": (
+                None if payload.get("phase") == "commit" else False),
+        }
     result["web_agent_job_id"] = job_id
     if payload.get("phase") == "inspect":
         result["lease_expires_at_epoch"] = started.get("lease_expires_at_epoch")

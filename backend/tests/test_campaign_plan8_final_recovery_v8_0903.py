@@ -43,6 +43,30 @@ def test_web_agent_v8_start_wait_covers_cold_lazy_import(monkeypatch):
     }
 
 
+def test_web_agent_v8_preserves_terminal_job_error(monkeypatch):
+    monkeypatch.setattr(
+        web_agent_service, "_post",
+        lambda *_a, **_k: {"ok": True, "job": "job2"})
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_a, **_k: {
+            "status": "error", "result": None,
+            "error": "RuntimeError: browser_failed_before_claim",
+            "error_code": "browser_failed_before_claim",
+        })
+    result = web_agent_service.recover_plan8_final_v8(
+        object(), payload={"phase": "commit"})
+    assert result == {
+        "ok": False,
+        "error": "RuntimeError: browser_failed_before_claim",
+        "error_code": "browser_failed_before_claim",
+        "status": "error",
+        "last_checkpoint": None,
+        "platform_write": None,
+        "web_agent_job_id": "job2",
+    }
+
+
 def _seed_v7_zero_write(db):
     manifest = {"recovery_version": 7, "evidence": "zero-write"}
     scope = recovery.v6._hash(manifest)
@@ -147,7 +171,104 @@ def test_v8_full_flow_claims_once_and_completes(db_session, monkeypatch):
     assert attempts[0].state == "completed"
 
 
-def test_v8_cli_accepts_only_explicit_execute_or_readback(monkeypatch):
+def _seed_v8_preclaim_failure(db, monkeypatch):
+    old_manifest = {"recovery_version": 8, "preclaim": "failed-before-agent-claim"}
+    old_scope = recovery.v6._hash(old_manifest)
+    monkeypatch.setattr(recovery, "PRECLAIM_SCOPE_SHA256", old_scope)
+    db.add(CampaignExecutionAttempt(
+        id=recovery.PRECLAIM_ATTEMPT_ID, plan_id=8,
+        workflow_key=recovery.WORKFLOW_KEY, operation=recovery.OPERATION,
+        scope_sha256=old_scope, state="unknown_no_retry", write_claimed=True,
+        platform_write_observed=None, automatic_retry_allowed=False,
+        request_id=recovery.PRECLAIM_REQUEST_ID,
+        last_step="readback_not_complete",
+        error_code="post_submit_readback_not_complete",
+        web_agent_job_id=recovery.PRECLAIM_WEB_AGENT_JOB_ID,
+        result_summary={"manifest": old_manifest, "last_readback": {
+            "error": "claim_not_found"}},
+    ))
+    db.commit()
+
+
+def _prepare_resume(db_session, monkeypatch, *, claim_absent):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_prerequisites(db_session)
+    _seed_v7_zero_write(db_session)
+    _seed_v8_preclaim_failure(db_session, monkeypatch)
+    _patch_scope(db_session, monkeypatch)
+    monkeypatch.setattr(
+        campaign_policy_service, "require_policy",
+        lambda: {"_sha256": recovery.EXPECTED_POLICY_SHA256})
+    monkeypatch.setattr(
+        recovery.v7, "_target_rows",
+        lambda *_a, **_k: (_signup_rows(), None))
+    monkeypatch.setattr(
+        recovery.v7, "_discount_scope",
+        lambda *_a, **_k: (_discount_rows(), None))
+    phases = []
+
+    def fake_web(_db, *, payload, timeout_s=2400):
+        phase = payload["phase"]
+        phases.append(phase)
+        result = _web_result(payload, phase=phase)
+        if phase == "inspect":
+            result["resume_evidence"] = {
+                "ok": True, **recovery.EXPECTED_RESUME_EVIDENCE}
+            result["recovery_evidence"] = {
+                "ok": True,
+                "v6_attempt_id": recovery.v7.V6_ATTEMPT_ID,
+                "error_artifact_sha256": recovery.v7.RECOVERY_EVIDENCE[
+                    "v6_error_artifact_sha256"],
+                "fresh_product_export_sha256": recovery.v7.RECOVERY_EVIDENCE[
+                    "fresh_product_export_sha256"],
+            }
+            result["v8_claim_absent"] = claim_absent
+            result["v8_claim_sha256"] = None if claim_absent else "b" * 64
+        elif phase == "commit":
+            result["checkpoints"] = recovery.EXPECTED_COMMIT_CHECKPOINTS
+        return result
+
+    monkeypatch.setattr(web_agent_service, "recover_plan8_final_v8", fake_web)
+    return phases
+
+
+def test_v8_preclaim_resume_reuses_same_attempt_once(db_session, monkeypatch):
+    phases = _prepare_resume(db_session, monkeypatch, claim_absent=True)
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_preclaim",
+        confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert result["ok"] is True
+    assert result["attempt_id"] == recovery.PRECLAIM_ATTEMPT_ID
+    assert phases == ["inspect", "commit", "readback"]
+    attempts = recovery._attempts(db_session)
+    assert len(attempts) == 1
+    assert attempts[0].state == "completed"
+    assert attempts[0].automatic_retry_allowed is False
+
+
+def test_v8_preclaim_resume_stops_when_agent_claim_exists(
+        db_session, monkeypatch):
+    phases = _prepare_resume(db_session, monkeypatch, claim_absent=False)
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_preclaim",
+        confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert result["ok"] is False
+    assert result["error"] == "plan8_final_v8_preclaim_resume_not_proven_safe"
+    assert phases == ["inspect"]
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    assert attempt.state == "unknown_no_retry"
+    assert attempt.scope_sha256 == recovery.PRECLAIM_SCOPE_SHA256
+
+
+def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
     payload = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
         "expected_status": "alarmed", "recovery_version": 8,
@@ -166,3 +287,8 @@ def test_v8_cli_accepts_only_explicit_execute_or_readback(monkeypatch):
         pass
     else:
         raise AssertionError("V8 accepted the wrong execution confirmation")
+    payload["mode"] = "resume_preclaim"
+    payload["confirmation"] = recovery.PRECLAIM_RESUME_CONFIRMATION
+    monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
+        "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
+    assert json.loads(cli._read_payload())["mode"] == "resume_preclaim"
