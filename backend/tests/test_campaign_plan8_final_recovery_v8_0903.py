@@ -1,6 +1,8 @@
 import json
 from io import BytesIO
 
+import pytest
+
 from app import dependencies
 from app.api import campaigns
 from app.cli import campaign_recover_plan8_final_v8 as cli
@@ -321,6 +323,13 @@ def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
     assert json.loads(cli._read_payload())["mode"] == (
         "resume_claimed_preupload_v6")
+    payload["mode"] = "resume_claimed_preupload_v7"
+    payload["confirmation"] = (
+        recovery.CLAIMED_PREUPLOAD_BUSY_WAIT_CONFIRMATION)
+    monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
+        "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
+    assert json.loads(cli._read_payload())["mode"] == (
+        "resume_claimed_preupload_v7")
 
 
 def _seed_v8_claimed_preupload_failure(db, monkeypatch):
@@ -552,8 +561,18 @@ def test_v8_claimed_preupload_v5_accepts_only_frozen_zero_write_readback(
     assert attempt.automatic_retry_allowed is False
 
 
-def test_v8_claimed_preupload_v6_accepts_only_frozen_lease_drift_stop(
-        db_session, monkeypatch):
+@pytest.mark.parametrize(
+    ("mode", "confirmation", "busy_first", "expected_step"), [
+        ("resume_claimed_preupload_v6",
+         recovery.CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION, False,
+         "platform_write_claim_claimed_preupload_resume_v6"),
+        ("resume_claimed_preupload_v7",
+         recovery.CLAIMED_PREUPLOAD_BUSY_WAIT_CONFIRMATION, True,
+         "platform_write_claim_claimed_preupload_resume_v7"),
+    ])
+def test_v8_claimed_preupload_after_lease_drift_accepts_exact_state(
+        db_session, monkeypatch, mode, confirmation, busy_first,
+        expected_step):
     db_session.add(_plan())
     db_session.commit()
     _patch_scope(db_session, monkeypatch)
@@ -602,9 +621,18 @@ def test_v8_claimed_preupload_v6_accepts_only_frozen_lease_drift_stop(
         recovery, "V5_COMMIT_SHA256", recovery.v6._hash(commit))
     inspect_scope = {"bound": "same-claim-new-lease"}
     token = "reservation-token-preupload-v6"
+    calls = []
 
     def fake_preupload_web(_db, *, payload, timeout_s=2400):
         assert payload["phase"] == "inspect"
+        calls.append(payload)
+        if busy_first and len(calls) == 1:
+            return {
+                "ok": False, "error": "taobao_profile_busy",
+                "step": "preupload_resume_busy", "busy": True,
+                "pre_write_busy": True, "retry_safe": True,
+                "platform_write": False, "claim_created": True,
+            }
         return {
             "ok": True, "platform_write": False, "claim_created": True,
             "resume_claim_sha256": claim_sha,
@@ -626,11 +654,11 @@ def test_v8_claimed_preupload_v6_accepts_only_frozen_lease_drift_stop(
         web_agent_service, "recover_plan8_final_v8_preupload_resume",
         fake_preupload_web)
     monkeypatch.setattr(recovery, "_commit_and_readback", fake_commit)
+    monkeypatch.setattr(recovery.time, "sleep", lambda _seconds: None)
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_claimed_preupload_v6",
-        confirmation=recovery.CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION,
+        mode=mode, confirmation=confirmation,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
 
     assert result["ok"] is True, result
@@ -638,8 +666,8 @@ def test_v8_claimed_preupload_v6_accepts_only_frozen_lease_drift_stop(
     assert captured["resume_claim_sha256"] == claim_sha
     attempt = db_session.get(
         CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
-    assert attempt.last_step == (
-        "platform_write_claim_claimed_preupload_resume_v6")
+    assert attempt.last_step == expected_step
+    assert len(calls) == (2 if busy_first else 1)
     assert attempt.platform_write_observed is False
     assert attempt.automatic_retry_allowed is False
 

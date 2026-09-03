@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import secrets
+import time
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -82,6 +83,11 @@ CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION = (
 CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_LEASE_SCOPE_FIX_V6"
 )
+CLAIMED_PREUPLOAD_BUSY_WAIT_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_PREWRITE_BUSY_V7"
+)
+PREUPLOAD_BUSY_WAIT_SECONDS = 600.0
+PREUPLOAD_BUSY_POLL_SECONDS = 5.0
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
     "04ea6c51d5bc50ca3c4361fd503ce75503772a2fc6a98cb254ec5842a511d6d3"
 )
@@ -657,7 +663,8 @@ def _resume_claimed_preupload(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt,
         accept_post_readback_state: bool = False,
-        accept_lease_scope_state: bool = False) -> dict:
+        accept_lease_scope_state: bool = False,
+        wait_prewrite_busy: bool = False) -> dict:
     validator = (
         _validate_claimed_preupload_after_lease_scope_attempt
         if accept_lease_scope_state
@@ -685,10 +692,34 @@ def _resume_claimed_preupload(
                      discount_scope_error=discount_error)
     db.commit()
 
-    inspection = web_agent_service.recover_plan8_final_v8_preupload_resume(
-        db, payload={"phase": "inspect",
-                     "scope_sha256": CLAIMED_PREUPLOAD_SCOPE_SHA256,
-                     "manifest": manifest, "attempt_id": attempt.id})
+    busy_observations = 0
+    busy_wait_started = time.monotonic()
+    while True:
+        inspection = web_agent_service.recover_plan8_final_v8_preupload_resume(
+            db, payload={"phase": "inspect",
+                         "scope_sha256": CLAIMED_PREUPLOAD_SCOPE_SHA256,
+                         "manifest": manifest, "attempt_id": attempt.id})
+        exact_retryable_busy = bool(
+            inspection.get("ok") is False
+            and inspection.get("error") == "taobao_profile_busy"
+            and inspection.get("step") == "preupload_resume_busy"
+            and inspection.get("busy") is True
+            and inspection.get("pre_write_busy") is True
+            and inspection.get("retry_safe") is True
+            and inspection.get("platform_write") is False)
+        elapsed = time.monotonic() - busy_wait_started
+        if (not wait_prewrite_busy or not exact_retryable_busy
+                or elapsed >= PREUPLOAD_BUSY_WAIT_SECONDS):
+            break
+        busy_observations += 1
+        time.sleep(min(PREUPLOAD_BUSY_POLL_SECONDS,
+                       PREUPLOAD_BUSY_WAIT_SECONDS - elapsed))
+    if busy_observations:
+        inspection["prewrite_busy_wait"] = {
+            "observations": busy_observations,
+            "waited_seconds": round(time.monotonic() - busy_wait_started, 3),
+            "bounded": True,
+        }
     inspect_scope = inspection.get("inspect_scope")
     reservation_token = str(inspection.get("reservation_token") or "")
     try:
@@ -737,11 +768,13 @@ def _resume_claimed_preupload(
     attempt.platform_write_observed = False
     attempt.automatic_retry_allowed = False
     attempt.last_step = (
-        "platform_write_claim_claimed_preupload_resume_v6"
-        if accept_lease_scope_state
-        else ("platform_write_claim_claimed_preupload_resume_v5"
-              if accept_post_readback_state
-              else "platform_write_claim_claimed_preupload_resume_v4"))
+        "platform_write_claim_claimed_preupload_resume_v7"
+        if wait_prewrite_busy
+        else ("platform_write_claim_claimed_preupload_resume_v6"
+              if accept_lease_scope_state
+              else ("platform_write_claim_claimed_preupload_resume_v5"
+                    if accept_post_readback_state
+                    else "platform_write_claim_claimed_preupload_resume_v4")))
     attempt.error_code = None
     attempt.web_agent_job_id = None
     attempt.result_summary = summary
@@ -778,6 +811,8 @@ def recover_plan8_final_v8(
             CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION),
         "resume_claimed_preupload_v6": (
             CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION),
+        "resume_claimed_preupload_v7": (
+            CLAIMED_PREUPLOAD_BUSY_WAIT_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -798,7 +833,8 @@ def recover_plan8_final_v8(
     attempts = _attempts(db)
     if mode in {"resume_claimed_preupload_v4",
                 "resume_claimed_preupload_v5",
-                "resume_claimed_preupload_v6"}:
+                "resume_claimed_preupload_v6",
+                "resume_claimed_preupload_v7"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
@@ -807,7 +843,9 @@ def recover_plan8_final_v8(
             accept_post_readback_state=(
                 mode == "resume_claimed_preupload_v5"),
             accept_lease_scope_state=(
-                mode == "resume_claimed_preupload_v6"))
+                mode in {"resume_claimed_preupload_v6",
+                         "resume_claimed_preupload_v7"}),
+            wait_prewrite_busy=(mode == "resume_claimed_preupload_v7"))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",
