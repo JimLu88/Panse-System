@@ -84,6 +84,10 @@ CAMPAIGN_PLAN8_FINAL_RECOVERY_V8_PATH = (
 CAMPAIGN_PLAN8_FINAL_RECOVERY_V8_CLAIM_VERIFY_PATH = (
     "/api/campaigns/recover-super88-plan8-final-v8/claim-verification"
 )
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V8_PREUPLOAD_CLAIM_VERIFY_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v8/"
+    "preupload-claim-verification"
+)
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
@@ -391,6 +395,10 @@ def machine_identity_for_key(
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-plan8-v8-claim-verify"
+    if path == CAMPAIGN_PLAN8_FINAL_RECOVERY_V8_PREUPLOAD_CLAIM_VERIFY_PATH:
+        expected = settings_service.get(db, "web_agent_token", env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return "machine:web-agent-plan8-v8-preupload-claim-verify"
     if path == CAMPAIGN_PREPARE_FINAL_BUNDLE_PATH:
         expected = settings_service.get(
             db, CAMPAIGN_PREPARATION_BUNDLE_SERVICE_SETTING,
@@ -480,6 +488,22 @@ def require_web_agent_plan8_v8_claim_verifier(
     return ServicePrincipal(
         username=identity, role="web_agent_service",
         scope="campaign.super88.plan8.final_recovery_v8.claim_verify.readonly",
+    )
+
+
+def require_web_agent_plan8_v8_preupload_claim_verifier(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> ServicePrincipal:
+    identity = machine_identity_for_key(x_api_key, db, path=request.url.path)
+    if identity != "machine:web-agent-plan8-v8-preupload-claim-verify":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Web-Agent计划8 V8 preupload核验身份无效")
+    return ServicePrincipal(
+        username=identity, role="web_agent_service",
+        scope=("campaign.super88.plan8.final_recovery_v8."
+               "preupload_claim_verify.readonly"),
     )
 
 

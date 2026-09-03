@@ -929,6 +929,38 @@ def recover_plan8_final_v8(
     return result
 
 
+def recover_plan8_final_v8_preupload_resume(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """Run the exact post-claim/pre-upload V8 recovery phases."""
+    start_timeout_s = min(max(int(timeout_s), 30), 420)
+    started = _post(
+        db, "/api/campaign/plan8-final-recovery-v8-preupload-resume",
+        payload, timeout=start_timeout_s)
+    if not started.get("ok") or not started.get("job"):
+        busy = (started.get("error") == "taobao_profile_busy"
+                and started.get("step") == "preupload_resume_busy")
+        return {**started, "ok": False, "busy": busy,
+                "pre_write_busy": busy,
+                "platform_write": False if busy else started.get("platform_write")}
+    job_id = str(started["job"])
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if not result and str(final.get("status") or "") in {"error", "failed"}:
+        result = {
+            "ok": False,
+            "error": final.get("error") or "plan8_v8_preupload_web_agent_job_failed",
+            "error_code": final.get("error_code"),
+            "status": final.get("status"),
+            "last_checkpoint": final.get("last_checkpoint"),
+            "platform_write": None if payload.get("phase") == "commit" else False,
+        }
+    result["web_agent_job_id"] = job_id
+    if payload.get("phase") == "inspect":
+        result["reservation_token"] = started.get("reservation_token")
+        result["lease_expires_at_epoch"] = started.get("lease_expires_at_epoch")
+    return result
+
+
 def correct_plan7_small_promo(
         db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
     """Run the fixed two-item / 20-SKU existing-activity correction once."""

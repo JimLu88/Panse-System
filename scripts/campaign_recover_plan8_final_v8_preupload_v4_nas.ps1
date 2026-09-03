@@ -5,8 +5,6 @@ param(
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
 
-throw 'This V3 command is retired after request 548b1a633e47 created the durable V8 claim and stopped before file selection. Use only the separately released claimed-preupload V4 command.'
-
 $ErrorActionPreference = 'Stop'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'
@@ -16,8 +14,8 @@ $payload = [ordered]@{
     plan_id = 8
     expected_status = 'alarmed'
     recovery_version = 8
-    mode = 'resume_preclaim_v3'
-    confirmation = 'RESUME_ONCE_PLAN8_V8_AFTER_MANIFEST_PHASE_FIX_V3'
+    mode = 'resume_claimed_preupload_v4'
+    confirmation = 'RESUME_ONCE_PLAN8_V8_AFTER_BATCH_DIALOG_FIX_V4'
     target_scope_sha256 = '40bcd15a5567215d836a1735e0b7216aacc4677a068c36a0f1d68da3a9afdab4'
 }
 $raw = $payload | ConvertTo-Json -Compress
@@ -28,7 +26,7 @@ try {
     $raw | & $ssh -i $resolvedKey -o BatchMode=yes -o ConnectTimeout=20 `
         -p $SshPort $SshHost $remote
     if ($LASTEXITCODE -ne 0) {
-        throw "Plan 8 V8 manifest-fix continuation stopped with exit code $LASTEXITCODE. Do not run this command again; inspect the returned JSON."
+        throw "Plan 8 V8 claimed-preupload V4 stopped with exit code $LASTEXITCODE. Do not run this command again; inspect the returned JSON."
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding

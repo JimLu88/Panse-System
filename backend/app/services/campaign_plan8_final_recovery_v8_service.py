@@ -73,6 +73,17 @@ PRECLAIM_REQUEST_ID = "plan8-final-v8-67b588e1b5278ff4"
 PRECLAIM_WEB_AGENT_JOB_ID = "job2"
 PRECLAIM_LAST_STEP = "plan8_final_v8_commit"
 PRECLAIM_ERROR_CODE = "ValueError: plan8_v6_manifest_fields_invalid"
+CLAIMED_PREUPLOAD_RESUME_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_BATCH_DIALOG_FIX_V4"
+)
+CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
+    "04ea6c51d5bc50ca3c4361fd503ce75503772a2fc6a98cb254ec5842a511d6d3"
+)
+CLAIMED_PREUPLOAD_CLAIM_SHA256 = (
+    "4b71a1d5337e0de45fc732ea1ee0007eb35ea9f49995a6cf2f3f59ab82c7a37f"
+)
+CLAIMED_PREUPLOAD_LAST_STEP = "draft_patch_terminal"
+CLAIMED_PREUPLOAD_ERROR_CODE = "plan8_v8_unknown_outcome_no_retry"
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -230,6 +241,54 @@ def verify_plan8_final_v8_claim(
     }
 
 
+def verify_plan8_final_v8_preupload_claim(
+        db: Session, *, attempt_id: str, workflow_key: str, plan_id: int,
+        operation: str, scope_sha256: str, inspect_scope_sha256: str,
+        reservation_token_sha256: str, resume_claim_sha256: str) -> dict:
+    attempt = db.get(CampaignExecutionAttempt, attempt_id)
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    resume = summary.get("claimed_preupload_resume") or {}
+    try:
+        expires = float(resume.get("reservation_expires_at_epoch") or 0)
+    except (TypeError, ValueError):
+        expires = 0
+    verified = bool(
+        attempt is not None and workflow_key == WORKFLOW_KEY
+        and plan_id == PLAN_ID and operation == OPERATION
+        and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == scope_sha256
+        == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "write_claimed" and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.automatic_retry_allowed is False
+        and isinstance(manifest, dict) and v6._hash(manifest) == scope_sha256
+        and resume == {
+            "source_claim_sha256": CLAIMED_PREUPLOAD_CLAIM_SHA256,
+            "inspect_scope_sha256": inspect_scope_sha256,
+            "reservation_token_sha256": reservation_token_sha256,
+            "reservation_expires_at_epoch": expires,
+        }
+        and resume_claim_sha256 == CLAIMED_PREUPLOAD_CLAIM_SHA256
+        and expires > datetime.now(timezone.utc).timestamp())
+    return {
+        "ok": verified, "verified": verified, "attempt_id": attempt_id,
+        "workflow_key": WORKFLOW_KEY, "plan_id": PLAN_ID,
+        "operation": OPERATION, "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", False),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "inspect_scope_sha256": inspect_scope_sha256,
+        "reservation_token_sha256": reservation_token_sha256,
+        "resume_claim_sha256": resume_claim_sha256,
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "execution_boundary": {**_boundary(platform_write=False),
+                               "platform_read": False},
+    }
+
+
 def _readback_existing(db: Session, plan: CampaignPlan,
                        attempt: CampaignExecutionAttempt) -> dict:
     if str(plan.status or "") not in READBACK_PLAN_STATUSES:
@@ -316,11 +375,58 @@ def _validate_preclaim_resume_attempt(
     return ok, detail
 
 
+def _validate_claimed_preupload_attempt(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    commit = summary.get("commit") or {}
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "commit": commit,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "failed_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == CLAIMED_PREUPLOAD_LAST_STEP
+        and attempt.error_code == CLAIMED_PREUPLOAD_ERROR_CODE
+        and attempt.web_agent_job_id == "job2"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and commit.get("platform_write") is False
+        and commit.get("reservation_consumed") is True
+        and commit.get("claim_created") is True
+        and commit.get("last_checkpoint") == CLAIMED_PREUPLOAD_LAST_STEP
+        and commit.get("web_agent_error") == CLAIMED_PREUPLOAD_ERROR_CODE
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written"))
+    return ok, detail
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
         manifest_sha: str, inspect_scope_sha: str,
-        reservation_token: str, inspection_detail: dict) -> dict:
+        reservation_token: str, inspection_detail: dict,
+        commit_phase: str = "commit", resume_claim_sha256: str = "") -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID, "operation": OPERATION,
@@ -329,9 +435,17 @@ def _commit_and_readback(
         "reservation_token_sha256": inspection_detail[
             "reservation_token_sha256"],
     }
+    if commit_phase == "resume_preupload_commit":
+        claim_verification["resume_claim_sha256"] = resume_claim_sha256
     try:
-        committed = web_agent_service.recover_plan8_final_v8(
-            db, payload={"phase": "commit", "scope_sha256": manifest_sha,
+        call = (web_agent_service.recover_plan8_final_v8_preupload_resume
+                if commit_phase == "resume_preupload_commit"
+                else web_agent_service.recover_plan8_final_v8)
+        committed = call(
+            db, payload={"phase": ("commit" if commit_phase
+                                    == "resume_preupload_commit"
+                                    else commit_phase),
+                         "scope_sha256": manifest_sha,
                          "inspect_scope_sha256": inspect_scope_sha,
                          "manifest": manifest, "attempt_id": attempt.id,
                          "reservation_token": reservation_token,
@@ -399,6 +513,104 @@ def _commit_and_readback(
             "execution_boundary": _boundary(platform_write=True)}
 
 
+def _resume_claimed_preupload(
+        db: Session, *, plan: CampaignPlan,
+        attempt: CampaignExecutionAttempt) -> dict:
+    resume_ok, resume_detail = _validate_claimed_preupload_attempt(attempt)
+    if not resume_ok:
+        return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
+                     attempt=resume_detail)
+    manifest = dict((attempt.result_summary or {})["manifest"])
+    baseline = manifest.get("inspection_baseline") or {}
+    policy_sha = str(campaign_policy_service.require_policy().get("_sha256") or "")
+    identity_ok, identity = v6._identity_allowed(plan)
+    target_rows, scope_error = v7._target_rows(db, plan, identity, policy_sha)
+    discount_rows, discount_error = v7._discount_scope(db, plan)
+    current_base = (_fixed_manifest(target_rows, discount_rows, policy_sha)
+                    if not scope_error and not discount_error else None)
+    if (not identity_ok or policy_sha != EXPECTED_POLICY_SHA256
+            or scope_error or discount_error or not isinstance(current_base, dict)
+            or v6._hash(current_base) != baseline.get("inspect_scope_sha256")):
+        return _fail("plan8_final_v8_claimed_preupload_scope_changed",
+                     identity=identity, policy_sha256=policy_sha,
+                     signup_scope_error=scope_error,
+                     discount_scope_error=discount_error)
+    db.commit()
+
+    inspection = web_agent_service.recover_plan8_final_v8_preupload_resume(
+        db, payload={"phase": "inspect",
+                     "scope_sha256": CLAIMED_PREUPLOAD_SCOPE_SHA256,
+                     "manifest": manifest, "attempt_id": attempt.id})
+    inspect_scope = inspection.get("inspect_scope")
+    reservation_token = str(inspection.get("reservation_token") or "")
+    try:
+        lease_expires = float(inspection.get("lease_expires_at_epoch") or 0)
+    except (TypeError, ValueError):
+        lease_expires = 0
+    inspect_scope_sha = (v6._hash(inspect_scope)
+                         if isinstance(inspect_scope, dict) else "")
+    inspection_ok = bool(
+        inspection.get("ok") is True
+        and inspection.get("platform_write") is False
+        and inspection.get("claim_created") is True
+        and inspection.get("resume_claim_sha256")
+        == CLAIMED_PREUPLOAD_CLAIM_SHA256
+        and inspection.get("last_checkpoint") == CLAIMED_PREUPLOAD_LAST_STEP
+        and inspection.get("inspect_scope_sha256") == inspect_scope_sha
+        and isinstance(inspect_scope, dict) and reservation_token
+        and lease_expires > datetime.now(timezone.utc).timestamp())
+    if not inspection_ok:
+        return _fail("plan8_final_v8_claimed_preupload_inspection_blocked",
+                     inspection={key: value for key, value in inspection.items()
+                                 if key != "reservation_token"})
+
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.id == PLAN_ID,
+        CampaignPlan.workflow_key == WORKFLOW_KEY,
+    ).with_for_update()).scalar_one_or_none()
+    attempt = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.id == PRECLAIM_ATTEMPT_ID,
+    ).with_for_update()).scalar_one_or_none()
+    resume_ok, resume_detail = _validate_claimed_preupload_attempt(attempt)
+    if (plan is None or plan.status != EXPECTED_STATUS or not resume_ok):
+        return _fail("plan8_final_v8_claimed_preupload_state_changed",
+                     plan_status=getattr(plan, "status", None),
+                     attempt=resume_detail)
+    summary = dict(attempt.result_summary or {})
+    summary["claimed_preupload_resume"] = {
+        "source_claim_sha256": CLAIMED_PREUPLOAD_CLAIM_SHA256,
+        "inspect_scope_sha256": inspect_scope_sha,
+        "reservation_token_sha256": v6._hash(reservation_token),
+        "reservation_expires_at_epoch": lease_expires,
+    }
+    attempt.state = "write_claimed"
+    attempt.write_claimed = True
+    attempt.write_claimed_at = datetime.now(timezone.utc)
+    attempt.platform_write_observed = False
+    attempt.automatic_retry_allowed = False
+    attempt.last_step = "platform_write_claim_claimed_preupload_resume_v4"
+    attempt.error_code = None
+    attempt.web_agent_job_id = None
+    attempt.result_summary = summary
+    plan.status = "resume_executing"
+    db.commit()
+    inspection_detail = {
+        "resume_claim_sha256": CLAIMED_PREUPLOAD_CLAIM_SHA256,
+        "inspect_scope_sha256": inspect_scope_sha,
+        "reservation_token_sha256": v6._hash(reservation_token),
+        "lease_expires_at_epoch": lease_expires,
+        "web_agent_job_id": inspection.get("web_agent_job_id"),
+    }
+    return _commit_and_readback(
+        db, plan=plan, attempt=attempt, manifest=manifest,
+        manifest_sha=CLAIMED_PREUPLOAD_SCOPE_SHA256,
+        inspect_scope_sha=inspect_scope_sha,
+        reservation_token=reservation_token,
+        inspection_detail=inspection_detail,
+        commit_phase="resume_preupload_commit",
+        resume_claim_sha256=CLAIMED_PREUPLOAD_CLAIM_SHA256)
+
+
 def recover_plan8_final_v8(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_status: str, recovery_version: int,
@@ -408,6 +620,7 @@ def recover_plan8_final_v8(
         "execute": EXECUTE_CONFIRMATION,
         "readback": READBACK_CONFIRMATION,
         "resume_preclaim_v3": PRECLAIM_RESUME_CONFIRMATION,
+        "resume_claimed_preupload_v4": CLAIMED_PREUPLOAD_RESUME_CONFIRMATION,
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -426,6 +639,12 @@ def recover_plan8_final_v8(
     if not identity_ok:
         return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
     attempts = _attempts(db)
+    if mode == "resume_claimed_preupload_v4":
+        if len(attempts) != 1:
+            return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
+                         attempt_count=len(attempts))
+        return _resume_claimed_preupload(
+            db, plan=plan, attempt=attempts[0])
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",

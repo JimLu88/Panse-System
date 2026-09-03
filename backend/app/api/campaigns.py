@@ -41,6 +41,7 @@ from app.dependencies import (
     require_web_agent_plan8_v6_claim_verifier,
     require_web_agent_plan8_v7_claim_verifier,
     require_web_agent_plan8_v8_claim_verifier,
+    require_web_agent_plan8_v8_preupload_claim_verifier,
     require_role,
 )
 from app.models.auth import User
@@ -305,7 +306,9 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
     plan_id: int = Field(ge=1)
     expected_status: str
     recovery_version: int = Field(ge=8, le=8)
-    mode: str = Field(pattern=r"^(execute|readback|resume_preclaim_v3)$")
+    mode: str = Field(pattern=(
+        r"^(execute|readback|resume_preclaim_v3|"
+        r"resume_claimed_preupload_v4)$"))
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -313,6 +316,13 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
 class CampaignPlan8FinalRecoveryV8ClaimVerifyIn(
         CampaignPlan8FinalRecoveryV4ClaimVerifyIn):
     """Web-Agent V8 read-only claim proof request."""
+
+
+class CampaignPlan8FinalRecoveryV8PreuploadClaimVerifyIn(
+        CampaignPlan8FinalRecoveryV8ClaimVerifyIn):
+    """Web-Agent proof for the exact claimed-but-not-uploaded V8 continuation."""
+
+    resume_claim_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class CampaignPlan7PostSubmitVerifyIn(BaseModel):
@@ -1368,6 +1378,33 @@ def verify_super88_plan8_final_v8_claim(
         scope_sha256=body.scope_sha256,
         inspect_scope_sha256=body.inspect_scope_sha256,
         reservation_token_sha256=body.reservation_token_sha256,
+    )
+    if not result.get("ok"):
+        raise HTTPException(409, detail=result)
+    return result
+
+
+@router.post(
+    "/recover-super88-plan8-final-v8/preupload-claim-verification"
+)
+def verify_super88_plan8_final_v8_preupload_claim(
+        body: CampaignPlan8FinalRecoveryV8PreuploadClaimVerifyIn,
+        db: Session = Depends(get_db),
+        _: ServicePrincipal = Depends(
+            require_web_agent_plan8_v8_preupload_claim_verifier)):
+    """Prove the exact same attempt was reclaimed after a pre-upload stop."""
+    from app.services import campaign_plan8_final_recovery_v8_service
+
+    result = (
+        campaign_plan8_final_recovery_v8_service
+        .verify_plan8_final_v8_preupload_claim(
+            db, attempt_id=body.attempt_id, workflow_key=body.workflow_key,
+            plan_id=body.plan_id, operation=body.operation,
+            scope_sha256=body.scope_sha256,
+            inspect_scope_sha256=body.inspect_scope_sha256,
+            reservation_token_sha256=body.reservation_token_sha256,
+            resume_claim_sha256=body.resume_claim_sha256,
+        )
     )
     if not result.get("ok"):
         raise HTTPException(409, detail=result)

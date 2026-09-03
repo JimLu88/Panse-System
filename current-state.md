@@ -1,5 +1,29 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 claimed pre-upload continuation V4
+
+- The sole V3 execution created the expected durable V8 claim, then stopped at
+  `draft_patch_terminal` with `plan8_v6_update_dialog_not_exact`.  Its frozen
+  claim SHA-256 is
+  `4b71a1d5337e0de45fc732ea1ee0007eb35ea9f49995a6cf2f3f59ab82c7a37f`;
+  `draft_patch.submitted=false`, no publish or discount checkpoint exists, and
+  ERP recorded `platform_write_observed=false` with automatic retry disabled.
+- A fresh readback after that stop still returned the original 70 campaign
+  SKUs, the same protected-record hashes, no new eight-SKU discount rows and
+  exactly the same eight missing SKU ids.  This independently proves that V3
+  made no platform change; V1--V3 execution commands are permanently retired.
+- V4 can reuse only that exact claim and the same attempt.  Its distinct
+  machine route, reservation owner, confirmation, claim SHA, plan/workflow,
+  campaign identity, policy, 78-SKU manifest and fresh platform scope must all
+  match.  It CAS-locks the existing attempt, never creates a second attempt,
+  and enters the unchanged patch/publish/discount/readback sequence.  Any
+  mismatch stops before file selection; once file selection may have happened,
+  automatic retry remains forbidden.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v4_nas.ps1`.
+  Maintenance installs but does not run it; task 03 owns its sole business
+  invocation after production and Web-Agent runtime fingerprint verification.
+
 ## 2026-09-04 plan-8 V8 verified pre-claim continuation V3
 
 - V2 passed the repaired exact editor binding, then Web-Agent stopped before
