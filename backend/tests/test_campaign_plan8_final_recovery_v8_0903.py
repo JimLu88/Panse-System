@@ -330,6 +330,13 @@ def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
     assert json.loads(cli._read_payload())["mode"] == (
         "resume_claimed_preupload_v7")
+    payload["mode"] = "resume_claimed_preupload_v8"
+    payload["confirmation"] = (
+        recovery.CLAIMED_PREUPLOAD_LEASE_EXPIRY_CONFIRMATION)
+    monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
+        "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
+    assert json.loads(cli._read_payload())["mode"] == (
+        "resume_claimed_preupload_v8")
 
 
 def _seed_v8_claimed_preupload_failure(db, monkeypatch):
@@ -670,6 +677,63 @@ def test_v8_claimed_preupload_after_lease_drift_accepts_exact_state(
     assert len(calls) == (2 if busy_first else 1)
     assert attempt.platform_write_observed is False
     assert attempt.automatic_retry_allowed is False
+
+
+def test_v8_lease_expiry_resume_accepts_only_frozen_zero_write_stop(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    manifest, _, claim_sha = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    inspection = {
+        "resume_claim_sha256": claim_sha,
+        "inspect_scope_sha256": "a" * 64,
+        "reservation_token_sha256": "b" * 64,
+        "lease_expires_at_epoch": 1788469562.0,
+        "web_agent_job_id": "job1",
+    }
+    commit = {
+        "platform_write": False, "claim_created": False,
+        "web_agent_error": "plan8_v8_erp_claim_not_verified",
+        "web_agent_detail": {
+            "ok": False,
+            "error": "erp_preupload_claim_verify_unavailable",
+            "error_type": "HTTPError",
+        },
+        "patched_record_ids": [], "published_record_ids": [],
+        "discount_pairs_written": [],
+    }
+    attempt.state = "failed_no_retry"
+    attempt.write_claimed = True
+    attempt.platform_write_observed = False
+    attempt.automatic_retry_allowed = False
+    attempt.request_id = recovery.PRECLAIM_REQUEST_ID
+    attempt.last_step = "plan8_final_v8_commit"
+    attempt.error_code = "plan8_v8_erp_claim_not_verified"
+    attempt.web_agent_job_id = "job2"
+    attempt.result_summary = {
+        "manifest": manifest,
+        "inspection": inspection,
+        "commit": commit,
+    }
+    db_session.commit()
+    monkeypatch.setattr(
+        recovery, "V7_RESULT_SUMMARY_SHA256",
+        recovery.v6._hash(attempt.result_summary))
+    monkeypatch.setattr(
+        recovery, "V7_INSPECTION_SHA256", recovery.v6._hash(inspection))
+    monkeypatch.setattr(
+        recovery, "V7_COMMIT_SHA256", recovery.v6._hash(commit))
+
+    ok, detail = recovery._validate_claimed_preupload_after_lease_expiry_attempt(
+        attempt)
+    assert ok is True, detail
+    attempt.platform_write_observed = True
+    ok, _ = recovery._validate_claimed_preupload_after_lease_expiry_attempt(
+        attempt)
+    assert ok is False
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():
