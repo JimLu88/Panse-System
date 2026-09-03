@@ -60,6 +60,12 @@ CAMPAIGN_PLAN8_FINAL_RECOVERY_V6_PATH = (
 CAMPAIGN_PLAN8_FINAL_RECOVERY_V6_CLAIM_VERIFY_PATH = (
     "/api/campaigns/recover-super88-plan8-final-v6/claim-verification"
 )
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V7_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v7"
+)
+CAMPAIGN_PLAN8_FINAL_RECOVERY_V7_CLAIM_VERIFY_PATH = (
+    "/api/campaigns/recover-super88-plan8-final-v7/claim-verification"
+)
 CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH = (
     "/api/campaigns/verify-super-reduce-plan7-post-submit"
 )
@@ -135,6 +141,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V4_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V5_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V6_PATH,
+    CAMPAIGN_PLAN8_FINAL_RECOVERY_V7_PATH,
     CAMPAIGN_PLAN7_POST_SUBMIT_VERIFY_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_AUDIT_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_TIME_UPDATE_PATH,
@@ -353,6 +360,10 @@ def machine_identity_for_key(
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-plan8-v6-claim-verify"
+    if path == CAMPAIGN_PLAN8_FINAL_RECOVERY_V7_CLAIM_VERIFY_PATH:
+        expected = settings_service.get(db, "web_agent_token", env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return "machine:web-agent-plan8-v7-claim-verify"
     if path == CAMPAIGN_PREPARE_FINAL_BUNDLE_PATH:
         expected = settings_service.get(
             db, CAMPAIGN_PREPARATION_BUNDLE_SERVICE_SETTING,
@@ -412,6 +423,21 @@ def require_web_agent_plan8_v6_claim_verifier(
     return ServicePrincipal(
         username=identity, role="web_agent_service",
         scope="campaign.super88.plan8.final_recovery_v6.claim_verify.readonly",
+    )
+
+
+def require_web_agent_plan8_v7_claim_verifier(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> ServicePrincipal:
+    identity = machine_identity_for_key(x_api_key, db, path=request.url.path)
+    if identity != "machine:web-agent-plan8-v7-claim-verify":
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            "Web-Agent计划8 V7核验身份无效")
+    return ServicePrincipal(
+        username=identity, role="web_agent_service",
+        scope="campaign.super88.plan8.final_recovery_v7.claim_verify.readonly",
     )
 
 
