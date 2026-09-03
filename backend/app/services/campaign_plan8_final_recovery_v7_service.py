@@ -234,8 +234,12 @@ def validate_inspection(result: dict, manifest: dict,
         == RECOVERY_EVIDENCE["v6_error_artifact_sha256"]
         and evidence.get("fresh_product_export_sha256")
         == RECOVERY_EVIDENCE["fresh_product_export_sha256"])
-    return bool(ok and evidence_ok), {**detail,
-                                     "recovery_evidence": evidence}
+    return bool(ok and evidence_ok), {
+        **detail,
+        "web_agent_error": result.get("error"),
+        "web_agent_status": result.get("status"),
+        "recovery_evidence": evidence,
+    }
 
 
 def validate_commit(result: dict, manifest: dict,

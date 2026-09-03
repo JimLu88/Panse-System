@@ -40,6 +40,17 @@ def test_v7_manifest_binds_v6_terminal_and_new_activity_creation():
         "create_new_8_sku_single_item_discount_activity")
 
 
+def test_v7_inspection_keeps_web_agent_transport_error():
+    manifest = recovery._fixed_manifest(
+        _signup_rows(), _discount_rows(), recovery.EXPECTED_POLICY_SHA256)
+    ok, detail = recovery.validate_inspection(
+        {"ok": False, "error": "HTTPError: 400 plan8_v7_final_scope_mismatch"},
+        manifest, recovery.v6._hash(manifest))
+    assert ok is False
+    assert detail["web_agent_error"] == (
+        "HTTPError: 400 plan8_v7_final_scope_mismatch")
+
+
 def test_v7_route_and_machine_identity_are_narrowly_allowlisted(monkeypatch):
     assert recovery.EXECUTION_SOURCE == "campaign_super88_plan8_final_recovery_v7"
     assert (dependencies.CAMPAIGN_PLAN8_FINAL_RECOVERY_V7_PATH
