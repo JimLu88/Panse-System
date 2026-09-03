@@ -267,6 +267,45 @@ def test_latest_ready_bundle_expires_without_becoming_executable(
     assert latest["ready_for_final_submission"] is False
 
 
+def test_latest_bundle_returns_highest_revision_when_history_has_multiple_rows(
+        db_session, monkeypatch):
+    plan = _plan(db_session)
+    _install_common(monkeypatch)
+    first = service.compile_bundle(
+        db_session, workflow_key=plan.workflow_key, expected_plan_id=plan.id)
+    first_row = db_session.get(CampaignPreparationBundle, first["bundle_id"])
+    second_row = CampaignPreparationBundle(
+        id="latest-bundle-revision-2",
+        plan_id=plan.id,
+        workflow_key=plan.workflow_key,
+        revision=first_row.revision + 1,
+        state=service.BLOCKED_STATE,
+        prepared_by="test:latest-revision",
+        source_sha256="2" * 64,
+        policy_sha256="p" * 64,
+        manifest_sha256=None,
+        identity=first_row.identity,
+        summary={"marker": "latest"},
+        signup_rows=[],
+        discount_rows=[],
+        item_decisions=[],
+        gate_results=[],
+        evidence_snapshot_ids=[],
+        execution_boundary={"platform_write": False},
+        prepared_at=datetime.now(timezone.utc),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db_session.add(second_row)
+    db_session.commit()
+
+    latest = service.get_latest_bundle(
+        db_session, workflow_key=plan.workflow_key, expected_plan_id=plan.id)
+
+    assert latest["bundle_id"] == second_row.id
+    assert latest["revision"] == second_row.revision
+    assert latest["summary"] == {"marker": "latest"}
+
+
 def test_bundle_machine_identity_is_encrypted_and_single_path_only(db_session):
     bundle_token = "bundle-token-0903"
     legacy_token = "legacy-campaign-token-0903"

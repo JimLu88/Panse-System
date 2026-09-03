@@ -25,7 +25,7 @@ $payload = [ordered]@{
     } else {
         'EXECUTE_ONCE_PLAN8_V7_NEW_ACTIVITY_6_ITEMS_78_SKUS'
     }
-    target_scope_sha256 = 'b239dc515b0f2442257e90fe30a1cda95e29f6ffd2ea123d6c53f6fd6a4feb1d'
+    target_scope_sha256 = '40bcd15a5567215d836a1735e0b7216aacc4677a068c36a0f1d68da3a9afdab4'
 }
 $raw = $payload | ConvertTo-Json -Compress
 $remote = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-api-1 python -m app.cli.campaign_recover_plan8_final_v7'

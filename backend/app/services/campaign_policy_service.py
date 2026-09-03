@@ -50,6 +50,7 @@ def require_policy() -> dict[str, Any]:
             f"活动报名规则 policy_id 不匹配，已停止：{policy.get('policy_id')!r}")
     execution = policy.get("execution") or {}
     pricing = policy.get("pricing") or {}
+    final_price_gate = policy.get("final_price_gate") or {}
     gates = policy.get("qualification_gates") or {}
     scope = policy.get("scope_and_idempotency") or {}
     submission_fields = policy.get("submission_fields") or {}
@@ -145,6 +146,12 @@ def require_policy() -> dict[str, Any]:
             "known_live_price_uses_the_lower_value; "
             "never_changes_daily_price"):
         raise RuntimeError("活动报名规则未锁定定制SKU只改活动报名价，已停止")
+    if (final_price_gate.get("explicit_custom_signup_price_marker")
+            != "custom_signup_price_authorized"
+            or final_price_gate.get(
+                "explicit_authorized_custom_signup_price_may_bypass_baseline_ratio"
+            ) is not True):
+        raise RuntimeError("活动报名规则未锁定逐SKU定制低价授权，已停止")
     if (scope.get("custom_placeholder_safe_cap_without_live_price")
             != "authoritative_placeholder_uses_coupon_floor_safe_cap_or_conservative_daily_price_fallback; non_authoritative_rows_still_block"):
         raise RuntimeError("活动报名规则未锁定权威定制SKU缺平台现价时使用安全上限，已停止")

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 import secrets
 
 from sqlalchemy import select
@@ -24,18 +25,43 @@ EXPECTED_STATUS = v6.EXPECTED_STATUS
 RECOVERY_VERSION = 7
 OPERATION = "plan8_final_recovery_v7"
 EXECUTION_SOURCE = "campaign_super88_plan8_final_recovery_v7"
-EXPECTED_POLICY_SHA256 = v6.EXPECTED_POLICY_SHA256
-EXPECTED_TARGET_SCOPE_SHA256 = v6.EXPECTED_TARGET_SCOPE_SHA256
+EXPECTED_POLICY_SHA256 = (
+    "dbb4a7294636fb2f5bfd115efd561976eb6684cbfc00b9ed2f0f4aa1850dfe33"
+)
+EXPECTED_TARGET_SCOPE_SHA256 = (
+    "40bcd15a5567215d836a1735e0b7216aacc4677a068c36a0f1d68da3a9afdab4"
+)
 IDENTITY = v6.IDENTITY
 DRAFT_RECORDS = v6.DRAFT_RECORDS
 PROTECTED_RECORDS = v6.PROTECTED_RECORDS
 TARGET_ITEM_IDS = v6.TARGET_ITEM_IDS
+ADD_SKU_IDS = v6.ADD_SKU_IDS
 ADD_PAIRS = v6.ADD_PAIRS
 EXPECTED_DISCOUNT_DEDUCTS = v6.EXPECTED_DISCOUNT_DEDUCTS
 OLD_DISCOUNT_ACTIVITY_ID = v6.DISCOUNT_ACTIVITY_ID
 EXPECTED_TARGET_CUSTOM_ROW_COUNT = v6.EXPECTED_TARGET_CUSTOM_ROW_COUNT
 EXPECTED_COMMIT_CHECKPOINTS = v6.EXPECTED_COMMIT_CHECKPOINTS
 READBACK_PLAN_STATUSES = v6.READBACK_PLAN_STATUSES
+CUSTOM_SIGNUP_PRICE_OVERRIDES = {
+    "6004764276985": "388.00",
+    "6047448121203": "128.00",
+    "6047448121205": "128.00",
+    "6068820148476": "173.00",
+    "6075878504283": "55.00",
+    "6076746217857": "285.00",
+    "6107353122531": "54.00",
+    "6218230362901": "173.00",
+    "6218230362902": "228.00",
+    "6234601898868": "285.00",
+    "6234601898869": "285.00",
+    "6234601898870": "285.00",
+    "6234601898871": "285.00",
+    "6240794599103": "206.00",
+    "6287431318361": "450.00",
+    "6287431318362": "450.00",
+    "6287431318363": "450.00",
+    "6287431318364": "450.00",
+}
 EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V7_NEW_ACTIVITY_6_ITEMS_78_SKUS"
 READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V7_NO_PLATFORM_WRITE"
 V6_ATTEMPT_ID = "1e764d94df9c82c2e974a3c4"
@@ -77,6 +103,99 @@ def _fixed_manifest(target_rows: list[dict], discount_rows: list[dict],
         "publish_6_bound_drafts", "official_readback",
     ]
     return manifest
+
+
+def _target_rows(db: Session, plan: CampaignPlan, identity: dict,
+                 policy_sha: str) -> tuple[list[dict], dict | None]:
+    """Rebuild the exact V7 scope from current ERP prices and user-approved customs."""
+    all_rows, stats = campaign_service.build_signup_rows(
+        db, plan,
+        enforce_price_holds=False,
+        explicit_custom_signup_prices=CUSTOM_SIGNUP_PRICE_OVERRIDES,
+    )
+    rows = [row for row in all_rows
+            if str(row.get("taobao_item_id") or "") in TARGET_ITEM_IDS]
+    item_ids = {str(row.get("taobao_item_id") or "") for row in rows}
+    sku_ids = {str(row.get("taobao_sku_id") or "") for row in rows}
+    custom_prices = {
+        str(row.get("taobao_sku_id") or ""): v6._money(row.get("price"))
+        for row in rows if row.get("is_placeholder") is True
+    }
+    actual_scope = campaign_execution_service.scope_sha256(
+        identity=identity, rows=rows, policy_sha256=policy_sha)
+    expected_custom_prices = dict(CUSTOM_SIGNUP_PRICE_OVERRIDES)
+    if not (
+        len(rows) == v6.EXPECTED_TARGET_ROW_COUNT
+        and len(sku_ids) == v6.EXPECTED_TARGET_ROW_COUNT
+        and item_ids == TARGET_ITEM_IDS
+        and custom_prices == expected_custom_prices
+        and actual_scope == EXPECTED_TARGET_SCOPE_SHA256
+        and ADD_SKU_IDS <= sku_ids
+        and not (ADD_SKU_IDS & set(custom_prices))
+    ):
+        return rows, {
+            "error": "plan8_final_v7_signup_scope_drift",
+            "row_count": len(rows),
+            "sku_count": len(sku_ids),
+            "item_ids": sorted(item_ids),
+            "custom_sku_count": len(custom_prices),
+            "custom_price_mismatches": {
+                sku_id: {
+                    "expected": expected_custom_prices.get(sku_id),
+                    "actual": custom_prices.get(sku_id),
+                }
+                for sku_id in sorted(
+                    set(expected_custom_prices) | set(custom_prices))
+                if expected_custom_prices.get(sku_id) != custom_prices.get(sku_id)
+            },
+            "missing_add_sku_ids": sorted(ADD_SKU_IDS - sku_ids),
+            "actual_scope_sha256": actual_scope,
+            "stats": stats,
+        }
+    return rows, None
+
+
+def _discount_scope(db: Session, plan: CampaignPlan) -> tuple[list[dict], dict | None]:
+    """Rebuild only the eight new-SKU discounts without unrelated price holds."""
+    all_rows, stats = campaign_service.build_discount_rows(
+        db, plan, enforce_price_holds=False)
+    rows = [row for row in all_rows if (
+        str(row.get("taobao_item_id") or ""),
+        str(row.get("taobao_sku_id") or ""),
+    ) in ADD_PAIRS]
+    pairs = {(str(row.get("taobao_item_id") or ""),
+              str(row.get("taobao_sku_id") or "")) for row in rows}
+    if len(rows) != 8 or pairs != ADD_PAIRS:
+        return rows, {
+            "error": "plan8_final_v7_discount_scope_drift",
+            "row_count": len(rows), "pairs": sorted(pairs), "stats": stats,
+        }
+    wire_rows = []
+    for row in rows:
+        item_id = str(row.get("taobao_item_id") or "")
+        sku_id = str(row.get("taobao_sku_id") or "")
+        sku_code = str(row.get("sku_code") or "").strip()
+        deduct = v6._money(row.get("deduct"))
+        target_price = v6._money(row.get("target_price"))
+        expected_deduct = EXPECTED_DISCOUNT_DEDUCTS[(item_id, sku_id)]
+        if (deduct != expected_deduct or not sku_code
+                or Decimal(target_price) <= 0):
+            return rows, {
+                "error": "plan8_final_v7_discount_row_drift",
+                "item_id": item_id, "sku_id": sku_id,
+                "expected_deduct": expected_deduct,
+                "actual_deduct": deduct, "target_price": target_price,
+                "sku_code_present": bool(sku_code),
+            }
+        wire_rows.append({
+            "taobao_item_id": item_id,
+            "taobao_sku_id": sku_id,
+            "sku_code": sku_code,
+            "deduct": deduct,
+            "target_price": target_price,
+        })
+    return sorted(wire_rows, key=lambda row: (
+        row["taobao_item_id"], row["taobao_sku_id"])), None
 
 
 def _validate_prerequisites(db: Session) -> tuple[bool, list[dict]]:
@@ -322,10 +441,10 @@ def recover_plan8_final_v7(
     if policy_sha != EXPECTED_POLICY_SHA256:
         return _fail("plan8_final_v7_policy_changed",
                      actual_policy_sha256=policy_sha)
-    target_rows, scope_error = v6._target_rows(db, plan, identity, policy_sha)
+    target_rows, scope_error = _target_rows(db, plan, identity, policy_sha)
     if scope_error:
         return _fail(**scope_error)
-    discount_rows, discount_error = v6._discount_scope(db, plan)
+    discount_rows, discount_error = _discount_scope(db, plan)
     if discount_error:
         return _fail(**discount_error)
     manifest = _fixed_manifest(target_rows, discount_rows, policy_sha)
@@ -358,9 +477,9 @@ def recover_plan8_final_v7(
     post_identity_ok, post_identity = v6._identity_allowed(plan)
     post_policy_sha = str(
         campaign_policy_service.require_policy().get("_sha256") or "")
-    post_rows, post_scope_error = v6._target_rows(
+    post_rows, post_scope_error = _target_rows(
         db, plan, post_identity, post_policy_sha)
-    post_discounts, post_discount_error = v6._discount_scope(db, plan)
+    post_discounts, post_discount_error = _discount_scope(db, plan)
     if (not post_identity_ok or post_policy_sha != policy_sha
             or post_scope_error or post_discount_error
             or v6._hash(_fixed_manifest(

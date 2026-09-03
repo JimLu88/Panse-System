@@ -1089,6 +1089,42 @@ def test_placeholder_final_price_never_crosses_immutable_twenty_percent_floor(
     assert guard["minimum_final_price"] == 400.0
 
 
+def test_exact_user_authorized_custom_signup_price_may_be_below_default_floor(
+        db_session):
+    from app.services import campaign_sku_slot_service
+
+    plan = _plan(db_session, "big88")
+    plan.remark = (
+        "custom_placeholder_sku_allowlist=73091; "
+        "custom_signup_price_authorized=73091:55.00"
+    )
+    _mk(db_session, "PPSPHF01", "PPSPHF0199", "9320", "73091",
+        daily=2000, placeholder=True, line=250)
+    _mk(db_session, "PPSPHF01", "PPSPHF0101", "9320", "73090",
+        daily=1200, big=800)
+    db_session.commit()
+    assert campaign_sku_slot_service.seed_active_slots(db_session)["created"] == 2
+    placeholder = db_session.query(PricingSku).filter_by(
+        sku_code="PPSPHF0199").one()
+    placeholder.daily_price = Decimal("500")
+    db_session.commit()
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+
+    custom = next(row for row in rows if row["taobao_sku_id"] == "73091")
+    assert custom["price"] == 55.0
+    assert custom["remark"] == "用户逐SKU明确授权的定制活动低价"
+    assert stats["custom_floor_guard_items"] == []
+    assert stats["explicit_custom_signup_price_rows"] == [{
+        "taobao_item_id": "9320",
+        "taobao_sku_id": "73091",
+        "sku_code": "PPSPHF0199",
+        "authorized_price": 55.0,
+        "generic_safe_cap": 284.0,
+        "authorization": "exact_current_plan_user_decision",
+    }]
+
+
 def test_placeholder_signup_uses_safe_cap_after_expiry_confirmation(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (

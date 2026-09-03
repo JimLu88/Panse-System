@@ -901,6 +901,57 @@ def authorized_custom_line_concessions(plan) -> dict[str, Decimal]:
     return out
 
 
+def _normalize_custom_signup_prices(values) -> dict[str, Decimal]:
+    """Normalize one exact, fail-closed SKU -> activity-price authorization."""
+    import re
+
+    if not isinstance(values, dict) or not values:
+        return {}
+    out: dict[str, Decimal] = {}
+    for raw_sku_id, raw_price in values.items():
+        sku_id = str(raw_sku_id or "").strip()
+        price = _d(raw_price)
+        if (not re.fullmatch(r"\d{4,20}", sku_id)
+                or price is None or price <= 0):
+            return {}
+        out[sku_id] = price.quantize(_CENT)
+    return out
+
+
+def authorized_custom_signup_prices(plan) -> dict[str, Decimal]:
+    """Return exact custom SKU activity prices approved for this plan.
+
+    Marker format::
+
+        custom_signup_price_authorized=73091:55.00,73092:128.00
+
+    Every token must be valid.  Callers still verify that each named platform
+    SKU maps to an ERP-authoritative custom/placeholder row.  This is the only
+    path that may use a price below the generic immutable-baseline ratio.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*custom_signup_price_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    raw = matched.group(1).strip()
+    if not raw:
+        return {}
+    parsed: dict[str, str] = {}
+    for token in raw.split(","):
+        token = token.strip()
+        part = re.fullmatch(r"(\d{4,20})\s*:\s*([0-9]+(?:\.[0-9]{1,2})?)", token)
+        if part is None or part.group(1) in parsed:
+            return {}
+        parsed[part.group(1)] = part.group(2)
+    return _normalize_custom_signup_prices(parsed)
+
+
 def custom_placeholder_sku_allowlist(plan) -> set[str]:
     """Return the exact Taobao SKU IDs allowed for custom-price handling.
 
@@ -1408,6 +1459,7 @@ def build_signup_rows(
         db: Session, plan, *, enforce_price_holds: bool = True,
         allow_placeholder_safe_lowering: bool = False,
         include_candidate_unavailable: bool = True,
+        explicit_custom_signup_prices: Optional[dict] = None,
 ) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
@@ -1439,6 +1491,12 @@ def build_signup_rows(
             "placeholder_safe_cap_without_live_price_enabled") is True
     )
     plan_placeholder_lowering = placeholder_price_lowering_authorized(plan)
+    authorized_custom_prices = authorized_custom_signup_prices(plan)
+    supplied_custom_prices = _normalize_custom_signup_prices(
+        explicit_custom_signup_prices)
+    if explicit_custom_signup_prices and not supplied_custom_prices:
+        raise ValueError("explicit_custom_signup_prices_invalid")
+    authorized_custom_prices.update(supplied_custom_prices)
     placeholder_lowering = bool(
         allow_placeholder_safe_lowering
         or plan_placeholder_lowering
@@ -1473,6 +1531,10 @@ def build_signup_rows(
              "placeholder_price_lowered": [],
              "placeholder_price_preserved_by_official_floor": [],
              "custom_floor_guard_items": [],
+             "authorized_custom_signup_prices": {
+                 sku_id: float(price)
+                 for sku_id, price in sorted(authorized_custom_prices.items())},
+             "explicit_custom_signup_price_rows": [],
              "custom_placeholder_sku_allowlist": sorted(
                  custom_placeholder_sku_allowlist(plan)),
              "excluded_unselected_custom_placeholder_skus": [],
@@ -1540,6 +1602,37 @@ def build_signup_rows(
                 if pair else None
             )
             live_price = placeholder_live_prices.get(sid)
+            explicit_price = authorized_custom_prices.get(sid)
+            if explicit_price is not None:
+                if pair is None or not _is_explicit_custom_price_sku(pair[0]):
+                    blocked_placeholders.append({
+                        "taobao_item_id": item_id,
+                        "taobao_sku_id": sid,
+                        "sku_code": row["sku_code"],
+                        "reason": "custom_signup_price_authorization_not_custom",
+                    })
+                    continue
+                if explicit_price > generated:
+                    blocked_placeholders.append({
+                        "taobao_item_id": item_id,
+                        "taobao_sku_id": sid,
+                        "sku_code": row["sku_code"],
+                        "reason": "authorized_custom_signup_price_above_safe_cap",
+                        "authorized_price": float(explicit_price),
+                        "safe_cap": float(generated),
+                    })
+                    continue
+                row["price"] = float(explicit_price)
+                row["remark"] = "用户逐SKU明确授权的定制活动低价"
+                stats["explicit_custom_signup_price_rows"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": row["sku_code"],
+                    "authorized_price": float(explicit_price),
+                    "generic_safe_cap": float(generated),
+                    "authorization": "exact_current_plan_user_decision",
+                })
+                continue
             official = official_deduction(
                 generated, lev, generated >= Decimal("100"))
             generated_final = (generated - official).quantize(_CENT)
@@ -1708,6 +1801,8 @@ def build_signup_rows(
                 })
                 continue
             selected = _d(row["price"]) or Decimal("0")
+            if str(row["taobao_sku_id"]) in authorized_custom_prices:
+                continue
             selected_final = (
                 selected - official_deduction(
                     selected, lev, selected >= Decimal("100"))
@@ -1842,7 +1937,8 @@ def discount_for_sku(db: Session, s, p, tier: str,
 
 
 def build_discount_rows(
-        db: Session, plan, *, no_sales_items: Optional[set[str]] = None
+        db: Session, plan, *, no_sales_items: Optional[set[str]] = None,
+        enforce_price_holds: bool = True,
 ) -> tuple[list[dict], dict]:
     """单品立减 builder (spec §二):
       大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
@@ -1865,7 +1961,7 @@ def build_discount_rows(
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
     price_analysis = price_resolution_analysis(db, plan)
-    holds = price_analysis["holds"]
+    holds = price_analysis["holds"] if enforce_price_holds else []
     price_resolutions = price_analysis["by_sku_id"]
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)

@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-09-03.1",
-  "updated_at": "2026-09-03T15:30:00+08:00",
+  "version": "2026-09-03.2",
+  "updated_at": "2026-09-03T14:25:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -72,6 +72,8 @@
     "automatic_small_conflict_applies_to": [],
     "explicit_custom_sku_concession": "allow_only_for_plan_remark_named_sku_ids_and_authoritative_custom_placeholder_or_custom_sku_code; never_name_keyword_inference",
     "custom_sku_min_final_price_ratio_of_immutable_baseline": 0.20,
+    "explicit_custom_signup_price_marker": "custom_signup_price_authorized",
+    "explicit_authorized_custom_signup_price_may_bypass_baseline_ratio": true,
     "explicit_custom_sku_concession_changes_signup_price": true,
     "official_discount_rounding": "use_verified_platform_rule_for_campaign_and_low_price_skus_keep_cent_precision"
   },
@@ -171,7 +173,7 @@
     "整条定制、补差价或服务专用链接只允许通过显式商品级标记或全映射SKU均为占位的权威字段排除；禁止按名称关键词误杀含正常SKU的家具链接。",
     "程序禁止新建、平移或切换物理SKUID来规避平台历史价格线；SKU身份调整只能由独立商品维护流程在用户精确授权后处理。",
     "用户逐SKU明确授权时，程序可通过计划标记把1元以内（含1元）的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
-    "只有权威占位标记或定制SKU编码才允许使用定制让价；商品或规格名称中的定制、咨询字样不得自动改变价格分类。定制最终价不得低于首次接管原价的20%。",
+    "只有权威占位标记或定制SKU编码才允许使用定制让价；商品或规格名称中的定制、咨询字样不得自动改变价格分类。默认定制最终价不得低于首次接管原价的20%；用户逐SKU明确批准的固定活动价可以更低，但只对该场、该SKU、该价格生效。",
     "ERP权威字段标记的定制或占位SKU必须随目标整品完整报名，可使用更低的安全报名价，不得因此排除、阻断或列为未解决；只凭编码尾号识别的旧定制SKU仍须计划中的精确淘宝SKUID白名单，商品和规格名称不得推断。",
     "权威定制SKU有最低券后线时按券后线安全价报名；没有券后线时按ERP日常价的80%反推保守报名上限。平台当前价存在时取两者孰低，不存在时直接使用安全上限；这只降低活动报名价，不修改ERP日常价。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",

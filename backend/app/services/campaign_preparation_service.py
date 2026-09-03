@@ -529,7 +529,10 @@ def get_latest_bundle(
     bundle = db.execute(select(CampaignPreparationBundle).where(
         CampaignPreparationBundle.workflow_key == workflow_key,
         CampaignPreparationBundle.plan_id == expected_plan_id,
-    ).order_by(CampaignPreparationBundle.revision.desc())).scalar_one_or_none()
+    ).order_by(
+        CampaignPreparationBundle.revision.desc(),
+        CampaignPreparationBundle.created_at.desc(),
+    ).limit(1)).scalar_one_or_none()
     if bundle is None:
         return {"ok": False, "error": "preparation_bundle_not_found"}
     return _serialize(bundle)

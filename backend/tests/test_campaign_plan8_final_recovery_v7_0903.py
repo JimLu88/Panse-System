@@ -6,6 +6,7 @@ from app.api import campaigns
 from app.cli import campaign_recover_plan8_final_v7 as cli
 from app.models.campaign import CampaignExecutionAttempt
 from app.services import (
+    campaign_policy_service,
     campaign_plan8_final_recovery_v7_service as recovery,
     web_agent_service,
 )
@@ -91,6 +92,15 @@ def test_v7_full_flow_claims_once_and_completes(
     _seed_prerequisites(db_session)
     _seed_v6_terminal(db_session)
     _patch_scope(db_session, monkeypatch)
+    monkeypatch.setattr(
+        campaign_policy_service, "require_policy",
+        lambda: {"_sha256": recovery.EXPECTED_POLICY_SHA256})
+    monkeypatch.setattr(
+        recovery, "_target_rows",
+        lambda *_a, **_k: (_signup_rows(), None))
+    monkeypatch.setattr(
+        recovery, "_discount_scope",
+        lambda *_a, **_k: (_discount_rows(), None))
     phases = []
 
     def fake_web(_db, *, payload, timeout_s=2400):
@@ -123,6 +133,15 @@ def test_v7_full_flow_claims_once_and_completes(
     attempts = recovery._attempts(db_session)
     assert len(attempts) == 1
     assert attempts[0].state == "completed"
+
+
+def test_v7_custom_price_scope_is_exact_and_does_not_include_added_real_skus():
+    assert len(recovery.CUSTOM_SIGNUP_PRICE_OVERRIDES) == 18
+    assert set(recovery.CUSTOM_SIGNUP_PRICE_OVERRIDES).isdisjoint(
+        recovery.ADD_SKU_IDS)
+    assert recovery.EXPECTED_POLICY_SHA256 != recovery.v6.EXPECTED_POLICY_SHA256
+    assert (recovery.EXPECTED_TARGET_SCOPE_SHA256
+            != recovery.v6.EXPECTED_TARGET_SCOPE_SHA256)
 
 
 def test_v7_prerequisite_requires_exact_v6_unknown_no_retry(
