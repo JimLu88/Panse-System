@@ -41,7 +41,7 @@ EXEMPT_ITEM_IDS = {"805268708396"}
 EXPECTED_SIGNUP_ROWS = 13
 EXPECTED_DISCOUNT_ROWS = 9
 EXECUTION_SOURCE = "campaign_super_reduce_plan7_final_closeout"
-RECOVERY_ID = "plan7-final-closeout-product-export-claim-v2"
+RECOVERY_ID = "plan7-final-closeout-product-export-claim-v3"
 EXPECTED_WEB_AGENT_COMMIT = "c7fdea3ed4594983d8f8baea896ff8e65088f2b8"
 
 

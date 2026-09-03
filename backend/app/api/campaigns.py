@@ -929,7 +929,22 @@ def execute_super_reduce_plan7_final_closeout_v2(
         body: CampaignPlan7FinalCloseoutV2In,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
-    """Consume the reviewed plan-7 bundle through the repaired export claim."""
+    """Retired because its service path was not registered in the auth scope."""
+    result = {
+        "ok": False,
+        "error": "final_closeout_v2_retired_before_platform_read",
+        "automatic_retry": False,
+        "platform_write": False,
+    }
+    raise HTTPException(409, detail=result)
+
+
+@router.post("/execute-super-reduce-plan7-final-closeout-v3")
+def execute_super_reduce_plan7_final_closeout_v3(
+        body: CampaignPlan7FinalCloseoutV2In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Consume the reviewed plan-7 bundle through the repaired auth/export path."""
     from app.services import campaign_plan7_final_closeout_service as service
 
     result = service.execute_plan7_final_closeout(

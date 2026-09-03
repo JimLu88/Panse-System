@@ -32,6 +32,9 @@ CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH = (
 CAMPAIGN_PLAN7_FINAL_CLOSEOUT_PATH = (
     "/api/campaigns/execute-super-reduce-plan7-final-closeout"
 )
+CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH = (
+    "/api/campaigns/execute-super-reduce-plan7-final-closeout-v3"
+)
 CAMPAIGN_PLAN8_EXECUTE_PATH = "/api/campaigns/execute-super88-plan8"
 CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH = (
     "/api/campaigns/recover-super88-plan8-signup"
@@ -144,6 +147,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH,
     CAMPAIGN_PLAN7_RESUME_EXECUTE_PATH,
     CAMPAIGN_PLAN7_FINAL_CLOSEOUT_PATH,
+    CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH,
     CAMPAIGN_PLAN8_EXECUTE_PATH,
     CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH,
     CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH,
@@ -498,6 +502,8 @@ def require_campaign_prepare_principal(
                 "campaign.super_reduce.plan7.resume_execute"),
             CAMPAIGN_PLAN7_FINAL_CLOSEOUT_PATH: (
                 "campaign.super_reduce.plan7.final_closeout"),
+            CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH: (
+                "campaign.super_reduce.plan7.final_closeout_v3"),
             CAMPAIGN_PLAN8_SIGNUP_RECOVERY_PATH: (
                 "campaign.super88.plan8.signup_recovery"),
             CAMPAIGN_PLAN8_FINAL_RECOVERY_V2_PATH: (

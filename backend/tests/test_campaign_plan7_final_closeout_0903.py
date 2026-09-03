@@ -8,7 +8,7 @@ from app.models.campaign import (
     CampaignPreparationBundle,
 )
 from app.services import campaign_plan7_final_closeout_service as service
-from app.cli import campaign_execute_plan7_final_closeout_v2 as cli_v2
+from app.cli import campaign_execute_plan7_final_closeout_v3 as cli_v3
 
 
 def _identity():
@@ -276,10 +276,10 @@ def test_internal_push_guard_rejects_any_changed_bundle_context(
     assert result["automatic_retry"] is False
 
 
-def test_v2_cli_is_bound_to_repair_and_exact_bundle_identity():
-    assert cli_v2._URL.endswith(
-        "/execute-super-reduce-plan7-final-closeout-v2")
-    assert cli_v2._FIXED_PAYLOAD == {
+def test_v3_cli_is_bound_to_repair_and_exact_bundle_identity():
+    assert cli_v3._URL.endswith(
+        "/execute-super-reduce-plan7-final-closeout-v3")
+    assert cli_v3._FIXED_PAYLOAD == {
         "workflow_key": service.WORKFLOW_KEY,
         "plan_id": service.PLAN_ID,
         "expected_status": service.EXPECTED_STATUS,
