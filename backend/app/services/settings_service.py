@@ -53,6 +53,8 @@ _SECRET_KEYS = {
     # 01 activity executor: encrypted, never returned, accepted only by
     # POST /api/campaigns/prepare and consumed through the container CLI.
     "campaign_prepare_service_token",
+    # Exact single-path identity for the immutable read-only preparation bundle.
+    "campaign_preparation_bundle_service_token",
 }
 
 

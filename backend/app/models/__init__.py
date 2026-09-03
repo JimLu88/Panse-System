@@ -6,6 +6,7 @@ from app.models.campaign import (  # noqa: F401 - 活动生命周期 (2026-07-17
     CampaignExecutionAttempt,
     CampaignEvidenceSnapshot,
     CampaignItemExclusion,
+    CampaignPreparationBundle,
     CampaignCalendar,
     CampaignPlan,
     CampaignReconReport,

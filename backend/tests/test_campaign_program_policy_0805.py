@@ -54,8 +54,8 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["ai_may_adjust_price"] is False
     assert policy["execution"]["automatic_campaign_withdrawal_enabled"] is False
     assert policy["execution"]["withdrawal_requires_current_explicit_item_list_authorization"] is True
-    assert policy["pricing"]["real_sku_signup_price"] == (
-        "erp_daily_price_unless_audited_combined_conflict_adjustment_lte_2_yuan")
+    assert policy["pricing"]["real_sku_signup_price"] == "exact_erp_daily_price"
+    assert policy["pricing"]["real_sku_signup_price_may_be_lowered_to_pass_platform"] is False
     assert policy["pricing"][
         "authoritative_placeholder_safe_lowering_enabled"] is True
     assert policy["pricing"][
@@ -67,12 +67,13 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
         "suffix_only_custom_codes_still_require_exact_taobao_sku_id_allowlist; "
         "never_name_keyword_inference")
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
-    assert policy["final_price_gate"]["automatic_small_conflict_max_yuan_inclusive"] == 2.00
+    assert policy["final_price_gate"]["automatic_small_conflict_max_yuan_inclusive"] == 0.00
     scope = policy["scope_and_idempotency"]
-    assert scope["exclude_no_sales_items_from_campaign_signup"] is True
-    assert scope["registered_no_sales_is_advisory_only"] is False
-    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is False
-    assert scope["sku_rotation_enabled"] == "controlled_new_slot_pool_only"
+    assert scope["exclude_no_sales_items_from_campaign_signup"] is False
+    assert scope["registered_no_sales_is_advisory_only"] is True
+    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is True
+    assert scope["sku_rotation_enabled"] is False
+    assert policy["execution"]["program_may_create_or_switch_sku_slot"] is False
     assert scope["qualification_before_discount_and_final_signup"] is False
     assert policy["execution"]["platform_write_probe_enabled"] is False
     assert policy["execution"]["maximum_platform_signup_submissions_per_run"] == 1
@@ -276,7 +277,7 @@ def test_fresh_platform_candidate_ceiling_is_exact_r17_evidence(db_session):
     assert candidate["max_eligible_activity_price"] == 3000.0
 
 
-def test_platform_candidate_ceiling_within_two_yuan_is_adjusted_and_audited(
+def test_platform_candidate_ceiling_conflict_holds_whole_item_without_repricing(
         db_session):
     plan = _plan(db_session)
     _sku(db_session, daily=3000)
@@ -299,11 +300,11 @@ def test_platform_candidate_ceiling_within_two_yuan_is_adjusted_and_audited(
     raw_scope, _ = campaign_service.build_signup_rows(
         db_session, plan, enforce_price_holds=False)
 
-    assert holds == []
-    assert signup[0]["price"] == 2999.99
-    assert raw_scope[0]["price"] == 2999.99
-    assert stats["excluded_price_hold_items"] == []
-    assert stats["automatic_price_adjustments"][0]["total_concession"] == .01
+    assert holds[0]["taobao_item_id"] == "991880805"
+    assert signup == []
+    assert raw_scope[0]["price"] == 3000.0
+    assert stats["excluded_price_hold_items"][0]["taobao_item_id"] == "991880805"
+    assert stats["automatic_price_adjustments"] == []
 
 
 def test_fresh_terminal_platform_acceptance_is_exact_r17_evidence(db_session):
@@ -497,7 +498,7 @@ def test_explicit_new_item_without_history_still_requires_current_list_ceiling(d
         "current_erp_list_price_ceiling"]
 
 
-def test_fresh_platform_lines_auto_adjust_sub_two_yuan_without_hold(db_session):
+def test_fresh_platform_coupon_conflict_requires_explicit_named_authorization(db_session):
     plan = _plan(db_session)
     _sku(db_session, legacy_list=9999, legacy_coupon=9999)
     campaign_price_floor_service.record_activity_export(
@@ -517,10 +518,9 @@ def test_fresh_platform_lines_auto_adjust_sub_two_yuan_without_hold(db_session):
     signup, _ = campaign_service.build_signup_rows(db_session, plan)
     discounts, _ = campaign_service.build_discount_rows(db_session, plan)
 
-    assert holds == []
-    assert signup[0]["price"] == 3000.0
-    assert discounts[0]["deduct"] == 640.27
-    assert discounts[0]["target_price"] == 1999.73
+    assert holds[0]["taobao_item_id"] == "991880805"
+    assert signup == []
+    assert discounts == []
 
 
 def test_named_sub_yuan_concession_clears_matching_coupon_floor_hold(db_session):

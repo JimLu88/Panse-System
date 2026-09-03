@@ -9,7 +9,6 @@ from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 
 
 CENT = Decimal("0.01")
-MAX_STANDARD_CONCESSION = Decimal("2.00")
 CUSTOM_MIN_FINAL_RATIO = Decimal("0.20")
 
 
@@ -27,12 +26,25 @@ def resolve(
     daily = _d(daily_price)
     target = _d(target_final_price)
     authorized = _d(authorized_concession)
+    # Real SKU campaign price is an invariant, not a negotiable optimization.
+    # Platform history may make an item ineligible, but it may never rewrite
+    # the ERP daily price or trigger an SKU-identity rotation here.
     signup = daily
     reasons: list[dict] = []
 
     if minimum_list_price is not None:
         line = _d(minimum_list_price)
-        gap = max(Decimal("0"), signup - line)
+        gap = max(Decimal("0"), daily - line)
+        if gap and not is_custom:
+            return {
+                "ok": False,
+                "action": "hold_whole_item",
+                "reason": "real_sku_signup_price_would_differ_from_erp_daily",
+                "required_signup_reduction": float(gap),
+                "signup_price": float(daily),
+                "minimum_list_price": float(line),
+                "reasons": [{"type": "minimum_list_price", "amount": float(gap)}],
+            }
         if gap:
             signup -= gap
             reasons.append({"type": "minimum_list_price", "amount": float(gap)})
@@ -53,11 +65,27 @@ def resolve(
     coupon_concession = Decimal("0")
     if minimum_coupon_after_price is not None:
         line = _d(minimum_coupon_after_price)
-        coupon_concession = max(Decimal("0"), final - line)
-        if coupon_concession:
+        required = max(Decimal("0"), final - line)
+        if required and not is_custom:
+            return {
+                "ok": False,
+                "action": "hold_whole_item",
+                "reason": "erp_target_above_platform_coupon_floor",
+                "required_coupon_concession": float(required),
+                "signup_price": float(daily),
+                "erp_target_price": float(target),
+                "authorized_target_price": float(final),
+                "minimum_coupon_after_price": float(line),
+                "reasons": [{
+                    "type": "minimum_coupon_after_price",
+                    "amount": float(required),
+                }],
+            }
+        coupon_concession = required
+        if required:
             reasons.append({
                 "type": "minimum_coupon_after_price",
-                "amount": float(coupon_concession),
+                "amount": float(required),
             })
     single = (normal_single + coupon_concession).quantize(CENT)
     final = (signup - official - single).quantize(CENT)
@@ -65,18 +93,7 @@ def resolve(
     total_concession = (
         signup_concession + authorized + coupon_concession
     ).quantize(CENT)
-    if not is_custom:
-        if total_concession > MAX_STANDARD_CONCESSION:
-            return {
-                "ok": False,
-                "action": "use_clean_sku_slot",
-                "reason": "standard_price_conflict_over_2_yuan",
-                "required_signup_reduction": float(signup_concession),
-                "required_coupon_concession": float(coupon_concession),
-                "required_total_concession": float(total_concession),
-                "reasons": reasons,
-            }
-    else:
+    if is_custom:
         if immutable_baseline_daily_price is None:
             return {"ok": False, "action": "block", "reason": "missing_custom_baseline"}
         floor = (_d(immutable_baseline_daily_price) * CUSTOM_MIN_FINAL_RATIO).quantize(
@@ -93,7 +110,7 @@ def resolve(
 
     return {
         "ok": True,
-        "action": "adjust" if reasons or authorized > 0 else "unchanged",
+        "action": "adjust" if is_custom and (reasons or authorized > 0) else "unchanged",
         "signup_price": float(signup),
         "official_deduction": float(official),
         "single_discount": float(single),

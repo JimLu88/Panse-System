@@ -61,7 +61,7 @@ def test_invalid_item_ids_never_enter_grouping_or_registry(db_session):
     assert result["registry_cleanup"]["removed_invalid_values"] == ["5", "待定", "暂无"]
 
 
-def test_terminal_no_sales_is_quietly_excluded_from_later_campaigns(db_session):
+def test_terminal_no_sales_is_advisory_and_reincluded_in_later_campaigns(db_session):
     plan = _plan()
     db_session.add(plan)
     _pair(db_session, item_id="1000009209", sku_code="NS1", sku_id="SID1")
@@ -70,9 +70,10 @@ def test_terminal_no_sales_is_quietly_excluded_from_later_campaigns(db_session):
 
     rows, stats = campaign.build_signup_rows(db_session, plan)
 
-    assert rows == []
+    assert [row["taobao_item_id"] for row in rows] == ["1000009209"]
     assert stats["excluded_no_sales_items"] == []
-    assert stats["excluded_terminal_no_sales_items"] == ["1000009209"]
+    assert stats["excluded_terminal_no_sales_items"] == []
+    assert stats["advisory_prior_no_sales_items"] == ["1000009209"]
 
 
 def test_mixed_item_keeps_authoritative_placeholder_with_conservative_fallback(

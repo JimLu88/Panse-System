@@ -277,7 +277,7 @@ def test_warehouse_user_rule_is_permanent_across_campaign_surfaces(db_session):
     assert item_id not in grouping["无动销"]
 
 
-def test_terminal_no_sales_is_absent_from_later_rows_holds_targets_and_recon(
+def test_terminal_no_sales_is_reincluded_in_later_campaign_as_advisory(
         db_session):
     terminal_plan = _plan(db_session)
     item_id = "991880809"
@@ -313,17 +313,19 @@ def test_terminal_no_sales_is_absent_from_later_rows_holds_targets_and_recon(
     signup, signup_stats = campaign.build_signup_rows(db_session, later_plan)
     discounts, discount_stats = campaign.build_discount_rows(db_session, later_plan)
 
-    assert signup == []
-    assert discounts == []
+    assert [row["taobao_item_id"] for row in signup] == [item_id]
+    assert [row["taobao_item_id"] for row in discounts] == [item_id]
     assert campaign.price_hold_items(db_session, later_plan) == []
-    assert campaign.target_prices(db_session, later_plan) == {}
-    assert signup_stats["excluded_terminal_no_sales_items"] == [item_id]
-    assert discount_stats["excluded_terminal_no_sales_items"] == [item_id]
+    assert set(campaign.target_prices(db_session, later_plan)) == {sku_id}
+    assert signup_stats["excluded_terminal_no_sales_items"] == []
+    assert discount_stats["excluded_terminal_no_sales_items"] == []
+    assert signup_stats["advisory_prior_no_sales_items"] == [item_id]
+    assert discount_stats["advisory_prior_no_sales_items"] == [item_id]
     assert recon._compare_discounts(db_session, later_plan, [{
         "item_id": item_id,
         "sku_id": sku_id,
         "discount_value": 999,
-    }]) == []
+    }]) != []
 
 
 def test_explicit_terminal_no_sales_scope_never_builds_fallback_discount(

@@ -1072,22 +1072,19 @@ def campaign_item_exclusions(db: Session, pairs: Optional[list[tuple]] = None) -
 def price_resolution_analysis(db: Session, plan) -> dict:
     """Resolve fresh platform price-line conflicts without a platform write.
 
-    Standard SKUs may receive one audited combined concession of at most CNY 2
-    (signup-price reduction plus coupon-line reduction plus an older explicit
-    concession).  A larger conflict requests a clean physical SKU slot.  Custom
-    placeholders may go lower only while the resulting buyer price stays at or
-    above 20% of the immutable ERP baseline.
+    Real SKU signup prices stay exactly equal to ERP daily prices.  Any
+    incompatible platform line holds the whole item while other safe items may
+    continue.  This service never creates or switches an SKU identity.
     """
     from app.services import (
         campaign_price_floor_service,
         campaign_price_resolution_service,
         campaign_sku_slot_service,
         delisted_sku_service,
-        no_sales_service,
     )
 
-    # The first managed ERP price becomes immutable slot metadata.  This is an
-    # internal auditable snapshot, not a Taobao write, and is idempotent.
+    # This is an ERP-only immutable baseline snapshot. It never creates or
+    # switches a Taobao SKU and is required for the permanent custom 20% floor.
     campaign_sku_slot_service.seed_active_slots(db)
 
     tier = plan_tier(plan)
@@ -1095,7 +1092,6 @@ def price_resolution_analysis(db: Session, plan) -> dict:
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     delisted = delisted_sku_service.get_delisted(db)
-    terminal_no_sales = no_sales_service.get_no_sales(db)
     mapped_pairs = _mapped_pairs(db)
     whole_item_exclusions = _campaign_item_exclusions_for_plan(
         db, plan, mapped_pairs)
@@ -1107,8 +1103,7 @@ def price_resolution_analysis(db: Session, plan) -> dict:
         if bool(getattr(s, "is_custom_placeholder", False)):
             continue
         item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
-        if (not item_id or item_id in terminal_no_sales
-                or item_id in whole_item_exclusions):
+        if not item_id or item_id in whole_item_exclusions:
             continue
         daily = _d(getattr(s, "daily_price", None))
         if daily is None or daily <= 0:
@@ -1180,14 +1175,12 @@ def price_resolution_analysis(db: Session, plan) -> dict:
                 "taobao_item_id": item_id,
                 "product": s.product_name or s.product_code or "",
                 "skus": [],
-                "action": (
-                    "整品暂缓；普通SKU总让幅超过2元时申请干净备用槽；"
-                    "定制SKU低于原始日常价20%时永久停止降价"),
+                "action": "整品暂缓；真实SKU禁止改价或轮换，其余安全商品继续",
             })
             reason_type = (
-                "sku_slot_required"
-                if result.get("action") == "use_clean_sku_slot"
-                else "custom_floor_guard"
+                "custom_floor_guard"
+                if result.get("reason") == "custom_final_below_20_percent_baseline"
+                else "real_sku_price_conflict"
             )
             hold["skus"].append({
                 "sku_code": s.sku_code,
@@ -1485,6 +1478,7 @@ def build_signup_rows(
              "excluded_unselected_custom_placeholder_skus": [],
              "automatic_price_adjustments": price_analysis["adjustments"],
              "excluded_terminal_no_sales_items": [],
+             "advisory_prior_no_sales_items": sorted(registered_no_sales),
              "excluded_whole_items": list(whole_item_exclusions.values()),
              "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0}
@@ -1495,11 +1489,6 @@ def build_signup_rows(
             stats["skipped_not_erp_listed"] += 1
             continue
         item_id = str(p.taobao_item_id or "").strip()
-        # A durable platform-terminal exclusion takes precedence over local
-        # mapping/price defects: later campaigns must stay quiet for this item.
-        if item_id in registered_no_sales:
-            stats["excluded_terminal_no_sales_items"].append(item_id)
-            continue
         if not p.taobao_sku_id:
             stats["skipped_no_skuid"] += 1
             continue
@@ -1532,9 +1521,9 @@ def build_signup_rows(
         for row in item_rows:
             resolution = price_resolutions.get(str(row["taobao_sku_id"]))
             if resolution and resolution.get("ok") and not row.get("is_placeholder"):
+                # Defensive assignment only: the resolver is required to keep
+                # this equal to the ERP daily price.
                 row["price"] = resolution["signup_price"]
-                if resolution.get("action") == "adjust":
-                    row["remark"] = "平台价格线冲突已按合计不超过2元自动修正"
         stats["placeholder_candidate_sku_ids"].extend(
             str(row["taobao_sku_id"])
             for row in item_rows if row.get("is_placeholder"))
@@ -1696,6 +1685,63 @@ def build_signup_rows(
                 "action": "价保到期未确认，整品暂缓；禁止用高保护价覆盖券后安全上限",
             })
             continue
+        # Re-check the final selected placeholder price against the immutable
+        # first-managed ERP baseline. This runs after every lowering branch so
+        # neither an official floor nor a live platform price can bypass it.
+        from app.services import campaign_sku_slot_service
+        for row in item_rows:
+            if not row.get("is_placeholder"):
+                continue
+            pair = next((candidate for candidate in pairs
+                         if candidate[0].sku_code == row["sku_code"]), None)
+            if pair is None:
+                continue
+            baseline = campaign_sku_slot_service.immutable_baseline(
+                db, sku_code=pair[0].sku_code, item_id=item_id,
+                taobao_sku_id=str(row["taobao_sku_id"]))
+            if baseline is None:
+                blocked_placeholders.append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": str(row["taobao_sku_id"]),
+                    "sku_code": row["sku_code"],
+                    "reason": "custom_immutable_baseline_missing",
+                })
+                continue
+            selected = _d(row["price"]) or Decimal("0")
+            selected_final = (
+                selected - official_deduction(
+                    selected, lev, selected >= Decimal("100"))
+            ).quantize(_CENT)
+            permanent_floor = campaign_sku_slot_service.custom_floor(baseline)
+            if selected_final < permanent_floor:
+                blocked_placeholders.append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": str(row["taobao_sku_id"]),
+                    "sku_code": row["sku_code"],
+                    "reason": "custom_final_below_20_percent_baseline",
+                    "selected_final_price": float(selected_final),
+                    "minimum_final_price": float(permanent_floor),
+                    "immutable_baseline_daily_price": float(baseline),
+                })
+        if blocked_placeholders:
+            stats["placeholder_price_lowered"] = [
+                detail for detail in stats["placeholder_price_lowered"]
+                if str(detail.get("taobao_item_id") or "") != item_id
+            ]
+            stats["placeholder_price_preserved_by_official_floor"] = [
+                detail for detail in
+                stats["placeholder_price_preserved_by_official_floor"]
+                if str(detail.get("taobao_item_id") or "") != item_id
+            ]
+            stats["custom_floor_guard_items"].extend(blocked_placeholders)
+            stats["placeholder_price_blocked_items"].append({
+                "taobao_item_id": item_id,
+                "product": (pairs[0][0].product_name or
+                            pairs[0][0].product_code or "")[:30],
+                "placeholders": blocked_placeholders,
+                "action": "定制最终价低于首次纳管原价20%永久保护线，整品暂缓",
+            })
+            continue
         rows.extend(item_rows)
     stats["rows"] = len(rows)
     stats["placeholder_candidate_sku_ids"] = sorted(set(
@@ -1783,12 +1829,11 @@ def discount_for_sku(db: Session, s, p, tier: str,
     daily = _d(getattr(s, "daily_price", None))
     if daily is None or daily <= 0:
         return None
-    from app.services import no_sales_service
     stats = {"skipped_no_target": 0, "skipped_no_deduct": 0,
              "rotation_suggested": [], "line_concessions": [],
              "official_low_price_exact": 0}
     item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
-    nosales = no_sales_items if no_sales_items is not None else no_sales_service.get_no_sales(db)
+    nosales = no_sales_items or set()
     if item_id and item_id in nosales:
         return None
     lev = TIER_LEVERAGE[tier]
@@ -1802,7 +1847,7 @@ def build_discount_rows(
     """单品立减 builder (spec §二):
       大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
       超级立减10%:            立减 = 日常 − ceil(日常×10%) − 中促到手 − 已授权微调
-      平台终态无动销登记:     静默排除，不生成本场或后续场次兜底立减
+      历史平台无动销登记:     仅提示；每一场新活动仍重新生成安全行
     返回 (rows, stats); 行含 taobao_item_id/taobao_sku_id/sku_code/deduct/target_price/kind。"""
     from app.services import delisted_sku_service, no_sales_service
     from app.services.activity_preflight_service import bad_price_product_codes
@@ -1812,10 +1857,11 @@ def build_discount_rows(
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
     live_activity_prices = current_activity_prices_for_plan(plan)
-    terminal_no_sales = no_sales_service.get_no_sales(db) | {
+    current_plan_no_sales = {
         str(item_id or "").strip() for item_id in (no_sales_items or set())
         if str(item_id or "").strip()
     }
+    advisory_prior_no_sales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
     price_analysis = price_resolution_analysis(db, plan)
@@ -1838,6 +1884,7 @@ def build_discount_rows(
                  custom_placeholder_sku_allowlist(plan)),
              "excluded_unselected_custom_placeholder_skus": [],
              "excluded_terminal_no_sales_items": [],
+             "advisory_prior_no_sales_items": sorted(advisory_prior_no_sales),
              "excluded_whole_items": list(whole_item_exclusions.values()),
              "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0,
@@ -1854,9 +1901,9 @@ def build_discount_rows(
             stats["skipped_not_erp_listed"] += 1
             continue
         item_id = str(p.taobao_item_id or "").strip()
-        # Terminal no-sales is an item-level platform fact.  Do not turn a
-        # later stale SKU mapping, delist flag, or bad local price into noise.
-        if item_id in terminal_no_sales:
+        # A no-sales result belongs only to the current campaign terminal.  It
+        # does not suppress this item in a later campaign.
+        if item_id in current_plan_no_sales:
             if item_id not in stats["excluded_terminal_no_sales_items"]:
                 stats["excluded_terminal_no_sales_items"].append(item_id)
             continue
@@ -2009,7 +2056,7 @@ def _check_r1(db: Session, plan) -> dict:
         skus = [
             sku for sku in item["skus"]
             if any(
-                reason.get("type") == "sku_slot_required"
+                reason.get("type") == "real_sku_price_conflict"
                 and any(detail.get("type") == "minimum_list_price"
                         for detail in reason.get("reasons", []))
                 for reason in sku["reasons"]
@@ -2018,7 +2065,7 @@ def _check_r1(db: Session, plan) -> dict:
         if skus:
             items.append({**item, "skus": skus})
     return {"rule": "R1", "level": "warn" if items else "pass",
-            "title": "报名价历史线冲突：2元内已自动修正；更大差额整品暂缓并申请干净备用SKU槽",
+            "title": "报名价历史线冲突：整品暂缓；真实SKU禁止改价或轮换，其余安全商品继续",
             "items": items}
 
 
@@ -2503,7 +2550,8 @@ def preflight(
         skus = [
             sku for sku in item["skus"]
             if any(
-                reason.get("type") in {"sku_slot_required", "custom_floor_guard"}
+                reason.get("type") in {
+                    "real_sku_price_conflict", "custom_floor_guard"}
                 and any(detail.get("type") == "minimum_coupon_after_price"
                         for detail in reason.get("reasons", []))
                 for reason in sku["reasons"]
@@ -2515,7 +2563,7 @@ def preflight(
         policy_check,
         _check_r1(db, plan),
         {"rule": "R2", "level": "warn" if coupon_holds else "pass",
-         "title": ("报名资格硬门：2元内价格冲突自动合并修正；普通SKU超过2元转干净备用槽，"
+         "title": ("报名资格硬门：真实SKU价格冲突整品暂缓且不改价、不轮换；"
                    "定制SKU低于原价20%永久保护线则整品暂缓"),
          "items": coupon_holds,
          "audit": {
@@ -5552,7 +5600,6 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
     from app.services import no_sales_service
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
-    terminal_no_sales = no_sales_service.get_no_sales(db)
     mapped_pairs = _mapped_pairs(db)
     whole_item_exclusions = _campaign_item_exclusions_for_plan(
         db, plan, mapped_pairs)
@@ -5562,7 +5609,7 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
             continue
         placeholder = bool(getattr(s, "is_custom_placeholder", False))
         item_id = str(p.taobao_item_id).strip()
-        if item_id in terminal_no_sales or item_id in whole_item_exclusions:
+        if item_id in whole_item_exclusions:
             continue
         daily = float(s.daily_price) if s.daily_price else None
         if placeholder:

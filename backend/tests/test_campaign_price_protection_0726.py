@@ -89,7 +89,7 @@ def test_missing_rule_link_notice_is_deduped_after_delivery(db_session, monkeypa
     assert "19天" in calls[0][0] and "价保说明" in calls[0][0]
 
 
-def test_sub_two_yuan_history_conflict_is_adjusted_without_holding_item(db_session):
+def test_sub_two_yuan_real_sku_conflict_holds_only_that_item(db_session):
     plan = _plan(db_session)
     for code, item, sid, daily, big, line in (
         ("PPSHOLD01", "9901", "88001", 3000, 2000, 1999.99),
@@ -112,14 +112,12 @@ def test_sub_two_yuan_history_conflict_is_adjusted_without_holding_item(db_sessi
     signup, signup_stats = campaign_service.build_signup_rows(db_session, plan)
     discounts, discount_stats = campaign_service.build_discount_rows(db_session, plan)
 
-    assert holds == []
-    assert {x["taobao_item_id"] for x in signup} == {"9901", "9902"}
-    assert {x["taobao_item_id"] for x in discounts} == {"9901", "9902"}
-    assert signup_stats["excluded_price_hold_items"] == []
-    assert discount_stats["excluded_price_hold_items"] == []
-    adjusted = next(x for x in signup if x["taobao_item_id"] == "9901")
-    assert adjusted["price"] == 3000.0
-    assert signup_stats["automatic_price_adjustments"]
+    assert [row["taobao_item_id"] for row in holds] == ["9901"]
+    assert {x["taobao_item_id"] for x in signup} == {"9902"}
+    assert {x["taobao_item_id"] for x in discounts} == {"9902"}
+    assert signup_stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9901"
+    assert discount_stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9901"
+    assert signup_stats["automatic_price_adjustments"] == []
 
 
 def test_delisted_rotated_sku_floor_does_not_hold_replacement_item(db_session):
@@ -199,7 +197,7 @@ def test_coupon_floor_gate_counts_concurrent_single_item_discount(db_session):
     assert signup_stats["excluded_price_hold_items"] == []
     assert discount_stats["excluded_price_hold_items"] == []
     assert checks["R2"]["level"] == "pass"
-    assert "2元内价格冲突自动合并修正" in checks["R2"]["title"]
+    assert "真实SKU价格冲突整品暂缓且不改价、不轮换" in checks["R2"]["title"]
 
 
 def test_price_math_gate_detects_no_difference(db_session):

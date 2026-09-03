@@ -143,6 +143,51 @@ class CampaignExecutionAttempt(Base, TimestampMixin):
     )
 
 
+class CampaignPreparationBundle(Base, TimestampMixin):
+    """Immutable, auditable pre-submit package for one campaign scope.
+
+    The bundle contains only ERP calculations and read-only platform evidence.
+    Creating it never grants or consumes a platform-write claim.  A later
+    executor must revalidate the bundle fingerprint and expiry before it may
+    perform the separately guarded final action.
+    """
+
+    __tablename__ = "campaign_preparation_bundles"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    plan_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    workflow_key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    prepared_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    manifest_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    identity: Mapped[dict] = mapped_column(JSON, nullable=False)
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False)
+    signup_rows: Mapped[list] = mapped_column(JSON, nullable=False)
+    discount_rows: Mapped[list] = mapped_column(JSON, nullable=False)
+    item_decisions: Mapped[list] = mapped_column(JSON, nullable=False)
+    gate_results: Mapped[list] = mapped_column(JSON, nullable=False)
+    evidence_snapshot_ids: Mapped[list] = mapped_column(JSON, nullable=False)
+    execution_boundary: Mapped[dict] = mapped_column(JSON, nullable=False)
+    prepared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    consumed_attempt_id: Mapped[Optional[str]] = mapped_column(String(32))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_key", "source_sha256",
+            name="uq_campaign_preparation_workflow_source",
+        ),
+        UniqueConstraint(
+            "workflow_key", "revision",
+            name="uq_campaign_preparation_workflow_revision",
+        ),
+    )
+
+
 class CampaignSkuSlot(Base, TimestampMixin):
     """One immutable physical Taobao SKU identity in a logical ERP SKU pool."""
 

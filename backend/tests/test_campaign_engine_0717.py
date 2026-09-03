@@ -139,7 +139,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
-def test_signup_rows_quietly_skip_registered_terminal_no_sales(db_session):
+def test_signup_rows_reinclude_registered_terminal_no_sales_next_campaign(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
         daily=1200, big=800)
@@ -148,9 +148,10 @@ def test_signup_rows_quietly_skip_registered_terminal_no_sales(db_session):
 
     rows, stats = cs.build_signup_rows(db_session, plan)
 
-    assert rows == []
+    assert [row["taobao_item_id"] for row in rows] == ["9209"]
     assert stats["excluded_no_sales_items"] == []
-    assert stats["excluded_terminal_no_sales_items"] == ["9209"]
+    assert stats["excluded_terminal_no_sales_items"] == []
+    assert stats["advisory_prior_no_sales_items"] == ["9209"]
 
 
 def test_signup_shipping_days_authorization_is_exact():
@@ -320,7 +321,7 @@ def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
     assert discount_stats["skipped_not_erp_listed"] == 2
 
 
-def test_legacy_qualification_probe_does_not_retry_registered_no_sales(
+def test_legacy_qualification_probe_retries_prior_no_sales_in_new_campaign(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     plan.remark = "official_all_store=true; official_exempt_items=1000009999"
@@ -341,8 +342,9 @@ def test_legacy_qualification_probe_does_not_retry_registered_no_sales(
 
     result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
-    assert result["ok"] is False
-    assert result["error"] == "no_safe_listed_items_for_platform_qualification"
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009210"]
+    assert result["no_sales_item_ids"] == ["1000009209"]
 
 
 def test_promo_qualification_uploads_authorized_shipping_days(
@@ -857,7 +859,7 @@ def test_discount_terminal_nosales_is_quietly_skipped(db_session):
     assert stats["excluded_terminal_no_sales_items"] == ["9304"]
 
 
-def test_discount_terminal_nosales_storewide_has_no_fallback(db_session):
+def test_discount_prior_nosales_storewide_is_reincluded_next_campaign(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = "official_all_store=true; official_exempt_items="
     _mk(db_session, "PPSDD002", "PPSDD00201", "9307", "73051", daily=3000, big=2000)
@@ -866,11 +868,12 @@ def test_discount_terminal_nosales_storewide_has_no_fallback(db_session):
 
     rows, stats = cs.build_discount_rows(db_session, plan)
 
-    assert rows == []
-    assert stats["excluded_terminal_no_sales_items"] == ["9307"]
+    assert [row["taobao_item_id"] for row in rows] == ["9307"]
+    assert stats["excluded_terminal_no_sales_items"] == []
+    assert stats["advisory_prior_no_sales_items"] == ["9307"]
 
 
-def test_discount_terminal_nosales_super_reduce_has_no_fallback(db_session):
+def test_discount_prior_nosales_super_reduce_is_reincluded_next_campaign(db_session):
     plan = _plan(db_session, "super_reduce")
     plan.remark = "official_active_items=9308"
     _mk(db_session, "PPSDD003", "PPSDD00301", "9308", "73061", daily=3000, big=2500)
@@ -879,8 +882,9 @@ def test_discount_terminal_nosales_super_reduce_has_no_fallback(db_session):
 
     rows, stats = cs.build_discount_rows(db_session, plan)
 
-    assert rows == []
-    assert stats["excluded_terminal_no_sales_items"] == ["9308"]
+    assert [row["taobao_item_id"] for row in rows] == ["9308"]
+    assert stats["excluded_terminal_no_sales_items"] == []
+    assert stats["advisory_prior_no_sales_items"] == ["9308"]
 
 
 def test_discount_uses_live_activity_price_after_platform_acceptance(db_session):
@@ -1057,6 +1061,34 @@ def test_placeholder_signup_uses_safe_lower_price_from_durable_user_policy(db_se
     assert checks["R16"]["level"] == "pass"
 
 
+def test_placeholder_final_price_never_crosses_immutable_twenty_percent_floor(
+        db_session):
+    from app.services import campaign_sku_slot_service
+
+    plan = _plan(db_session, "big88")
+    plan.remark = "custom_placeholder_sku_allowlist=73091"
+    _mk(db_session, "PPSPHF01", "PPSPHF0199", "9320", "73091",
+        daily=2000, placeholder=True, line=250)
+    _mk(db_session, "PPSPHF01", "PPSPHF0101", "9320", "73090",
+        daily=1200, big=800)
+    db_session.commit()
+    assert campaign_sku_slot_service.seed_active_slots(db_session)["created"] == 2
+    placeholder = db_session.query(PricingSku).filter_by(
+        sku_code="PPSPHF0199").one()
+    placeholder.daily_price = Decimal("500")
+    db_session.commit()
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+
+    assert rows == []
+    assert stats["placeholder_price_blocked_items"][0][
+        "taobao_item_id"] == "9320"
+    guard = next(row for row in stats["custom_floor_guard_items"]
+                 if row.get("taobao_sku_id") == "73091")
+    assert guard["reason"] == "custom_final_below_20_percent_baseline"
+    assert guard["minimum_final_price"] == 400.0
+
+
 def test_placeholder_signup_uses_safe_cap_after_expiry_confirmation(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = (
@@ -1228,10 +1260,9 @@ def test_discount_price_hold_when_platform_coupon_after_exceeds_history_line(db_
     assert rows == []                                         # R2: 报名资格线冲突 → 整品不出行
     assert stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9305"
     reason = stats["excluded_price_hold_items"][0]["skus"][0]["reasons"][0]
-    assert reason["type"] == "sku_slot_required"
+    assert reason["type"] == "real_sku_price_conflict"
     assert reason["taobao_sku_id"] == "73031"
-    assert reason["required_total_concession"] == 10.0
-    assert reason["action"] == "use_clean_sku_slot"
+    assert reason["action"] == "hold_whole_item"
 
 
 def test_big_campaign_low_price_uses_platform_exact_percent(db_session):

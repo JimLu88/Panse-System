@@ -34,6 +34,7 @@ from app.database import get_db
 from app.dependencies import (
     ServicePrincipal,
     get_current_user,
+    require_campaign_preparation_bundle_principal,
     require_campaign_prepare_principal,
     require_web_agent_plan8_v4_claim_verifier,
     require_web_agent_plan8_v5_claim_verifier,
@@ -74,6 +75,17 @@ class CampaignPrepareIn(CampaignPlanIn):
 class CampaignEvidenceRefreshIn(BaseModel):
     workflow_key: str
     plan_id: Optional[int] = Field(default=None, ge=1)
+
+
+class CampaignPreparationBundleIn(BaseModel):
+    """Read-only preparation compiler input; never permits a final write."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: Optional[str] = None
+    mode: str = Field(pattern=r"^(compile|refresh_and_compile|read_latest)$")
 
 
 class CampaignOfficialExemptionsCorrectionIn(BaseModel):
@@ -763,6 +775,40 @@ def refresh_campaign_evidence(
             code = 422
         raise HTTPException(code, detail=result)
     result["plan"] = _plan_out(result["plan"])
+    return result
+
+
+@router.post("/prepare-final-bundle")
+def prepare_final_campaign_bundle(
+        body: CampaignPreparationBundleIn, db: Session = Depends(get_db),
+        principal: User | ServicePrincipal = Depends(
+            require_campaign_preparation_bundle_principal)):
+    """Freeze a durable package immediately before the final campaign action.
+
+    ``refresh_and_compile`` may only perform the existing read-only evidence
+    export.  None of the modes can upload, submit, edit prices, rotate SKUs,
+    notify, or create a platform-write claim.
+    """
+    from app.services import campaign_preparation_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    if body.mode == "read_latest":
+        result = campaign_preparation_service.get_latest_bundle(
+            db, workflow_key=workflow_key, expected_plan_id=body.plan_id)
+    else:
+        result = campaign_preparation_service.compile_bundle(
+            db,
+            workflow_key=workflow_key,
+            expected_plan_id=body.plan_id,
+            expected_status=body.expected_status,
+            refresh_evidence=body.mode == "refresh_and_compile",
+            prepared_by=principal.username,
+        )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error in {
+            "workflow_not_found", "preparation_bundle_not_found"} else 409
+        raise HTTPException(code, detail=result)
     return result
 
 

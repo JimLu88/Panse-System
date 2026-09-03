@@ -17,8 +17,12 @@ from app.services import auth_service, settings_service
 
 
 CAMPAIGN_PREPARE_SERVICE_SETTING = "campaign_prepare_service_token"
+CAMPAIGN_PREPARATION_BUNDLE_SERVICE_SETTING = (
+    "campaign_preparation_bundle_service_token"
+)
 CAMPAIGN_PREPARE_PATH = "/api/campaigns/prepare"
 CAMPAIGN_EVIDENCE_REFRESH_PATH = "/api/campaigns/refresh-evidence"
+CAMPAIGN_PREPARE_FINAL_BUNDLE_PATH = "/api/campaigns/prepare-final-bundle"
 CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH = (
     "/api/campaigns/correct-official-exemptions"
 )
@@ -349,10 +353,15 @@ def machine_identity_for_key(
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-plan8-v6-claim-verify"
-    # The 01 executor gets one non-exported credential that can authenticate
-    # only the two ERP-internal preparation paths.  It cannot list plans,
-    # change exclusions, upload, submit, retry, withdraw, notify, or call any
-    # other API.
+    if path == CAMPAIGN_PREPARE_FINAL_BUNDLE_PATH:
+        expected = settings_service.get(
+            db, CAMPAIGN_PREPARATION_BUNDLE_SERVICE_SETTING,
+            env_fallback=False)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return "service:campaign-preparation-bundle"
+    # Historical activity service identity. It remains path-scoped for the
+    # existing incident-specific flows, but the new generic preparation
+    # compiler deliberately uses the narrower identity above.
     if path in CAMPAIGN_PREPARE_SERVICE_PATHS:
         expected = settings_service.get(
             db, CAMPAIGN_PREPARE_SERVICE_SETTING, env_fallback=False)
@@ -482,6 +491,34 @@ def require_campaign_prepare_principal(
             scope=path_scopes.get(path, "campaign.prepare"),
         )
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "需要登录或活动准备服务身份")
+
+
+def require_campaign_preparation_bundle_principal(
+    request: Request,
+    user: Optional[User] = Depends(get_current_user_optional),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> User | ServicePrincipal:
+    """Allow admin/operator or the single-path read-only bundle identity."""
+    if user is not None:
+        if not user.is_active:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已停用")
+        if user.role not in ("admin", "operator"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"需要角色 ['admin', 'operator']，你的角色是 {user.role!r}",
+            )
+        return user
+    identity = machine_identity_for_key(
+        x_api_key, db, path=request.url.path)
+    if identity == "service:campaign-preparation-bundle":
+        return ServicePrincipal(
+            username=identity,
+            role="campaign_preparation_bundle_service",
+            scope="campaign.final_bundle.prepare_readonly",
+        )
+    raise HTTPException(
+        status.HTTP_401_UNAUTHORIZED, "需要登录或活动只读准备包服务身份")
 
 
 def require_authenticated(

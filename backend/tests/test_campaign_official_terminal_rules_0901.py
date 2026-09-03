@@ -141,7 +141,7 @@ def test_current_window_requires_active_not_only_scheduled():
     assert "尚未实际活动中" in active_required["failures"][0]["error"]
 
 
-def test_builder_allows_custom_price_below_old_twenty_percent_gate(db_session):
+def test_builder_blocks_custom_final_below_permanent_twenty_percent_gate(db_session):
     plan = CampaignPlan(
         name="custom-official-line",
         campaign_type="super_reduce",
@@ -168,20 +168,10 @@ def test_builder_allows_custom_price_below_old_twenty_percent_gate(db_session):
 
     rows, stats = campaign.build_signup_rows(db_session, plan)
 
-    assert rows == [{
-        "taobao_item_id": "1044450741007",
-        "taobao_sku_id": "6066017208184",
-        "sku_code": "CUSTOM-01",
-        "price": 284.0,
-        "is_placeholder": True,
-        "remark": "平台当前定制活动价经官方券后线核验可保留",
-    }]
-    assert stats["custom_floor_guard_items"] == []
-    assert stats["placeholder_price_preserved_by_official_floor"] == [{
-        "taobao_item_id": "1044450741007",
-        "taobao_sku_id": "6066017208184",
-        "sku_code": "CUSTOM-01",
-        "activity_price": 284.0,
-        "official_coupon_after": 255.0,
-        "official_coupon_floor_price": 255.0,
-    }]
+    assert rows == []
+    assert stats["placeholder_price_preserved_by_official_floor"] == []
+    guard = next(row for row in stats["custom_floor_guard_items"]
+                 if row.get("taobao_sku_id") == "6066017208184")
+    assert guard["reason"] == "custom_final_below_20_percent_baseline"
+    assert guard["selected_final_price"] == 255.0
+    assert guard["minimum_final_price"] == 1000.0

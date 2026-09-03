@@ -90,46 +90,44 @@ def require_policy() -> dict[str, Any]:
             is not False):
         raise RuntimeError("活动报名规则未锁定逐批终态回查或失败禁止重试，已停止")
     if execution.get("on_failure") != (
-            "platform_terminal_no_sales_is_recorded_and_quietly_excluded_"
-            "from_later_campaigns_all_other_failures_stop_and_alarm"):
-        raise RuntimeError("活动报名失败处理未锁定为无动销静默隔离、其余停止告警，已停止")
+            "platform_terminal_no_sales_is_quiet_for_current_campaign_and_"
+            "retried_next_campaign_all_other_failures_isolate_item_and_alarm"):
+        raise RuntimeError("活动报名失败处理未锁定为无动销本场静默、下场重试，已停止")
     if (execution.get("automatic_campaign_withdrawal_enabled") is not False
             or execution.get("withdrawal_requires_current_explicit_item_list_authorization") is not True):
         raise RuntimeError("活动报名规则未禁止自动撤销或未要求精确清单授权，已停止")
-    if (pricing.get("real_sku_signup_price")
-            != "erp_daily_price_unless_audited_combined_conflict_adjustment_lte_2_yuan"):
-        raise RuntimeError("活动报名规则未锁定真实SKU默认日常价及合计2元内审计修正，已停止")
-    if (pricing.get("real_sku_signup_price_may_be_lowered_to_pass_platform")
-            != "up_to_2_yuan_per_sku_with_audit"):
-        raise RuntimeError("活动报名规则未锁定普通SKU最多2元自动调整，已停止")
+    if pricing.get("real_sku_signup_price") != "exact_erp_daily_price":
+        raise RuntimeError("活动报名规则未锁定真实SKU报名价精确等于ERP日常价，已停止")
+    if pricing.get("real_sku_signup_price_may_be_lowered_to_pass_platform") is not False:
+        raise RuntimeError("活动报名规则仍允许降低真实SKU报名价，已停止")
     if gates.get("single_item_discount_participates_in_qualification") is not True:
         raise RuntimeError("活动报名资格规则错误：同期单品立减必须计入资格校验")
     if (gates.get("any_sku_conflict_action")
-            != "auto_adjust_combined_lte_2_yuan_else_use_clean_sku_slot_or_hold_whole_item"):
-        raise RuntimeError("活动报名规则未锁定2元内自动修正及超额转备用槽，已停止")
+            != "hold_whole_item_and_continue_other_safe_items_without_real_sku_reprice_or_rotation"):
+        raise RuntimeError("活动报名规则未锁定价格冲突整品暂缓且禁止真实SKU改价/轮换，已停止")
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":
         raise RuntimeError("活动报名规则未锁定价格线证据缺失/过期即上传前阻塞，已停止")
     if (gates.get("pre_submit_mode") != "local_read_only_evidence_preflight"
-            or scope.get("exclude_no_sales_items_from_campaign_signup") is not True
-            or scope.get("registered_no_sales_is_advisory_only") is not False
-            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not False
+            or scope.get("exclude_no_sales_items_from_campaign_signup") is not False
+            or scope.get("registered_no_sales_is_advisory_only") is not True
+            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not True
             or scope.get("qualification_before_discount_and_final_signup") is not False
             or scope.get("platform_qualification_source")
             != "the_single_final_signup_terminal_record"):
         raise RuntimeError("活动报名规则未锁定只读预检和单次正式平台资格结果，已停止")
     if (scope.get("whole_item_link_exclusion")
             != "explicit_item_marker_or_all_mapped_skus_authoritatively_marked_custom_placeholder_only; never_keyword_inference"
-            or scope.get("sku_rotation_enabled") != "controlled_new_slot_pool_only"
+            or scope.get("sku_rotation_enabled") is not False
             or scope.get("legacy_reassign_existing_physical_sku_ids") is not False
-            or scope.get("sku_slot_switch_max_per_logical_sku_per_campaign") != 1
+            or scope.get("sku_slot_switch_max_per_logical_sku_per_campaign") != 0
             or scope.get(
                 "cooling_to_clean_requires_fresh_exact_platform_history_clear_evidence"
             ) is not True):
-        raise RuntimeError("活动报名规则未锁定受控新备用槽或仍允许旧SKU身份平移，已停止")
+        raise RuntimeError("活动报名规则未彻底关闭自动SKU轮换，已停止")
     if scope.get("no_sales_only_failure_action") != (
-            "record_terminal_fact_and_quietly_exclude_from_later_campaigns_"
-            "without_signup_discount_retry_or_unresolved"):
-        raise RuntimeError("活动报名规则未锁定平台终态无动销静默排除，已停止")
+            "record_current_campaign_terminal_fact_without_retry_and_"
+            "reinclude_next_campaign"):
+        raise RuntimeError("活动报名规则未锁定无动销本场静默且下场重新尝试，已停止")
     if pricing.get("custom_placeholder_sku_handling") != (
             "erp_is_custom_placeholder_is_authoritative_and_included; "
             "suffix_only_custom_codes_still_require_exact_taobao_sku_id_allowlist; "
