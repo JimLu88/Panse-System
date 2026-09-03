@@ -79,6 +79,9 @@ CLAIMED_PREUPLOAD_RESUME_CONFIRMATION = (
 CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_ZERO_WRITE_READBACK_V5"
 )
+CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_LEASE_SCOPE_FIX_V6"
+)
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
     "04ea6c51d5bc50ca3c4361fd503ce75503772a2fc6a98cb254ec5842a511d6d3"
 )
@@ -98,6 +101,15 @@ POST_READBACK_MISSING_SKU_IDS = [
     "6234601898887", "6287431318354", "6287431318356",
     "6287431318358", "6287431318360",
 ]
+V5_RESULT_SUMMARY_SHA256 = (
+    "8b6b5d5f5cbb2546fb4838c33757aa22685496104dd9a37d9469c85a48af2394"
+)
+V5_INSPECTION_SHA256 = (
+    "1a49d4a3822c06d388d2e17d386aaf813bc15326badb0056c424b9f3e70b7ac6"
+)
+V5_COMMIT_SHA256 = (
+    "a29c273e9f264ba207db1fabf4d04ae8a04eb5489bd2ffd81fc40050d9f00aa3"
+)
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -199,6 +211,9 @@ def validate_commit(result: dict, manifest: dict,
         "web_agent_status": result.get("status"),
         "last_checkpoint": result.get("last_checkpoint"),
         "claim_created": result.get("claim_created"),
+        "different_fields": result.get("different_fields") or [],
+        "web_agent_detail": result.get("detail"),
+        "candidate_price_evidence": result.get("candidate_price_evidence"),
         "reservation_consumed": result.get("reservation_consumed"),
         "web_agent_job_id": result.get("web_agent_job_id"),
     }
@@ -493,6 +508,59 @@ def _validate_claimed_preupload_after_readback_attempt(
     return ok, detail
 
 
+def _validate_claimed_preupload_after_lease_scope_attempt(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    """Accept only the exact V5 no-write stop caused by lease-token drift."""
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    inspection = summary.get("inspection") or {}
+    commit = summary.get("commit") or {}
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "result_summary_sha256": v6._hash(summary),
+        "inspection_sha256": v6._hash(inspection),
+        "commit_sha256": v6._hash(commit),
+        "commit": commit,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "failed_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "plan8_final_v8_commit"
+        and attempt.error_code == "plan8_v8_state_changed_before_claim"
+        and attempt.web_agent_job_id == "job2"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and v6._hash(summary) == V5_RESULT_SUMMARY_SHA256
+        and v6._hash(inspection) == V5_INSPECTION_SHA256
+        and v6._hash(commit) == V5_COMMIT_SHA256
+        and commit.get("platform_write") is False
+        and commit.get("claim_created") is False
+        and commit.get("web_agent_error")
+        == "plan8_v8_state_changed_before_claim"
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written"))
+    return ok, detail
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
@@ -588,10 +656,14 @@ def _commit_and_readback(
 def _resume_claimed_preupload(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt,
-        accept_post_readback_state: bool = False) -> dict:
-    validator = (_validate_claimed_preupload_after_readback_attempt
-                 if accept_post_readback_state
-                 else _validate_claimed_preupload_attempt)
+        accept_post_readback_state: bool = False,
+        accept_lease_scope_state: bool = False) -> dict:
+    validator = (
+        _validate_claimed_preupload_after_lease_scope_attempt
+        if accept_lease_scope_state
+        else (_validate_claimed_preupload_after_readback_attempt
+              if accept_post_readback_state
+              else _validate_claimed_preupload_attempt))
     resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
@@ -665,9 +737,11 @@ def _resume_claimed_preupload(
     attempt.platform_write_observed = False
     attempt.automatic_retry_allowed = False
     attempt.last_step = (
-        "platform_write_claim_claimed_preupload_resume_v5"
-        if accept_post_readback_state
-        else "platform_write_claim_claimed_preupload_resume_v4")
+        "platform_write_claim_claimed_preupload_resume_v6"
+        if accept_lease_scope_state
+        else ("platform_write_claim_claimed_preupload_resume_v5"
+              if accept_post_readback_state
+              else "platform_write_claim_claimed_preupload_resume_v4"))
     attempt.error_code = None
     attempt.web_agent_job_id = None
     attempt.result_summary = summary
@@ -702,6 +776,8 @@ def recover_plan8_final_v8(
         "resume_claimed_preupload_v4": CLAIMED_PREUPLOAD_RESUME_CONFIRMATION,
         "resume_claimed_preupload_v5": (
             CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION),
+        "resume_claimed_preupload_v6": (
+            CLAIMED_PREUPLOAD_LEASE_SCOPE_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -721,14 +797,17 @@ def recover_plan8_final_v8(
         return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
     attempts = _attempts(db)
     if mode in {"resume_claimed_preupload_v4",
-                "resume_claimed_preupload_v5"}:
+                "resume_claimed_preupload_v5",
+                "resume_claimed_preupload_v6"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
         return _resume_claimed_preupload(
             db, plan=plan, attempt=attempts[0],
             accept_post_readback_state=(
-                mode == "resume_claimed_preupload_v5"))
+                mode == "resume_claimed_preupload_v5"),
+            accept_lease_scope_state=(
+                mode == "resume_claimed_preupload_v6"))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",
