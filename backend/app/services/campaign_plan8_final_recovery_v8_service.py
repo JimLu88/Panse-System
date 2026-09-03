@@ -121,8 +121,8 @@ def _validate_prerequisite(db: Session) -> tuple[bool, dict]:
         and row.operation == "plan8_final_recovery_v7"
         and row.state == "unknown_no_retry"
         and row.write_claimed is True
-        and row.platform_write_observed is False
-        and row.last_step == "discount_terminal"
+        and row.platform_write_observed is not True
+        and row.last_step in {"discount_terminal", "readback_not_complete"}
         and isinstance(manifest, dict)
         and v6._hash(manifest) == row.scope_sha256)
     return ok, detail

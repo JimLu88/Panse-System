@@ -25,8 +25,8 @@ def _seed_v7_zero_write(db):
         workflow_key=recovery.WORKFLOW_KEY,
         operation="plan8_final_recovery_v7", scope_sha256=scope,
         state="unknown_no_retry", write_claimed=True,
-        platform_write_observed=False, automatic_retry_allowed=False,
-        last_step="discount_terminal", result_summary={"manifest": manifest},
+        platform_write_observed=None, automatic_retry_allowed=False,
+        last_step="readback_not_complete", result_summary={"manifest": manifest},
     ))
     db.commit()
 
@@ -65,7 +65,7 @@ def test_v8_prerequisite_requires_exact_zero_write_v7(db_session):
     _seed_v7_zero_write(db_session)
     ok, detail = recovery._validate_prerequisite(db_session)
     assert ok is True
-    assert detail["last_step"] == "discount_terminal"
+    assert detail["last_step"] == "readback_not_complete"
     row = db_session.get(CampaignExecutionAttempt, recovery.V7_ATTEMPT_ID)
     row.platform_write_observed = True
     db_session.commit()
