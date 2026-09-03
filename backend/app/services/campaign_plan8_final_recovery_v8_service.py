@@ -76,6 +76,9 @@ PRECLAIM_ERROR_CODE = "ValueError: plan8_v6_manifest_fields_invalid"
 CLAIMED_PREUPLOAD_RESUME_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_BATCH_DIALOG_FIX_V4"
 )
+CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_ZERO_WRITE_READBACK_V5"
+)
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
     "04ea6c51d5bc50ca3c4361fd503ce75503772a2fc6a98cb254ec5842a511d6d3"
 )
@@ -84,6 +87,17 @@ CLAIMED_PREUPLOAD_CLAIM_SHA256 = (
 )
 CLAIMED_PREUPLOAD_LAST_STEP = "draft_patch_terminal"
 CLAIMED_PREUPLOAD_ERROR_CODE = "plan8_v8_unknown_outcome_no_retry"
+POST_READBACK_RESULT_SUMMARY_SHA256 = (
+    "956dc7d744a45800924e93afa060042f98a95cda8a8b9f858b3ca403afeddcb4"
+)
+POST_READBACK_DETAIL_SHA256 = (
+    "0bec6be3c5107d28ba79fc3736a85bea93f1ae339782ae3be73439e56d90ec1d"
+)
+POST_READBACK_MISSING_SKU_IDS = [
+    "6234601898881", "6234601898883", "6234601898885",
+    "6234601898887", "6287431318354", "6287431318356",
+    "6287431318358", "6287431318360",
+]
 
 
 def _boundary(*, platform_write: bool = False) -> dict:
@@ -421,6 +435,64 @@ def _validate_claimed_preupload_attempt(
     return ok, detail
 
 
+def _validate_claimed_preupload_after_readback_attempt(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    commit = summary.get("commit") or {}
+    readback = summary.get("last_readback") or {}
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "result_summary_sha256": v6._hash(summary),
+        "last_readback_sha256": v6._hash(readback),
+        "commit": commit,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "failed_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is False
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "readback_not_complete"
+        and attempt.error_code == "post_submit_readback_not_complete"
+        and attempt.web_agent_job_id == "job3"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and v6._hash(summary) == POST_READBACK_RESULT_SUMMARY_SHA256
+        and v6._hash(readback) == POST_READBACK_DETAIL_SHA256
+        and readback.get("record_count") == 6
+        and readback.get("sku_count") == 70
+        and readback.get("custom_sku_count") == 18
+        and readback.get("missing_sku_ids") == POST_READBACK_MISSING_SKU_IDS
+        and readback.get("unexpected_sku_ids") == []
+        and readback.get("discount_rows") == []
+        and readback.get("web_agent_job_id") == "job3"
+        and commit.get("platform_write") is False
+        and commit.get("reservation_consumed") is True
+        and commit.get("claim_created") is True
+        and commit.get("last_checkpoint") == CLAIMED_PREUPLOAD_LAST_STEP
+        and commit.get("web_agent_error") == CLAIMED_PREUPLOAD_ERROR_CODE
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written"))
+    return ok, detail
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
@@ -515,8 +587,12 @@ def _commit_and_readback(
 
 def _resume_claimed_preupload(
         db: Session, *, plan: CampaignPlan,
-        attempt: CampaignExecutionAttempt) -> dict:
-    resume_ok, resume_detail = _validate_claimed_preupload_attempt(attempt)
+        attempt: CampaignExecutionAttempt,
+        accept_post_readback_state: bool = False) -> dict:
+    validator = (_validate_claimed_preupload_after_readback_attempt
+                 if accept_post_readback_state
+                 else _validate_claimed_preupload_attempt)
+    resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
                      attempt=resume_detail)
@@ -571,7 +647,7 @@ def _resume_claimed_preupload(
     attempt = db.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.id == PRECLAIM_ATTEMPT_ID,
     ).with_for_update()).scalar_one_or_none()
-    resume_ok, resume_detail = _validate_claimed_preupload_attempt(attempt)
+    resume_ok, resume_detail = validator(attempt)
     if (plan is None or plan.status != EXPECTED_STATUS or not resume_ok):
         return _fail("plan8_final_v8_claimed_preupload_state_changed",
                      plan_status=getattr(plan, "status", None),
@@ -588,7 +664,10 @@ def _resume_claimed_preupload(
     attempt.write_claimed_at = datetime.now(timezone.utc)
     attempt.platform_write_observed = False
     attempt.automatic_retry_allowed = False
-    attempt.last_step = "platform_write_claim_claimed_preupload_resume_v4"
+    attempt.last_step = (
+        "platform_write_claim_claimed_preupload_resume_v5"
+        if accept_post_readback_state
+        else "platform_write_claim_claimed_preupload_resume_v4")
     attempt.error_code = None
     attempt.web_agent_job_id = None
     attempt.result_summary = summary
@@ -621,6 +700,8 @@ def recover_plan8_final_v8(
         "readback": READBACK_CONFIRMATION,
         "resume_preclaim_v3": PRECLAIM_RESUME_CONFIRMATION,
         "resume_claimed_preupload_v4": CLAIMED_PREUPLOAD_RESUME_CONFIRMATION,
+        "resume_claimed_preupload_v5": (
+            CLAIMED_PREUPLOAD_POST_READBACK_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -639,12 +720,15 @@ def recover_plan8_final_v8(
     if not identity_ok:
         return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
     attempts = _attempts(db)
-    if mode == "resume_claimed_preupload_v4":
+    if mode in {"resume_claimed_preupload_v4",
+                "resume_claimed_preupload_v5"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
         return _resume_claimed_preupload(
-            db, plan=plan, attempt=attempts[0])
+            db, plan=plan, attempt=attempts[0],
+            accept_post_readback_state=(
+                mode == "resume_claimed_preupload_v5"))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",

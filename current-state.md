@@ -1,5 +1,23 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 zero-write readback continuation V5
+
+- V4 was invoked exactly once and stopped before Web-Agent/platform access
+  because the intervening readback had correctly changed the same attempt's
+  audit cursor from `draft_patch_terminal` to `readback_not_complete`.  The V4
+  CAS rejected that drift; its request `28bbb16f1d3f` caused no platform read
+  or write and V4 is now permanently retired.
+- The intervening readback is frozen by full result-summary and readback
+  SHA-256 values.  It proves six drafts still total 70 SKUs, the same eight
+  target SKUs remain missing, no new discount row exists, protected records
+  are unchanged and the Web-Agent V8 claim is still the original exact
+  pre-upload claim.  V5 accepts only that exact database/readback state plus
+  all V4 claim, manifest, policy, campaign identity, reservation and CAS gates.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v5_nas.ps1`.
+  V1--V4 are retired.  Task 03 owns the sole V5 business invocation; any
+  post-file-selection failure remains no-retry and requires official readback.
+
 ## 2026-09-04 plan-8 V8 claimed pre-upload continuation V4
 
 - The sole V3 execution created the expected durable V8 claim, then stopped at
