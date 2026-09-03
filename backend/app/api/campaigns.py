@@ -135,6 +135,26 @@ class CampaignPlan7FinalCloseoutV2In(CampaignPlan7FinalCloseoutIn):
     expected_web_agent_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+class CampaignPlan7FinalCloseoutV4In(BaseModel):
+    """Fixed V4 identity after the official SKU-scope incident."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_status: str
+    source_bundle_id: str = Field(pattern=r"^[0-9a-f]{24}$")
+    expected_source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_source_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_item_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    recovery_id: str = Field(min_length=1, max_length=80)
+    expected_web_agent_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    official_export_record_id: str = Field(pattern=r"^[0-9]+$")
+    expected_official_export_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_extra_sku_id: str = Field(pattern=r"^[0-9]+$")
+
+
 class CampaignPlan8ExecuteIn(BaseModel):
     """Exact CAS input for the approved September Super88 execution."""
 
@@ -944,25 +964,32 @@ def execute_super_reduce_plan7_final_closeout_v3(
         body: CampaignPlan7FinalCloseoutV2In,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
-    """Consume the reviewed plan-7 bundle through the repaired auth/export path."""
-    from app.services import campaign_plan7_final_closeout_service as service
+    """Retired after the official 14-SKU export disproved its 13-SKU scope."""
+    raise HTTPException(409, detail={
+        "ok": False,
+        "error": "final_closeout_v3_retired_after_official_sku_scope_incident",
+        "automatic_retry": False,
+        "platform_write": False,
+    })
 
-    result = service.execute_plan7_final_closeout(
-        db,
-        workflow_key=_validate_workflow_key(body.workflow_key),
-        expected_plan_id=body.plan_id,
-        expected_status=body.expected_status,
-        bundle_id=body.bundle_id,
-        expected_source_sha256=body.expected_source_sha256,
-        expected_policy_sha256=body.expected_policy_sha256,
-        expected_manifest_sha256=body.expected_manifest_sha256,
-        expected_item_scope_sha256=body.expected_item_scope_sha256,
-        recovery_id=body.recovery_id,
-        expected_web_agent_commit=body.expected_web_agent_commit,
-    )
+
+@router.post("/execute-super-reduce-plan7-final-closeout-v4")
+def execute_super_reduce_plan7_final_closeout_v4(
+        body: CampaignPlan7FinalCloseoutV4In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Repair the exact SKU identity incident and consume one fresh bundle."""
+    from app.services import campaign_plan7_final_closeout_v4_service as service
+
+    payload = body.model_dump()
+    payload["workflow_key"] = _validate_workflow_key(body.workflow_key)
+    result = service.execute_plan7_final_closeout_v4(db, payload)
     if not result.get("ok"):
         code = 404 if result.get("error") in {
-            "workflow_not_found", "final_closeout_bundle_not_found"} else 409
+            "workflow_not_found", "final_closeout_v4_source_bundle_not_found",
+        } else 409
+        if result.get("error") == "final_closeout_v4_request_not_allowed":
+            code = 422
         raise HTTPException(code, detail=result)
     return result
 

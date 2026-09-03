@@ -322,6 +322,10 @@ def parse_product_batch_export(xlsx_bytes: bytes) -> list[dict]:
             "sale_attr": str(row[9] or "").strip() if len(row) > 9 else "",
             "sku_id": str(row[11] or "").strip() if len(row) > 11 else "",
             "sku_price": _f(row[12]) if len(row) > 12 else None,
+            "stock": (
+                int(float(row[13]))
+                if len(row) > 13 and row[13] not in (None, "") else None
+            ),
             "merchant_code": str(row[15] or "").strip() if len(row) > 15 else "",
         })
     wb.close()

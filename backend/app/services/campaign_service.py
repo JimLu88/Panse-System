@@ -4221,8 +4221,17 @@ def _halt_prewrite(db: Session, plan, result: dict) -> dict:
 def _official_product_scope_guard(
         pending_rows: list[dict], records: list[dict],
         excluded_custom_pairs: set[tuple[str, str]],
+        blank_merchant_fallbacks: dict[tuple[str, str], dict] | None = None,
 ) -> dict:
-    """Require every target SKU and allow only exact plan-excluded extras."""
+    """Require every target SKU and allow only exact plan-excluded extras.
+
+    A blank official merchant code remains a mismatch by default.  An
+    incident-specific caller may supply an exact item/SKU fallback, but it is
+    accepted only when the expected ERP code, full sale-attribute string,
+    current list price and stock all match the immutable official artifact.
+    This keeps a missing code from becoming a fuzzy name-based mapping.
+    """
+    blank_merchant_fallbacks = blank_merchant_fallbacks or {}
     expected: dict[tuple[str, str], str] = {}
     duplicate_expected: list[tuple[str, str]] = []
     invalid_expected: list[dict] = []
@@ -4270,12 +4279,51 @@ def _official_product_scope_guard(
     extras = actual_pairs - expected_pairs
     unknown_extras = sorted(extras - allowed_extras)
     accepted_extras = sorted(extras & allowed_extras)
-    merchant_code_mismatches = [{
-        "item_id": pair[0], "sku_id": pair[1],
-        "expected_merchant_code": expected[pair],
-        "official_merchant_code": actual.get(pair) or None,
-    } for pair in sorted(expected_pairs & actual_pairs)
-        if actual.get(pair) != expected[pair]]
+    records_by_pair = {
+        (str(record.get("item_id") or "").strip(),
+         str(record.get("sku_id") or "").strip()): record
+        for record in records
+    }
+    accepted_blank_merchant_fallbacks: list[dict] = []
+    merchant_code_mismatches: list[dict] = []
+    resolved_merchant_codes: dict[tuple[str, str], str] = {}
+    for pair in sorted(expected_pairs & actual_pairs):
+        official_code = actual.get(pair)
+        expected_code = expected[pair]
+        if official_code == expected_code:
+            resolved_merchant_codes[pair] = expected_code
+            continue
+        fallback = blank_merchant_fallbacks.get(pair) or {}
+        record = records_by_pair.get(pair) or {}
+        fallback_price = _d(fallback.get("sku_price"))
+        record_price = _d(record.get("sku_price"))
+        fallback_ok = bool(
+            not official_code
+            and str(fallback.get("merchant_code") or "").strip()
+            == expected_code
+            and str(fallback.get("sale_attr") or "").strip()
+            == str(record.get("sale_attr") or "").strip()
+            and fallback_price is not None
+            and record_price == fallback_price
+            and fallback.get("stock") is not None
+            and record.get("stock") is not None
+            and int(record.get("stock")) == int(fallback.get("stock"))
+        )
+        if fallback_ok:
+            resolved_merchant_codes[pair] = expected_code
+            accepted_blank_merchant_fallbacks.append({
+                "item_id": pair[0], "sku_id": pair[1],
+                "resolved_merchant_code": expected_code,
+                "sale_attr": str(record.get("sale_attr") or "").strip(),
+                "sku_price": str(record_price),
+                "stock": int(record.get("stock")),
+            })
+            continue
+        merchant_code_mismatches.append({
+            "item_id": pair[0], "sku_id": pair[1],
+            "expected_merchant_code": expected_code,
+            "official_merchant_code": official_code or None,
+        })
     ok = not any((
         duplicate_expected, duplicate_actual, invalid_expected, invalid_actual,
         missing, unknown_extras, merchant_code_mismatches,
@@ -4290,6 +4338,12 @@ def _official_product_scope_guard(
         "missing_on_platform": missing,
         "unknown_extra_pairs": unknown_extras,
         "merchant_code_mismatches": merchant_code_mismatches,
+        "accepted_blank_merchant_fallbacks": (
+            accepted_blank_merchant_fallbacks),
+        "resolved_merchant_codes": [{
+            "item_id": pair[0], "sku_id": pair[1],
+            "merchant_code": code,
+        } for pair, code in sorted(resolved_merchant_codes.items())],
         "duplicate_expected_pairs": sorted(set(duplicate_expected)),
         "duplicate_official_pairs": sorted(set(duplicate_actual)),
         "invalid_expected_rows": invalid_expected,
@@ -4297,18 +4351,112 @@ def _official_product_scope_guard(
     }
 
 
+def _validate_official_product_sku_identity_records(
+        db: Session, pending_rows: list[dict], records: list[dict], *,
+        plan=None, artifact: dict,
+        additional_excluded_pairs: set[tuple[str, str]] | None = None,
+        blank_merchant_fallbacks: dict[tuple[str, str], dict] | None = None,
+) -> dict:
+    """Validate and ledger one already-downloaded official product artifact."""
+    from app.models.pricing import PricingSku
+    from app.services import sku_identity_service
+
+    item_ids = sorted({
+        str(row.get("taobao_item_id") or "").strip()
+        for row in pending_rows
+        if str(row.get("taobao_item_id") or "").strip().isdigit()
+    })
+    excluded_pairs = set()
+    if plan is not None:
+        excluded_pairs = excluded_custom_placeholder_sku_pairs(db, plan)
+    excluded_pairs.update(additional_excluded_pairs or set())
+    scope_guard = _official_product_scope_guard(
+        pending_rows, records, excluded_pairs,
+        blank_merchant_fallbacks=blank_merchant_fallbacks)
+    if not scope_guard["ok"]:
+        return {
+            "ok": False,
+            "step": "official_product_sku_identity",
+            "error": scope_guard["error"],
+            "scope_guard": scope_guard,
+            "artifact": artifact,
+        }
+    resolved_codes = {
+        (str(row["item_id"]), str(row["sku_id"])): str(row["merchant_code"])
+        for row in scope_guard.get("resolved_merchant_codes") or []
+    }
+    target_pairs = {
+        (str(row.get("taobao_item_id") or "").strip(),
+         str(row.get("taobao_sku_id") or "").strip())
+        for row in pending_rows
+    }
+    target_records = [
+        record for record in records
+        if (str(record.get("item_id") or "").strip(),
+            str(record.get("sku_id") or "").strip()) in target_pairs
+    ]
+    sku_by_code = {
+        row.sku_code: row for row in db.execute(select(PricingSku)).scalars()
+    }
+    ledger_rows = []
+    for record in target_records:
+        pair = (str(record.get("item_id") or "").strip(),
+                str(record.get("sku_id") or "").strip())
+        merchant = resolved_codes.get(
+            pair, str(record.get("merchant_code") or "").strip())
+        sku = sku_by_code.get(merchant)
+        ledger_rows.append({
+            "taobao_item_id": record.get("item_id"),
+            "taobao_sku_id": record.get("sku_id"),
+            "merchant_code": merchant or None,
+            "sku_spec": record.get("sale_attr") or None,
+            "sku_code": sku.sku_code if sku else merchant or None,
+            "product_code": sku.product_code if sku else None,
+            "is_custom_placeholder": (
+                bool(sku.is_custom_placeholder) if sku else False),
+            "daily_price": record.get("sku_price"),
+            "sale_state": "official_product_export_current",
+        })
+    artifact_sha256 = str(artifact.get("sha256") or "")
+    ledger_refresh = sku_identity_service.observe(
+        db, ledger_rows,
+        evidence_source="official_product_export:campaign_execute",
+        evidence_sha256=artifact_sha256)
+    ledger_gate = sku_identity_service.assert_current_platform_snapshot(
+        db, target_records, item_ids=set(item_ids),
+        evidence_sha256=artifact_sha256)
+    return {
+        "ok": scope_guard["ok"] and ledger_gate["ok"]
+              and not ledger_refresh["conflicts"],
+        "step": "official_product_sku_identity",
+        "error": ("official_product_sku_ledger_mismatch"
+                  if not ledger_gate["ok"] or ledger_refresh["conflicts"]
+                  else None),
+        "scope_guard": scope_guard,
+        "artifact": artifact,
+        "ledger_refresh": ledger_refresh,
+        "ledger_gate": ledger_gate,
+        "checked_items": len(item_ids),
+        "checked_skus": scope_guard["expected_sku_count"],
+        "official_skus": scope_guard["official_sku_count"],
+        "excluded_custom_skus": (
+            scope_guard["accepted_excluded_custom_sku_count"]),
+    }
+
+
 def _refresh_official_product_sku_identity(
         db: Session, pending_rows: list[dict], *, plan=None,
         export_recovery: dict | None = None,
-        additional_excluded_pairs: set[tuple[str, str]] | None = None) -> dict:
+        additional_excluded_pairs: set[tuple[str, str]] | None = None,
+        blank_merchant_fallbacks: dict[tuple[str, str], dict] | None = None,
+) -> dict:
     """Read the official current product export and require exact SKU sets.
 
     This is the last read-only guard before the one-shot write claim.  It
     prevents an ERP mapping that omits a newly added live SKU from creating a
     partial whole-item upload.
     """
-    from app.models.pricing import PricingSku
-    from app.services import campaign_recon_service, sku_identity_service, web_agent_service
+    from app.services import campaign_recon_service, web_agent_service
 
     item_ids = sorted({
         str(row.get("taobao_item_id") or "").strip()
@@ -4343,80 +4491,19 @@ def _refresh_official_product_sku_identity(
             "actual_sha256": artifact_sha256,
             "job_id": exported.get("job_id"),
         }
-    excluded_pairs = set()
-    if plan is not None:
-        excluded_pairs = excluded_custom_placeholder_sku_pairs(db, plan)
-    excluded_pairs.update(additional_excluded_pairs or set())
-    scope_guard = _official_product_scope_guard(
-        pending_rows, records, excluded_pairs)
-    if not scope_guard["ok"]:
-        return {
-            "ok": False,
-            "step": "official_product_sku_identity",
-            "error": scope_guard["error"],
-            "scope_guard": scope_guard,
-            "artifact": {
-                "filename": exported.get("filename"), "size": len(content),
-                "sha256": artifact_sha256, "job_id": exported.get("job_id"),
-                "record": exported.get("record"),
-                "download_mode": exported.get("download_mode"),
-                "export_created": exported.get("export_created"),
-            },
-        }
-    target_pairs = {
-        (str(row.get("taobao_item_id") or "").strip(),
-         str(row.get("taobao_sku_id") or "").strip())
-        for row in pending_rows
+    artifact = {
+        "filename": exported.get("filename"),
+        "size": len(content),
+        "sha256": artifact_sha256,
+        "job_id": exported.get("job_id"),
+        "record": exported.get("record"),
+        "download_mode": exported.get("download_mode"),
+        "export_created": exported.get("export_created"),
     }
-    target_records = [
-        record for record in records
-        if (str(record.get("item_id") or "").strip(),
-            str(record.get("sku_id") or "").strip()) in target_pairs
-    ]
-    sku_by_code = {row.sku_code: row for row in db.execute(select(PricingSku)).scalars()}
-    ledger_rows = []
-    for record in target_records:
-        merchant = str(record.get("merchant_code") or "").strip()
-        sku = sku_by_code.get(merchant)
-        ledger_rows.append({
-            "taobao_item_id": record.get("item_id"),
-            "taobao_sku_id": record.get("sku_id"),
-            "merchant_code": merchant or None,
-            "sku_spec": record.get("sale_attr") or None,
-            "sku_code": sku.sku_code if sku else merchant or None,
-            "product_code": sku.product_code if sku else None,
-            "is_custom_placeholder": bool(sku.is_custom_placeholder) if sku else False,
-            "daily_price": record.get("sku_price"),
-            "sale_state": "official_product_export_current",
-        })
-    ledger_refresh = sku_identity_service.observe(
-        db, ledger_rows, evidence_source="official_product_export:campaign_execute",
-        evidence_sha256=artifact_sha256)
-    ledger_gate = sku_identity_service.assert_current_platform_snapshot(
-        db, target_records, item_ids=set(item_ids), evidence_sha256=artifact_sha256)
-    return {
-        "ok": scope_guard["ok"] and ledger_gate["ok"]
-              and not ledger_refresh["conflicts"],
-        "step": "official_product_sku_identity",
-        "error": ("official_product_sku_ledger_mismatch"
-                  if not ledger_gate["ok"] or ledger_refresh["conflicts"] else None),
-        "scope_guard": scope_guard,
-        "artifact": {
-            "filename": exported.get("filename"),
-            "size": len(content),
-            "sha256": artifact_sha256,
-            "job_id": exported.get("job_id"),
-            "record": exported.get("record"),
-            "download_mode": exported.get("download_mode"),
-            "export_created": exported.get("export_created"),
-        },
-        "ledger_refresh": ledger_refresh,
-        "ledger_gate": ledger_gate,
-        "checked_items": len(item_ids),
-        "checked_skus": scope_guard["expected_sku_count"],
-        "official_skus": scope_guard["official_sku_count"],
-        "excluded_custom_skus": scope_guard["accepted_excluded_custom_sku_count"],
-    }
+    return _validate_official_product_sku_identity_records(
+        db, pending_rows, records, plan=plan, artifact=artifact,
+        additional_excluded_pairs=additional_excluded_pairs,
+        blank_merchant_fallbacks=blank_merchant_fallbacks)
 
 
 def refresh_floor_evidence_from_current_activity(
@@ -5071,12 +5158,15 @@ def push_signup(
     allowed_source = execution_source in {
         "campaign_automation", "campaign_super_reduce_plan7_resume",
         "campaign_super_reduce_plan7_final_closeout",
+        "campaign_super_reduce_plan7_final_closeout_v4",
         "campaign_super88_plan8_signup_recovery",
         "campaign_super88_plan8_final_recovery_v2",
     }
     resume_source = execution_source == "campaign_super_reduce_plan7_resume"
     plan7_final_closeout_source = (
         execution_source == "campaign_super_reduce_plan7_final_closeout")
+    plan7_final_closeout_v4_source = (
+        execution_source == "campaign_super_reduce_plan7_final_closeout_v4")
     plan8_recovery_source = (
         execution_source == "campaign_super88_plan8_signup_recovery")
     plan8_final_v2_source = (
@@ -5140,6 +5230,25 @@ def push_signup(
                 "ok": False,
                 "step": "plan7_final_closeout_policy_guard",
                 "error": "计划7最终收口上下文不完整，拒绝进入平台写入",
+                "requires_user_decision": True,
+                "automatic_retry": False,
+                "ai_may_adjust_or_resubmit": False,
+            }
+    if plan7_final_closeout_v4_source:
+        from app.services import campaign_plan7_final_closeout_v4_service
+
+        prepared_ok, prepared_detail = (
+            campaign_plan7_final_closeout_v4_service.validate_push_context(
+                db, plan, exact_item_scope=exact_item_scope,
+                policy_sha256=str(policy.get("_sha256") or ""),
+                prepared_bundle_context=prepared_bundle_context,
+                official_identity=prepared_official_product_identity))
+        if not reuse_fresh_plan_evidence or not prepared_ok:
+            return {
+                "ok": False,
+                "step": "plan7_final_closeout_v4_policy_guard",
+                "error": "计划7最终收口 V4 上下文不完整，拒绝进入平台写入",
+                "detail": prepared_detail,
                 "requires_user_decision": True,
                 "automatic_retry": False,
                 "ai_may_adjust_or_resubmit": False,
@@ -5233,7 +5342,8 @@ def push_signup(
     # preflight. Plan 7 reuses stored plan-scoped evidence; the plan-8 signup
     # recovery reuses the exact current export returned by its read-first
     # wrapper. Neither recovery launches a second pre-submit campaign export.
-    if resume_source or plan7_final_closeout_source:
+    if (resume_source or plan7_final_closeout_source
+            or plan7_final_closeout_v4_source):
         current = {
             "ok": True,
             "rows": [],
@@ -5321,7 +5431,7 @@ def push_signup(
         # or as a reason to block the supplement.  Unknown active rows remain a
         # hard stop because they have not passed this plan's platform probe.
         preserved_active_items: list[str] = []
-        if plan7_final_closeout_source:
+        if plan7_final_closeout_source or plan7_final_closeout_v4_source:
             # The immutable bundle contains only the new item. Existing active
             # rows are preserved by omission; this path has no withdraw/remove
             # capability and therefore does not treat them as upload scope.
@@ -5535,8 +5645,8 @@ def push_signup(
 
     official_identity = (
         prepared_official_product_identity
-        if plan7_final_closeout_source or plan8_recovery_source
-        or plan8_final_v2_source
+        if (plan7_final_closeout_source or plan7_final_closeout_v4_source
+            or plan8_recovery_source or plan8_final_v2_source)
         else _refresh_official_product_sku_identity(db, pending)
     )
     stats["official_product_sku_identity"] = official_identity

@@ -84,8 +84,10 @@ def test_product_export_keeps_blank_merged_item_continuation_skus():
     ws.cell(4, 1, "797294092429")
     ws.cell(4, 12, "6292834839399")
     ws.cell(4, 13, 1582.5)
+    ws.cell(4, 14, 12)
     ws.cell(5, 12, "6292834839400")
     ws.cell(5, 13, 1410.0)
+    ws.cell(5, 14, 0)
     data = io.BytesIO()
     wb.save(data)
     records = recon.parse_product_batch_export(data.getvalue())
@@ -93,4 +95,5 @@ def test_product_export_keeps_blank_merged_item_continuation_skus():
         ("797294092429", "6292834839399"),
         ("797294092429", "6292834839400"),
     ]
+    assert [row["stock"] for row in records] == [12, 0]
 

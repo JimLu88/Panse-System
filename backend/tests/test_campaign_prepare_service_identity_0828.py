@@ -13,6 +13,7 @@ from app.cli import campaign_refresh_evidence as refresh_cli
 from app.cli import campaign_correct_official_exemptions as correction_cli
 from app.cli import campaign_resume_super_reduce_plan7 as resume_plan7_cli
 from app.cli import campaign_execute_plan7_final_closeout_v3 as closeout_v3_cli
+from app.cli import campaign_execute_plan7_final_closeout_v4 as closeout_v4_cli
 from app.cli import (
     campaign_verify_super_reduce_plan7_post_submit as verify_plan7_cli,
 )
@@ -36,10 +37,10 @@ from app.services import settings_service
 from app.services import campaign_discount_correction_service
 from app.services import campaign_discount_identity_recovery_service
 from app.services import campaign_plan7_time_update_service
-from app.services import campaign_plan7_final_closeout_service
+from app.services import campaign_plan7_final_closeout_v4_service
 
 
-def test_plan7_final_closeout_v3_http_route_accepts_narrow_service_identity(
+def test_plan7_final_closeout_v4_http_route_accepts_narrow_service_identity(
         monkeypatch):
     """Exercise global auth, path allowlist and endpoint dependency together."""
     engine = create_engine(
@@ -58,32 +59,39 @@ def test_plan7_final_closeout_v3_http_route_accepts_narrow_service_identity(
 
     calls = []
 
-    def no_business_probe(_db, **kwargs):
-        calls.append(kwargs)
+    def no_business_probe(_db, payload):
+        calls.append(payload)
         return {"ok": False, "error": "auth_probe_stopped_before_business"}
 
     app.dependency_overrides[get_db] = override_db
     monkeypatch.setattr(middleware, "SessionLocal", Session)
     monkeypatch.setattr(
-        campaign_plan7_final_closeout_service,
-        "execute_plan7_final_closeout", no_business_probe)
+        campaign_plan7_final_closeout_v4_service,
+        "execute_plan7_final_closeout_v4", no_business_probe)
     monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
     try:
         client = TestClient(app)
         response = client.post(
-            dependencies.CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH,
+            dependencies.CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V4_PATH,
             headers={"X-API-Key": TOKEN},
-            json=closeout_v3_cli._FIXED_PAYLOAD)
+            json=closeout_v4_cli._FIXED_PAYLOAD)
         assert response.status_code == 409, response.text
         assert response.json()["detail"]["error"] == (
             "auth_probe_stopped_before_business")
         assert len(calls) == 1
         denied = client.post(
-            dependencies.CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH,
+            dependencies.CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V4_PATH,
             headers={"X-API-Key": "wrong-token"},
-            json=closeout_v3_cli._FIXED_PAYLOAD)
+            json=closeout_v4_cli._FIXED_PAYLOAD)
         assert denied.status_code == 401
         assert len(calls) == 1
+        retired = client.post(
+            dependencies.CAMPAIGN_PLAN7_FINAL_CLOSEOUT_V3_PATH,
+            headers={"X-API-Key": TOKEN},
+            json=closeout_v3_cli._FIXED_PAYLOAD)
+        assert retired.status_code == 409
+        assert retired.json()["detail"]["error"] == (
+            "final_closeout_v3_retired_after_official_sku_scope_incident")
     finally:
         app.dependency_overrides.pop(get_db, None)
         engine.dispose()
@@ -577,6 +585,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,
         path="/api/campaigns/execute-super-reduce-plan7-final-closeout-v3"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/execute-super-reduce-plan7-final-closeout-v4"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session,

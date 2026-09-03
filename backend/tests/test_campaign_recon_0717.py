@@ -142,7 +142,8 @@ def test_parse_discount_and_product_exports(db_session):
     precords = crs.parse_product_batch_export(prod)
     assert precords == [{"item_id": "9601", "item_list_price": 3770.0,
                          "sale_attr": "1.2米原木色", "sku_id": "81001",
-                         "sku_price": 3770.0, "merchant_code": "PPSRA00101"}]
+                         "sku_price": 3770.0, "stock": None,
+                         "merchant_code": "PPSRA00101"}]
 
 
 # ── ③ 活动名称校验 ───────────────────────────────────────────────────────────

@@ -206,6 +206,48 @@ def test_official_product_scope_rejects_target_merchant_code_drift():
     }]
 
 
+def test_official_product_scope_blank_code_requires_exact_incident_fallback():
+    pending = [{
+        "taobao_item_id": "1001", "taobao_sku_id": "2001",
+        "sku_code": "CODE-1",
+    }]
+    record = {
+        "item_id": "1001", "sku_id": "2001", "merchant_code": "",
+        "sale_attr": "材质:松木;规格:配件;", "sku_price": 290, "stock": 0,
+    }
+    refused = campaign_service._official_product_scope_guard(
+        pending, [record], set())
+    accepted = campaign_service._official_product_scope_guard(
+        pending, [record], set(), blank_merchant_fallbacks={
+            ("1001", "2001"): {
+                "merchant_code": "CODE-1",
+                "sale_attr": "材质:松木;规格:配件;",
+                "sku_price": 290, "stock": 0,
+            },
+        })
+
+    assert refused["ok"] is False
+    assert accepted["ok"] is True
+    assert accepted["resolved_merchant_codes"] == [{
+        "item_id": "1001", "sku_id": "2001", "merchant_code": "CODE-1",
+    }]
+
+
+def test_official_product_scope_blank_code_fallback_rejects_stock_drift():
+    result = campaign_service._official_product_scope_guard(
+        [{"taobao_item_id": "1001", "taobao_sku_id": "2001",
+          "sku_code": "CODE-1"}],
+        [{"item_id": "1001", "sku_id": "2001", "merchant_code": "",
+          "sale_attr": "材质:松木;", "sku_price": 290, "stock": 1}],
+        set(), blank_merchant_fallbacks={("1001", "2001"): {
+            "merchant_code": "CODE-1", "sale_attr": "材质:松木;",
+            "sku_price": 290, "stock": 0,
+        }})
+
+    assert result["ok"] is False
+    assert result["merchant_code_mismatches"][0]["sku_id"] == "2001"
+
+
 def _patch_read_gates(monkeypatch, *, current: dict | None = None):
     rows = _signup_rows()
     monkeypatch.setattr(
