@@ -2,6 +2,17 @@
 
 ## 2026-09-04 plan-8 V8 verified pre-claim continuation
 
+- The first pre-claim continuation inspection (`request_id=8ec5e20be478`)
+  stopped before any claim or platform write because QianNiu exposed nested or
+  duplicated editor containers and the legacy reader required exactly one
+  visible `[role=dialog]`. Its command is retired. The V2 continuation uses a
+  new confirmation and keeps the same exact attempt/CAS gates; it is the only
+  operator command allowed after the editor locator repair.
+- ERP now preserves the Web-Agent step, facts, claim flag and login flag when
+  inspection fails, instead of presenting an all-null price summary without the
+  DOM cause. The V2 command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_editor_fix_v2_nas.ps1`.
+
 - The sole V8 attempt `edaf6b609dad46fbab90c7e8` was left
   `unknown_no_retry` because ERP created its database claim before the
   Web-Agent job failed, and the transport wrapper discarded the terminal job

@@ -63,7 +63,7 @@ EXPECTED_COMMIT_CHECKPOINTS = [
 EXECUTE_CONFIRMATION = "EXECUTE_ONCE_PLAN8_V8_RESUME_V7_ZERO_WRITE"
 READBACK_CONFIRMATION = "READBACK_ONLY_PLAN8_V8_NO_PLATFORM_WRITE"
 PRECLAIM_RESUME_CONFIRMATION = (
-    "RESUME_ONCE_PLAN8_V8_AFTER_VERIFIED_PRECLAIM_FAILURE"
+    "RESUME_ONCE_PLAN8_V8_AFTER_EDITOR_LOCATOR_FIX_V2"
 )
 PRECLAIM_ATTEMPT_ID = "edaf6b609dad46fbab90c7e8"
 PRECLAIM_SCOPE_SHA256 = (
@@ -149,6 +149,10 @@ def validate_inspection(result: dict, manifest: dict,
         **detail, "resume_evidence": evidence,
         "web_agent_error": result.get("error"),
         "web_agent_status": result.get("status"),
+        "web_agent_step": result.get("step"),
+        "web_agent_facts": result.get("facts"),
+        "web_agent_claim_created": result.get("claim_created"),
+        "web_agent_need_scan": result.get("need_scan"),
         "v8_claim_absent": result.get("v8_claim_absent"),
         "v8_claim_sha256": result.get("v8_claim_sha256"),
     }
@@ -400,7 +404,7 @@ def recover_plan8_final_v8(
     confirmations = {
         "execute": EXECUTE_CONFIRMATION,
         "readback": READBACK_CONFIRMATION,
-        "resume_preclaim": PRECLAIM_RESUME_CONFIRMATION,
+        "resume_preclaim_v2": PRECLAIM_RESUME_CONFIRMATION,
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -427,7 +431,7 @@ def recover_plan8_final_v8(
         if not existing.write_claimed:
             return _fail("plan8_final_v8_readback_attempt_not_found")
         return _readback_existing(db, plan, existing)
-    is_preclaim_resume = mode == "resume_preclaim"
+    is_preclaim_resume = mode == "resume_preclaim_v2"
     if is_preclaim_resume:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_preclaim_attempt_ambiguous",

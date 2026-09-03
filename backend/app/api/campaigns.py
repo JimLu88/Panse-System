@@ -305,7 +305,7 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
     plan_id: int = Field(ge=1)
     expected_status: str
     recovery_version: int = Field(ge=8, le=8)
-    mode: str = Field(pattern=r"^(execute|readback|resume_preclaim)$")
+    mode: str = Field(pattern=r"^(execute|readback|resume_preclaim_v2)$")
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 

@@ -238,7 +238,7 @@ def test_v8_preclaim_resume_reuses_same_attempt_once(db_session, monkeypatch):
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_preclaim",
+        mode="resume_preclaim_v2",
         confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert result["ok"] is True
@@ -256,7 +256,7 @@ def test_v8_preclaim_resume_stops_when_agent_claim_exists(
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_preclaim",
+        mode="resume_preclaim_v2",
         confirmation=recovery.PRECLAIM_RESUME_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert result["ok"] is False
@@ -287,8 +287,28 @@ def test_v8_cli_accepts_only_exact_mode_confirmation(monkeypatch):
         pass
     else:
         raise AssertionError("V8 accepted the wrong execution confirmation")
-    payload["mode"] = "resume_preclaim"
+    payload["mode"] = "resume_preclaim_v2"
     payload["confirmation"] = recovery.PRECLAIM_RESUME_CONFIRMATION
     monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
-    assert json.loads(cli._read_payload())["mode"] == "resume_preclaim"
+    assert json.loads(cli._read_payload())["mode"] == "resume_preclaim_v2"
+
+
+def test_v8_inspection_preserves_web_agent_failure_diagnostics():
+    manifest = recovery._fixed_manifest(
+        _signup_rows(), _discount_rows(), recovery.EXPECTED_POLICY_SHA256)
+    scope = recovery.v6._hash(manifest)
+    ok, detail = recovery.validate_inspection({
+        "ok": False,
+        "error": "plan8_v6_bound_draft_editor_not_unique:{\"match_count\":2}",
+        "step": "bound_draft_price_readback",
+        "facts": {"editor_binding": {"match_count": 2}},
+        "claim_created": False,
+        "need_scan": False,
+        "v8_claim_absent": True,
+        "scope_sha256": scope,
+    }, manifest, scope)
+    assert ok is False
+    assert detail["web_agent_step"] == "bound_draft_price_readback"
+    assert detail["web_agent_facts"]["editor_binding"]["match_count"] == 2
+    assert detail["web_agent_claim_created"] is False
