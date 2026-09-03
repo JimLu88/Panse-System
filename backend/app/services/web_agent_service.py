@@ -945,6 +945,14 @@ def recover_plan8_final_v8_preupload_resume_v9(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v9")
 
 
+def recover_plan8_final_v8_preupload_resume_v10(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V10-only claimed-preupload continuation after strict guard settling."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v10")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)

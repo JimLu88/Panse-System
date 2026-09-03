@@ -310,7 +310,8 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
         r"^(execute|readback|resume_preclaim_v3|"
         r"resume_claimed_preupload_v4|resume_claimed_preupload_v5|"
         r"resume_claimed_preupload_v6|resume_claimed_preupload_v7|"
-        r"resume_claimed_preupload_v8|resume_claimed_preupload_v9)$"))
+        r"resume_claimed_preupload_v8|resume_claimed_preupload_v9|"
+        r"resume_claimed_preupload_v10)$"))
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
