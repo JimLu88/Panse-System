@@ -97,6 +97,7 @@ def _fixed_manifest(target_rows: list[dict], discount_rows: list[dict],
     manifest = v6._fixed_manifest(target_rows, discount_rows, policy_sha)
     manifest["recovery_version"] = RECOVERY_VERSION
     manifest["recovery_evidence"] = dict(RECOVERY_EVIDENCE)
+    manifest["final_scope"]["scope_sha256"] = EXPECTED_TARGET_SCOPE_SHA256
     manifest["execution_order"] = [
         "create_new_8_sku_single_item_discount_activity",
         "add_4_plus_4_skus_to_two_bound_drafts",

@@ -36,6 +36,10 @@ def test_v7_manifest_binds_v6_terminal_and_new_activity_creation():
         _signup_rows(), _discount_rows(), recovery.EXPECTED_POLICY_SHA256)
     assert manifest["recovery_version"] == 7
     assert manifest["recovery_evidence"] == recovery.RECOVERY_EVIDENCE
+    assert (manifest["final_scope"]["scope_sha256"]
+            == recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert (manifest["final_scope"]["policy_sha256"]
+            == recovery.EXPECTED_POLICY_SHA256)
     assert manifest["execution_order"][0] == (
         "create_new_8_sku_single_item_discount_activity")
 
