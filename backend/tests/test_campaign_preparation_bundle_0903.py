@@ -184,7 +184,13 @@ def test_discount_only_item_failure_is_isolated_and_string_item_gate_is_scoped(
         monkeypatch,
         discount_stats={
             "excluded_price_hold_items": [{
-                "taobao_item_id": "793202812082", "skus": []}]},
+                "taobao_item_id": "793202812082",
+                "skus": [{
+                    "taobao_sku_id": "6241447059625",
+                    "record_id": "10031117357515",
+                    "reasons": [{"amount": "0.90"}],
+                }],
+            }]},
         checks=[{
             "rule": "R17", "title": "一件商品价格证据缺失",
             "level": "error", "items": ["793202812082"],
@@ -198,8 +204,13 @@ def test_discount_only_item_failure_is_isolated_and_string_item_gate_is_scoped(
     assert {row["taobao_item_id"] for row in result["signup_rows"]} == {
         "805268708396"}
     assert result["summary"]["global_blockers"] == []
+    assert result["summary"]["total_item_count"] == 2
+    assert result["summary"]["deferred_item_count"] == 1
+    assert len(result["item_decisions"]) == 2
     decisions = {row["taobao_item_id"]: row for row in result["item_decisions"]}
     assert decisions["793202812082"]["state"] == "deferred_whole_item"
+    assert "6241447059625" not in decisions
+    assert "10031117357515" not in decisions
 
 
 def test_global_gate_blocks_all_and_claimed_unknown_attempt_stays_fail_closed(

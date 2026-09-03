@@ -56,9 +56,9 @@ def _canonical_sha256(value) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _item_ids(value) -> set[str]:
+def _item_ids(value, *, allow_scalar: bool = True) -> set[str]:
     found: set[str] = set()
-    if isinstance(value, (str, int)):
+    if allow_scalar and isinstance(value, (str, int)):
         item_id = str(value).strip()
         if item_id.isdigit() and 4 <= len(item_id) <= 20:
             found.add(item_id)
@@ -68,10 +68,14 @@ def _item_ids(value) -> set[str]:
             if item_id.isdigit() and 4 <= len(item_id) <= 20:
                 found.add(item_id)
         for nested in value.values():
-            found.update(_item_ids(nested))
+            # A rule detail can contain many numeric SKU IDs, record IDs and
+            # prices.  Only explicit item-id fields inside a mapping are item
+            # identities; recursively treating every scalar as an item would
+            # manufacture duplicate pseudo-products in the preparation bundle.
+            found.update(_item_ids(nested, allow_scalar=False))
     elif isinstance(value, (list, tuple)):
         for nested in value:
-            found.update(_item_ids(nested))
+            found.update(_item_ids(nested, allow_scalar=allow_scalar))
     return found
 
 
