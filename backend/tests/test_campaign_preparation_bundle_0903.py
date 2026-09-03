@@ -190,7 +190,12 @@ def test_discount_only_item_failure_is_isolated_and_string_item_gate_is_scoped(
                     "record_id": "10031117357515",
                     "reasons": [{"amount": "0.90"}],
                 }],
-            }]},
+            }],
+            "excluded_whole_items": [{
+                "taobao_item_id": "1001358847694",
+                "reason": "explicit item-level exclusion without mapped SKUs",
+            }],
+        },
         checks=[{
             "rule": "R17", "title": "一件商品价格证据缺失",
             "level": "error", "items": ["793202812082"],
@@ -204,11 +209,19 @@ def test_discount_only_item_failure_is_isolated_and_string_item_gate_is_scoped(
     assert {row["taobao_item_id"] for row in result["signup_rows"]} == {
         "805268708396"}
     assert result["summary"]["global_blockers"] == []
-    assert result["summary"]["total_item_count"] == 2
+    assert result["summary"]["total_item_count"] == 3
+    assert result["summary"]["mapped_item_count"] == 2
+    assert result["summary"]["ready_item_count"] == 1
     assert result["summary"]["deferred_item_count"] == 1
-    assert len(result["item_decisions"]) == 2
+    assert result["summary"]["excluded_item_count"] == 1
+    assert len(result["item_decisions"]) == 3
+    assert sum(result["summary"][key] for key in (
+        "ready_item_count", "deferred_item_count", "excluded_item_count"
+    )) == result["summary"]["total_item_count"]
     decisions = {row["taobao_item_id"]: row for row in result["item_decisions"]}
     assert decisions["793202812082"]["state"] == "deferred_whole_item"
+    assert decisions["1001358847694"]["state"] == (
+        "excluded_by_explicit_policy")
     assert "6241447059625" not in decisions
     assert "10031117357515" not in decisions
 

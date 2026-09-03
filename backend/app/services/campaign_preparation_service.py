@@ -422,6 +422,14 @@ def compile_bundle(
             "reasons": reasons.get(item_id) or [],
         })
 
+    decision_state_counts = {
+        state: sum(row["state"] == state for row in item_decisions)
+        for state in (
+            "ready", "deferred_whole_item", "excluded_by_explicit_policy")
+    }
+    if sum(decision_state_counts.values()) != len(item_decisions):
+        raise RuntimeError("campaign_preparation_decision_count_invariant_failed")
+
     ready = bool(safe_signup) and not global_blockers
     now = datetime.now(timezone.utc)
     lifetime = min(
@@ -466,13 +474,14 @@ def compile_bundle(
         identity=identity,
         summary={
             "plan_status": plan.status,
-            "total_item_count": len(all_items),
-            "ready_item_count": len(safe_items),
+            "total_item_count": len(item_decisions),
+            "mapped_item_count": len(all_items),
+            "ready_item_count": decision_state_counts["ready"],
             "ready_signup_row_count": len(safe_signup),
             "ready_discount_row_count": len(safe_discount),
-            "deferred_item_count": sum(
-                row["state"] == "deferred_whole_item" for row in item_decisions),
-            "excluded_item_count": len(excluded_items),
+            "deferred_item_count": decision_state_counts["deferred_whole_item"],
+            "excluded_item_count": decision_state_counts[
+                "excluded_by_explicit_policy"],
             "prior_no_sales_advisory_count": len(prior_no_sales & all_items),
             "global_blockers": global_blockers,
             "attempt_guards": attempts,
