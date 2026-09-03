@@ -128,6 +128,13 @@ class CampaignPlan7FinalCloseoutIn(BaseModel):
     expected_item_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class CampaignPlan7FinalCloseoutV2In(CampaignPlan7FinalCloseoutIn):
+    """Second-generation recovery identity after a pre-claim export failure."""
+
+    recovery_id: str = Field(min_length=1, max_length=80)
+    expected_web_agent_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class CampaignPlan8ExecuteIn(BaseModel):
     """Exact CAS input for the approved September Super88 execution."""
 
@@ -907,7 +914,22 @@ def execute_super_reduce_plan7_final_closeout(
         body: CampaignPlan7FinalCloseoutIn,
         db: Session = Depends(get_db),
         _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
-    """Consume the reviewed plan-7 bundle and submit its one ready item once."""
+    """Retired after the pre-claim export ambiguity incident."""
+    result = {
+        "ok": False,
+        "error": "final_closeout_v1_retired_after_preclaim_export_ambiguity",
+        "automatic_retry": False,
+        "platform_write": False,
+    }
+    raise HTTPException(409, detail=result)
+
+
+@router.post("/execute-super-reduce-plan7-final-closeout-v2")
+def execute_super_reduce_plan7_final_closeout_v2(
+        body: CampaignPlan7FinalCloseoutV2In,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Consume the reviewed plan-7 bundle through the repaired export claim."""
     from app.services import campaign_plan7_final_closeout_service as service
 
     result = service.execute_plan7_final_closeout(
@@ -920,6 +942,8 @@ def execute_super_reduce_plan7_final_closeout(
         expected_policy_sha256=body.expected_policy_sha256,
         expected_manifest_sha256=body.expected_manifest_sha256,
         expected_item_scope_sha256=body.expected_item_scope_sha256,
+        recovery_id=body.recovery_id,
+        expected_web_agent_commit=body.expected_web_agent_commit,
     )
     if not result.get("ok"):
         code = 404 if result.get("error") in {

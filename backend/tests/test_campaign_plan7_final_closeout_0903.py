@@ -8,6 +8,7 @@ from app.models.campaign import (
     CampaignPreparationBundle,
 )
 from app.services import campaign_plan7_final_closeout_service as service
+from app.cli import campaign_execute_plan7_final_closeout_v2 as cli_v2
 
 
 def _identity():
@@ -105,6 +106,8 @@ def _request(**overrides):
         "expected_policy_sha256": service.POLICY_SHA256,
         "expected_manifest_sha256": service.MANIFEST_SHA256,
         "expected_item_scope_sha256": service.ITEM_SCOPE_SHA256,
+        "recovery_id": service.RECOVERY_ID,
+        "expected_web_agent_commit": service.EXPECTED_WEB_AGENT_COMMIT,
     }
     values.update(overrides)
     return values
@@ -218,6 +221,8 @@ def test_success_consumes_once_and_preserves_all_non_target_items(
     assert captured["allow_terminal_no_sales_fallback"] is False
     assert captured["prepared_official_product_identity"] == identity_result
     assert captured["prepared_bundle_context"]["bundle_id"] == service.BUNDLE_ID
+    assert result["recovery_id"] == service.RECOVERY_ID
+    assert result["expected_web_agent_commit"] == service.EXPECTED_WEB_AGENT_COMMIT
     db_session.refresh(bundle)
     assert bundle.consumed_attempt_id == result["attempt_id"]
     db_session.refresh(plan)
@@ -269,3 +274,20 @@ def test_internal_push_guard_rejects_any_changed_bundle_context(
     assert result["ok"] is False
     assert result["step"] == "plan7_final_closeout_policy_guard"
     assert result["automatic_retry"] is False
+
+
+def test_v2_cli_is_bound_to_repair_and_exact_bundle_identity():
+    assert cli_v2._URL.endswith(
+        "/execute-super-reduce-plan7-final-closeout-v2")
+    assert cli_v2._FIXED_PAYLOAD == {
+        "workflow_key": service.WORKFLOW_KEY,
+        "plan_id": service.PLAN_ID,
+        "expected_status": service.EXPECTED_STATUS,
+        "bundle_id": service.BUNDLE_ID,
+        "expected_source_sha256": service.SOURCE_SHA256,
+        "expected_policy_sha256": service.POLICY_SHA256,
+        "expected_manifest_sha256": service.MANIFEST_SHA256,
+        "expected_item_scope_sha256": service.ITEM_SCOPE_SHA256,
+        "recovery_id": service.RECOVERY_ID,
+        "expected_web_agent_commit": service.EXPECTED_WEB_AGENT_COMMIT,
+    }

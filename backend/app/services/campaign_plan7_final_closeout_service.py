@@ -41,6 +41,8 @@ EXEMPT_ITEM_IDS = {"805268708396"}
 EXPECTED_SIGNUP_ROWS = 13
 EXPECTED_DISCOUNT_ROWS = 9
 EXECUTION_SOURCE = "campaign_super_reduce_plan7_final_closeout"
+RECOVERY_ID = "plan7-final-closeout-product-export-claim-v2"
+EXPECTED_WEB_AGENT_COMMIT = "c7fdea3ed4594983d8f8baea896ff8e65088f2b8"
 
 
 def _canonical_sha256(value) -> str:
@@ -83,7 +85,9 @@ def _request_allowed(*, workflow_key: str, expected_plan_id: int,
                      expected_source_sha256: str,
                      expected_policy_sha256: str,
                      expected_manifest_sha256: str,
-                     expected_item_scope_sha256: str) -> bool:
+                     expected_item_scope_sha256: str,
+                     recovery_id: str,
+                     expected_web_agent_commit: str) -> bool:
     return all((
         workflow_key == WORKFLOW_KEY,
         expected_plan_id == PLAN_ID,
@@ -93,6 +97,8 @@ def _request_allowed(*, workflow_key: str, expected_plan_id: int,
         expected_policy_sha256 == POLICY_SHA256,
         expected_manifest_sha256 == MANIFEST_SHA256,
         expected_item_scope_sha256 == ITEM_SCOPE_SHA256,
+        recovery_id == RECOVERY_ID,
+        expected_web_agent_commit == EXPECTED_WEB_AGENT_COMMIT,
     ))
 
 
@@ -242,7 +248,9 @@ def execute_plan7_final_closeout(
         expected_status: str, bundle_id: str,
         expected_source_sha256: str, expected_policy_sha256: str,
         expected_manifest_sha256: str,
-        expected_item_scope_sha256: str) -> dict:
+        expected_item_scope_sha256: str,
+        recovery_id: str,
+        expected_web_agent_commit: str) -> dict:
     """Execute the one remaining safe item and close plan 7 structurally."""
     if not _request_allowed(
             workflow_key=workflow_key, expected_plan_id=expected_plan_id,
@@ -250,7 +258,9 @@ def execute_plan7_final_closeout(
             expected_source_sha256=expected_source_sha256,
             expected_policy_sha256=expected_policy_sha256,
             expected_manifest_sha256=expected_manifest_sha256,
-            expected_item_scope_sha256=expected_item_scope_sha256):
+            expected_item_scope_sha256=expected_item_scope_sha256,
+            recovery_id=recovery_id,
+            expected_web_agent_commit=expected_web_agent_commit):
         return _fail("final_closeout_request_not_allowed")
 
     plan = db.execute(select(CampaignPlan).where(
@@ -316,6 +326,8 @@ def execute_plan7_final_closeout(
             "target_item_id": TARGET_ITEM_ID,
             "signup_rows": EXPECTED_SIGNUP_ROWS,
             "discount_rows_verified": EXPECTED_DISCOUNT_ROWS,
+            "recovery_id": RECOVERY_ID,
+            "expected_web_agent_commit": EXPECTED_WEB_AGENT_COMMIT,
             "deferred_item_ids": sorted(DEFERRED_ITEM_IDS),
             "preserved_active_item_ids": sorted(PRESERVED_ACTIVE_ITEM_IDS),
             "official_product_sku_identity": official_identity,
@@ -413,6 +425,8 @@ def execute_plan7_final_closeout(
     summary.update({
         "final_closeout": True,
         "bundle_id": BUNDLE_ID,
+        "recovery_id": RECOVERY_ID,
+        "expected_web_agent_commit": EXPECTED_WEB_AGENT_COMMIT,
         "target_item_id": TARGET_ITEM_ID,
         "deferred_item_ids": sorted(DEFERRED_ITEM_IDS),
         "preserved_active_item_ids": sorted(PRESERVED_ACTIVE_ITEM_IDS),
@@ -426,6 +440,8 @@ def execute_plan7_final_closeout(
         "plan_id": PLAN_ID,
         "plan_status": plan.status,
         "bundle_id": BUNDLE_ID,
+        "recovery_id": RECOVERY_ID,
+        "expected_web_agent_commit": EXPECTED_WEB_AGENT_COMMIT,
         "attempt_id": attempt.id,
         "scope_sha256": execution_scope_sha,
         "submitted_item_ids": [TARGET_ITEM_ID],
