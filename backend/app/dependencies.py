@@ -112,6 +112,9 @@ CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH = (
 CAMPAIGN_PLAN7_DISCOUNT_SUPPLEMENT_PATH = (
     "/api/campaigns/supplement-super-reduce-plan7-single-discount"
 )
+CAMPAIGN_PLAN7_SAMPLE_CENT_PATH = (
+    "/api/campaigns/repair-plan7-sample-cent-single-discount"
+)
 CAMPAIGN_PLAN7_SMALL_PROMO_CORRECTION_PATH = (
     "/api/campaigns/correct-super-reduce-plan7-small-promo"
 )
@@ -177,6 +180,7 @@ CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PLAN7_DISCOUNT_TIME_READBACK_V3_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_CORRECTION_PATH,
     CAMPAIGN_PLAN7_DISCOUNT_SUPPLEMENT_PATH,
+    CAMPAIGN_PLAN7_SAMPLE_CENT_PATH,
     CAMPAIGN_PLAN7_SMALL_PROMO_CORRECTION_PATH,
     CAMPAIGN_WAREHOUSE_PRODUCT_PRICE_CORRECTION_PATH,
     CAMPAIGN_FIVE_PRICE_CORRECTION_PATH,
@@ -560,6 +564,8 @@ def require_campaign_prepare_principal(
                 "campaign.super_reduce.plan7.discount_correct"),
             CAMPAIGN_PLAN7_DISCOUNT_SUPPLEMENT_PATH: (
                 "campaign.super_reduce.plan7.discount_supplement"),
+            CAMPAIGN_PLAN7_SAMPLE_CENT_PATH: (
+                "campaign.super_reduce.plan7.sample_cent_repair"),
             CAMPAIGN_PLAN7_SMALL_PROMO_CORRECTION_PATH: (
                 "campaign.super_reduce.plan7.small_promo_correct"),
             CAMPAIGN_FIVE_PRICE_CORRECTION_PATH: (

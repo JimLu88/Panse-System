@@ -706,6 +706,34 @@ def supplement_plan7_single_discount(
     return result
 
 
+def supplement_plan7_sample_cent_single_discount(
+        db: Session, *, payload: dict, timeout_s: int = 1800) -> dict:
+    """Run the fixed four-SKU 5.99 sample repair once."""
+    started = _post(
+        db, "/api/single-item-discount/plan7-sample-cent-supplement",
+        payload, timeout=30)
+    job_id = started.get("job")
+    if not started.get("ok") or not job_id:
+        return {
+            "ok": False,
+            "error": started.get("error", "取数服务(:8500)未响应"),
+            "submitted": None,
+        }
+    final = wait_job(db, job_id, timeout_s=timeout_s)
+    result = final.get("result") or {}
+    result["web_agent_job_id"] = job_id
+    if result.get("need_scan"):
+        return {
+            "ok": False,
+            "need_scan": True,
+            "error": result.get("error") or "淘宝登录态已失效",
+            "submitted": False,
+            "web_agent_job_id": job_id,
+            "execution_boundary": result.get("execution_boundary"),
+        }
+    return result
+
+
 def inspect_plan8_final_discount_supplement(
         db: Session, *, payload: dict, timeout_s: int = 900) -> dict:
     """Read the existing plan-8 activity bindings for eight exact SKUs."""

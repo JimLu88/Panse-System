@@ -1682,6 +1682,35 @@ def correct_super_reduce_plan7_small_promo(
     return result
 
 
+@router.post("/repair-plan7-sample-cent-single-discount")
+def repair_plan7_sample_cent_single_discount(
+        body: CampaignPlan7DiscountSupplementIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Set only four normal sample SKUs to 5.99 and prove the result."""
+    from app.services import campaign_plan7_sample_cent_service
+
+    result = campaign_plan7_sample_cent_service.execute_plan7_sample_cent(
+        db, request_payload=body.model_dump())
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in {
+            "plan7_sample_cent_request_not_allowed",
+            "plan7_sample_cent_plan_identity_drift",
+            "plan7_sample_cent_erp_identity_or_price_drift",
+            "plan7_sample_cent_xlsx_scope_drift",
+            "plan7_sample_cent_activity_scope_not_exact",
+            "plan7_sample_cent_activity_identity_drift",
+            "plan7_sample_cent_readback_artifact_drift",
+            "plan7_sample_cent_readback_scope_drift",
+            "plan7_sample_cent_platform_state_not_allowed",
+        }:
+            code = 422
+        raise HTTPException(code, detail=result)
+    return result
+
+
 @router.post("/correct-warehouse-product-sku-price")
 def correct_warehouse_product_sku_price(
         body: CampaignWarehouseProductPriceCorrectionIn,
