@@ -1,5 +1,17 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 read-only export retry continuation V24
+
+- V23 passed the corrected claim contract, then its inspection-only QianNiu
+  export task failed with the official result `哎呀，系统开小差了，请稍后再试`.
+  The Web-Agent job finished `phase=inspect`, `claim_created=false` and
+  `execution_boundary.platform_write=false`; no upload or submission occurred.
+- V24 accepts only the exact frozen ERP V23 failure hashes and unchanged V21
+  claim, then permits one new normal inspection/export attempt. All write,
+  identity, price, scope, CAS and no-retry gates are unchanged. V23 is retired.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v24_nas.ps1`.
+
 ## 2026-09-04 plan-8 V8 frozen-claim contract correction V23
 
 - V22 was invoked once and stopped during local claimed-preupload inspection;

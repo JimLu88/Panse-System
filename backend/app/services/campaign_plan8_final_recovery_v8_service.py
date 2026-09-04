@@ -134,6 +134,9 @@ CLAIMED_TEMPLATE_CLOSE_CONFIRMATION = (
 CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_V22_CLAIM_CONTRACT_FIX_V23"
 )
+CLAIMED_EXPORT_RETRY_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_V23_READONLY_EXPORT_FAILURE_V24"
+)
 PREUPLOAD_BUSY_WAIT_SECONDS = 600.0
 PREUPLOAD_BUSY_POLL_SECONDS = 5.0
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
@@ -192,6 +195,18 @@ V21_COMMIT_SHA256 = (
 )
 V21_RESUME_SHA256 = (
     "fc20f1a9b076f369e0c9e2f3418488175a5ab33ef31609cdeb4f39cb81214777"
+)
+V23_RESULT_SUMMARY_SHA256 = (
+    "55b4fbefe204632e34b5ae23f324adca1e615f11832c13de04f9d8c304228c3a"
+)
+V23_INSPECTION_SHA256 = (
+    "b20e50c5790d1062445d626d828002f3f8549bacea6d9a29eec8a2fdb95da076"
+)
+V23_COMMIT_SHA256 = (
+    "c96830236899275486f8ed12c3712ac94438d5f20acab711eb6c00d51032bd6c"
+)
+V23_RESUME_SHA256 = (
+    "a389a0ba92fc02ca1f8f5e1f37f7768f62d7a5052cc56c92a963f2573063e2e1"
 )
 POST_V18_READBACK_ARTIFACT_SHA256 = (
     "3c44dc294b8dc8b098d09e944c942a6bfea27814df1b78f2b90fc7d8998cd010"
@@ -499,7 +514,8 @@ def verify_plan8_final_v8_preupload_claim(
         CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
         if step in {
             "platform_write_claim_claimed_preupload_resume_v22",
-            "platform_write_claim_claimed_preupload_resume_v23"}
+            "platform_write_claim_claimed_preupload_resume_v23",
+            "platform_write_claim_claimed_preupload_resume_v24"}
         else
         CLAIMED_PREUPLOAD_V19_CLAIM_SHA256
         if step in {
@@ -1665,6 +1681,69 @@ def _validate_claimed_preupload_after_v21_template_obstruction(
     return ok, detail
 
 
+def _validate_claimed_preupload_after_v23_export_failure(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    """Accept only V23's exact read-only QianNiu export failure."""
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    inspection = summary.get("inspection") or {}
+    commit = summary.get("commit") or {}
+    resume = summary.get("claimed_preupload_resume") or {}
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "result_summary_sha256": v6._hash(summary),
+        "inspection_sha256": v6._hash(inspection),
+        "commit_sha256": v6._hash(commit),
+        "resume_sha256": v6._hash(resume),
+        "commit": commit,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "unknown_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is None
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "plan8_final_v8_commit"
+        and attempt.error_code == "export_poll_timeout"
+        and attempt.web_agent_job_id == "job2"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and v6._hash(summary) == V23_RESULT_SUMMARY_SHA256
+        and v6._hash(inspection) == V23_INSPECTION_SHA256
+        and v6._hash(commit) == V23_COMMIT_SHA256
+        and v6._hash(resume) == V23_RESUME_SHA256
+        and inspection.get("resume_claim_sha256")
+        == CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+        and resume.get("source_claim_sha256")
+        == CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+        and commit.get("scope_sha256") == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and commit.get("platform_write") is None
+        and commit.get("claim_created") is False
+        and commit.get("reservation_consumed") is None
+        and commit.get("last_checkpoint") is None
+        and commit.get("web_agent_error") == "export_poll_timeout"
+        and commit.get("web_agent_detail") is None
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written"))
+    return ok, detail
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
@@ -1683,7 +1762,8 @@ def _commit_and_readback(
         use_preupload_v20_endpoint: bool = False,
         use_preupload_v21_endpoint: bool = False,
         use_preupload_v22_endpoint: bool = False,
-        use_preupload_v23_endpoint: bool = False) -> dict:
+        use_preupload_v23_endpoint: bool = False,
+        use_preupload_v24_endpoint: bool = False) -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID, "operation": OPERATION,
@@ -1724,6 +1804,8 @@ def _commit_and_readback(
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v22
             if use_preupload_v23_endpoint:
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v23
+            if use_preupload_v24_endpoint:
+                call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
         committed = call(
             db, payload={"phase": ("commit" if commit_phase
                                     == "resume_preupload_commit"
@@ -1817,6 +1899,7 @@ def _resume_claimed_preupload(
         accept_v20_claim_verify_rejection_state: bool = False,
         accept_v21_template_obstruction_state: bool = False,
         accept_v22_claim_contract_correction_state: bool = False,
+        accept_v23_export_failure_state: bool = False,
         wait_prewrite_busy: bool = False) -> dict:
     validator = _validate_claimed_preupload_attempt
     resume_claim_sha256 = CLAIMED_PREUPLOAD_CLAIM_SHA256
@@ -1871,6 +1954,9 @@ def _resume_claimed_preupload(
     if accept_v22_claim_contract_correction_state:
         validator = _validate_claimed_preupload_after_v21_template_obstruction
         resume_claim_sha256 = CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+    if accept_v23_export_failure_state:
+        validator = _validate_claimed_preupload_after_v23_export_failure
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
     preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume
     if accept_dialog_mismatch_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v9
@@ -1898,6 +1984,8 @@ def _resume_claimed_preupload(
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v22
     if accept_v22_claim_contract_correction_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v23
+    if accept_v23_export_failure_state:
+        preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
     resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
@@ -2014,7 +2102,8 @@ def _resume_claimed_preupload(
             (accept_template_generation_state, 20),
             (accept_v20_claim_verify_rejection_state, 21),
             (accept_v21_template_obstruction_state, 22),
-            (accept_v22_claim_contract_correction_state, 23)):
+            (accept_v22_claim_contract_correction_state, 23),
+            (accept_v23_export_failure_state, 24)):
         if enabled:
             resume_version = version
     attempt.last_step = (
@@ -2054,7 +2143,8 @@ def _resume_claimed_preupload(
         use_preupload_v20_endpoint=accept_template_generation_state,
         use_preupload_v21_endpoint=accept_v20_claim_verify_rejection_state,
         use_preupload_v22_endpoint=accept_v21_template_obstruction_state,
-        use_preupload_v23_endpoint=accept_v22_claim_contract_correction_state)
+        use_preupload_v23_endpoint=accept_v22_claim_contract_correction_state,
+        use_preupload_v24_endpoint=accept_v23_export_failure_state)
 
 
 def recover_plan8_final_v8(
@@ -2105,6 +2195,8 @@ def recover_plan8_final_v8(
             CLAIMED_TEMPLATE_CLOSE_CONFIRMATION),
         "resume_claimed_preupload_v23": (
             CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION),
+        "resume_claimed_preupload_v24": (
+            CLAIMED_EXPORT_RETRY_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -2142,7 +2234,8 @@ def recover_plan8_final_v8(
                 "resume_claimed_preupload_v20",
                 "resume_claimed_preupload_v21",
                 "resume_claimed_preupload_v22",
-                "resume_claimed_preupload_v23"}:
+                "resume_claimed_preupload_v23",
+                "resume_claimed_preupload_v24"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
@@ -2185,6 +2278,8 @@ def recover_plan8_final_v8(
                 mode == "resume_claimed_preupload_v22"),
             accept_v22_claim_contract_correction_state=(
                 mode == "resume_claimed_preupload_v23"),
+            accept_v23_export_failure_state=(
+                mode == "resume_claimed_preupload_v24"),
             wait_prewrite_busy=(
                 mode in {"resume_claimed_preupload_v7",
                          "resume_claimed_preupload_v8",
@@ -2202,7 +2297,8 @@ def recover_plan8_final_v8(
                          "resume_claimed_preupload_v20",
                          "resume_claimed_preupload_v21",
                          "resume_claimed_preupload_v22",
-                         "resume_claimed_preupload_v23"}))
+                         "resume_claimed_preupload_v23",
+                         "resume_claimed_preupload_v24"}))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",
