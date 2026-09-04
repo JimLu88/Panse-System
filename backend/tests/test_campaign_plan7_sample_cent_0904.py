@@ -5,6 +5,7 @@ import hashlib
 
 from app import dependencies
 from app.cli import campaign_repair_plan7_sample_cent as cli
+from app.cli import campaign_resume_plan7_sample_cent as resume_cli
 from app.models.campaign import (
     CampaignEvidenceSnapshot,
     CampaignExecutionAttempt,
@@ -112,6 +113,49 @@ def _prepare(db_session, monkeypatch):
         svc.campaign_discount_audit_service,
         "persist_single_discount_terminal",
         lambda **_kwargs: "terminal-receipt")
+
+
+def _failed_attempt(db_session, monkeypatch):
+    facts, error = svc._erp_scope(db_session)
+    assert error is None
+    attempt = CampaignExecutionAttempt(
+        id=svc.RESUME_ATTEMPT_ID,
+        plan_id=svc.PLAN_ID,
+        workflow_key=svc.WORKFLOW_KEY,
+        operation=svc.OPERATION,
+        scope_sha256=svc.SCOPE_SHA256,
+        state="failed",
+        write_claimed=True,
+        platform_write_observed=False,
+        automatic_retry_allowed=False,
+        request_id=svc.RESUME_ATTEMPT_REQUEST_ID,
+        web_agent_job_id="job2",
+        last_step="platform_outcome_not_exact",
+        error_code="covered add-product action",
+        result_summary={
+            "trigger": {
+                "workflow_key": svc.WORKFLOW_KEY,
+                "plan_id": svc.PLAN_ID,
+                "item_id": svc.ITEM_ID,
+                "target_activity_id": svc.TARGET_ACTIVITY_ID,
+                "scope_sha256": svc.SCOPE_SHA256,
+                "readonly_artifact_sha256": svc.READONLY_ARTIFACT_SHA256,
+                "pre_read_job_id": "job1",
+            },
+            "erp_facts": facts,
+            "platform_submit": None,
+            "official_terminal": None,
+            "readback": None,
+            "terminal_job_id": "job2",
+            "terminal_error": "covered add-product action",
+        },
+    )
+    db_session.add(attempt)
+    db_session.commit()
+    monkeypatch.setattr(
+        svc, "RESUME_ATTEMPT_SNAPSHOT_SHA256",
+        svc._attempt_snapshot_sha256(attempt))
+    return attempt
 
 
 def test_exact_four_skus_claim_once_and_read_back(db_session, monkeypatch):
@@ -225,3 +269,73 @@ def test_v1_paused_status_artifact_is_retired():
 
     assert retired["readonly_artifact_sha256"] != svc.READONLY_ARTIFACT_SHA256
     assert svc._validate_request(retired) is False
+
+
+def test_exact_failed_attempt_is_reused_once(db_session, monkeypatch):
+    _prepare(db_session, monkeypatch)
+    _failed_attempt(db_session, monkeypatch)
+    reads = iter([_read(present=False), _read(present=True)])
+    monkeypatch.setattr(svc, "_platform_read", lambda *_: next(reads))
+    writes = []
+
+    def write(_db, *, payload):
+        writes.append(payload)
+        return {
+            "ok": True,
+            "submitted": True,
+            "web_agent_job_id": "resume-write-job",
+            "trigger": {"activity_id": svc.TARGET_ACTIVITY_ID,
+                        "action": "添加商品"},
+            "platform_submit": {"attempted": True, "control": "确认修改"},
+            "validation": {"ok": 4, "failed": 0},
+            "official_terminal": {"state": "complete", "ok": 4,
+                                  "failed": 0},
+            "execution_boundary": {"platform_write": True},
+        }
+
+    monkeypatch.setattr(
+        svc.web_agent_service,
+        "supplement_plan7_sample_cent_single_discount", write)
+    result = svc.resume_plan7_sample_cent(
+        db_session, request_payload=svc.resume_request_payload())
+
+    assert result["ok"] is True
+    assert result["attempt_id"] == svc.RESUME_ATTEMPT_ID
+    assert len(writes) == 1
+    assert "attempt_id" not in writes[0]
+    assert "confirmation" not in writes[0]
+    assert db_session.query(CampaignExecutionAttempt).count() == 1
+    attempt = db_session.get(CampaignExecutionAttempt, svc.RESUME_ATTEMPT_ID)
+    assert attempt.state == "completed"
+    assert attempt.platform_write_observed is True
+    assert attempt.automatic_retry_allowed is False
+    assert attempt.result_summary["resume"]["confirmation"] == (
+        svc.RESUME_CONFIRMATION)
+
+    replay = svc.resume_plan7_sample_cent(
+        db_session, request_payload=svc.resume_request_payload())
+    assert replay["error"] == "plan7_sample_cent_resume_attempt_state_drift"
+    assert len(writes) == 1
+
+
+def test_resume_attempt_drift_stops_before_platform(db_session, monkeypatch):
+    _prepare(db_session, monkeypatch)
+    attempt = _failed_attempt(db_session, monkeypatch)
+    attempt.platform_write_observed = True
+    db_session.commit()
+    calls = []
+    monkeypatch.setattr(svc, "_platform_read", lambda *_: calls.append(True))
+
+    result = svc.resume_plan7_sample_cent(
+        db_session, request_payload=svc.resume_request_payload())
+
+    assert result["error"] == "plan7_sample_cent_resume_attempt_state_drift"
+    assert calls == []
+
+
+def test_resume_cli_and_payload_freeze_exact_attempt():
+    payload = svc.resume_request_payload()
+    assert payload["attempt_id"] == "a7280fed1f9d638c41b8f8ae"
+    assert payload["confirmation"] == svc.RESUME_CONFIRMATION
+    assert resume_cli._MAX_INPUT_BYTES >= 16_384
+    assert svc._validate_resume_request(payload) is True

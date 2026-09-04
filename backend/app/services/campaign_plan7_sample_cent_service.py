@@ -10,6 +10,7 @@ import base64
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
+import json
 import secrets
 
 from sqlalchemy import select
@@ -68,6 +69,14 @@ ACTIVITY_BUSINESS_FACTS = {
     "143936811502": ("单品立减0830", "2026-08-30 15:15:54"),
     "143939511827": ("单品立减0830", "2026-08-30 16:12:03"),
 }
+RESUME_ATTEMPT_ID = "a7280fed1f9d638c41b8f8ae"
+RESUME_ATTEMPT_REQUEST_ID = "plan7-sample-cent-4e51f0c5be6f2dc8"
+RESUME_ATTEMPT_SNAPSHOT_SHA256 = (
+    "2d419fd6afb340707cc5406d3b835f45542177e4e8c4d27c8034be1948777dd0"
+)
+RESUME_CONFIRMATION = (
+    "RESUME_ONCE_PLAN7_SAMPLE_CENT_ATTEMPT_A7280FED_AFTER_LIVE_MISSING_READBACK"
+)
 
 
 def _money(value) -> str:
@@ -404,6 +413,255 @@ def _terminal_exact(result: dict) -> bool:
         and terminal.get("state") == "complete"
         and terminal.get("ok") == 4 and terminal.get("failed") == 0
     )
+
+
+def _attempt_snapshot(attempt: CampaignExecutionAttempt) -> dict:
+    """Canonical predecessor state for the one authorized continuation."""
+    return {
+        "id": attempt.id,
+        "request_id": attempt.request_id,
+        "state": attempt.state,
+        "write_claimed": attempt.write_claimed,
+        "platform_write_observed": attempt.platform_write_observed,
+        "automatic_retry_allowed": attempt.automatic_retry_allowed,
+        "web_agent_job_id": attempt.web_agent_job_id,
+        "last_step": attempt.last_step,
+        "error_code": attempt.error_code,
+        "result_summary": attempt.result_summary,
+    }
+
+
+def _attempt_snapshot_sha256(attempt: CampaignExecutionAttempt) -> str:
+    raw = json.dumps(
+        _attempt_snapshot(attempt), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def resume_request_payload() -> dict:
+    return {
+        **request_payload(),
+        "attempt_id": RESUME_ATTEMPT_ID,
+        "attempt_snapshot_sha256": RESUME_ATTEMPT_SNAPSHOT_SHA256,
+        "confirmation": RESUME_CONFIRMATION,
+    }
+
+
+def _validate_resume_request(payload: dict) -> bool:
+    return (
+        _validate_request(payload)
+        and str(payload.get("attempt_id") or "") == RESUME_ATTEMPT_ID
+        and str(payload.get("attempt_snapshot_sha256") or "").lower()
+        == RESUME_ATTEMPT_SNAPSHOT_SHA256
+        and str(payload.get("confirmation") or "") == RESUME_CONFIRMATION
+    )
+
+
+def _resume_attempt_error(attempt: CampaignExecutionAttempt | None) -> dict | None:
+    if attempt is None:
+        return _fail("plan7_sample_cent_resume_attempt_missing")
+    actual_sha256 = _attempt_snapshot_sha256(attempt)
+    if (
+        attempt.id != RESUME_ATTEMPT_ID
+        or attempt.request_id != RESUME_ATTEMPT_REQUEST_ID
+        or attempt.workflow_key != WORKFLOW_KEY
+        or attempt.plan_id != PLAN_ID
+        or attempt.operation != OPERATION
+        or attempt.scope_sha256 != SCOPE_SHA256
+        or attempt.state != "failed"
+        or attempt.write_claimed is not True
+        or attempt.platform_write_observed is not False
+        or attempt.automatic_retry_allowed is not False
+        or attempt.web_agent_job_id != "job2"
+        or attempt.last_step != "platform_outcome_not_exact"
+        or actual_sha256 != RESUME_ATTEMPT_SNAPSHOT_SHA256
+    ):
+        return _fail(
+            "plan7_sample_cent_resume_attempt_state_drift",
+            attempt_id=attempt.id,
+            attempt_state=attempt.state,
+            actual_snapshot_sha256=actual_sha256,
+            expected_snapshot_sha256=RESUME_ATTEMPT_SNAPSHOT_SHA256,
+            platform_write=attempt.platform_write_observed,
+        )
+    return None
+
+
+def _store_terminal_on_attempt(
+        db: Session, *, attempt: CampaignExecutionAttempt,
+        terminal: dict) -> tuple[bool, bool | None]:
+    observed = (terminal.get("execution_boundary") or {}).get("platform_write")
+    if observed not in {True, False}:
+        observed = None
+    terminal_ok = _terminal_exact(terminal)
+    attempt.state = "platform_terminal" if terminal_ok else (
+        "failed" if observed is False else "unknown")
+    attempt.platform_write_observed = observed
+    attempt.web_agent_job_id = terminal.get("web_agent_job_id")
+    attempt.last_step = "official_terminal" if terminal_ok else (
+        "resume_platform_outcome_not_exact")
+    attempt.error_code = None if terminal_ok else str(
+        terminal.get("error") or "plan7_sample_cent_terminal_not_exact")[:128]
+    attempt.result_summary = {
+        **(attempt.result_summary or {}),
+        "platform_submit": terminal.get("platform_submit"),
+        "official_terminal": terminal.get("official_terminal")
+        or terminal.get("final_import"),
+        "terminal_job_id": terminal.get("web_agent_job_id"),
+        "terminal_error": terminal.get("error"),
+    }
+    db.commit()
+    return terminal_ok, observed
+
+
+def resume_plan7_sample_cent(db: Session, *, request_payload: dict) -> dict:
+    """Reuse the exact failed pre-write attempt after current user approval."""
+    if not _validate_resume_request(request_payload):
+        return _fail("plan7_sample_cent_resume_request_not_allowed")
+    plan = _get_plan(db)
+    plan_error = _validate_plan(plan)
+    if plan_error:
+        return plan_error
+    attempt = db.get(CampaignExecutionAttempt, RESUME_ATTEMPT_ID)
+    attempt_error = _resume_attempt_error(attempt)
+    if attempt_error:
+        return attempt_error
+    target_xlsx, erp_facts, xlsx_error = _build_target_xlsx(db)
+    if xlsx_error:
+        return xlsx_error
+    if (attempt.result_summary or {}).get("erp_facts") != erp_facts:
+        return _fail("plan7_sample_cent_resume_erp_scope_drift")
+
+    db.commit()
+    pre_read = _platform_read(db, plan)
+    pre_error = _validate_platform_read(pre_read, after_submit=False)
+    if pre_error:
+        return pre_error
+
+    plan = _get_plan(db, lock=True)
+    plan_error = _validate_plan(plan)
+    if plan_error:
+        return plan_error
+    attempt = db.execute(select(CampaignExecutionAttempt).where(
+        CampaignExecutionAttempt.id == RESUME_ATTEMPT_ID
+    ).with_for_update()).scalar_one_or_none()
+    attempt_error = _resume_attempt_error(attempt)
+    if attempt_error:
+        return attempt_error
+    target_xlsx, erp_facts_after, xlsx_error = _build_target_xlsx(db)
+    if xlsx_error:
+        return xlsx_error
+    if erp_facts_after != erp_facts:
+        return _fail("plan7_sample_cent_resume_erp_scope_changed_during_read")
+
+    artifact = pre_read.get("artifact") or {}
+    attempt.state = "resume_write_claimed"
+    attempt.web_agent_job_id = pre_read.get("web_agent_job_id")
+    attempt.last_step = "resume_fresh_missing_readback_then_same_attempt_claimed"
+    attempt.error_code = None
+    attempt.result_summary = {
+        **(attempt.result_summary or {}),
+        "resume": {
+            "confirmation": RESUME_CONFIRMATION,
+            "predecessor_snapshot_sha256": RESUME_ATTEMPT_SNAPSHOT_SHA256,
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+            "pre_read_job_id": pre_read.get("web_agent_job_id"),
+            "pre_read_artifact_sha256": artifact.get("sha256"),
+        },
+    }
+    db.commit()
+
+    web_payload = {
+        **{key: value for key, value in request_payload.items() if key not in {
+            "attempt_id", "attempt_snapshot_sha256", "confirmation"}},
+        "xlsx_sha256": hashlib.sha256(target_xlsx).hexdigest(),
+        "xlsx_b64": base64.b64encode(target_xlsx).decode("ascii"),
+    }
+    try:
+        terminal = web_agent_service.supplement_plan7_sample_cent_single_discount(
+            db, payload=web_payload)
+    except Exception as exc:  # outcome is unknown after the resumed claim
+        terminal = {
+            "ok": False, "submitted": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "execution_boundary": {"platform_write": None},
+        }
+    attempt = db.get(CampaignExecutionAttempt, RESUME_ATTEMPT_ID)
+    terminal_ok, observed = _store_terminal_on_attempt(
+        db, attempt=attempt, terminal=terminal)
+    terminal_receipt = (
+        campaign_discount_audit_service.persist_single_discount_terminal(
+            plan_id=PLAN_ID, workflow_key=WORKFLOW_KEY,
+            job_id=terminal.get("web_agent_job_id"),
+            target_xlsx=target_xlsx, result=terminal))
+    if not terminal_ok:
+        return _fail(
+            "plan7_sample_cent_resume_terminal_not_exact_no_retry",
+            platform_read=True, platform_write=observed,
+            attempt_id=RESUME_ATTEMPT_ID,
+            terminal_receipt_request_id=terminal_receipt,
+            terminal=terminal)
+
+    post_read = _platform_read(db, plan)
+    post_error = _validate_platform_read(post_read, after_submit=True)
+    artifact = post_read.get("artifact") if isinstance(
+        post_read.get("artifact"), dict) else {}
+    snapshot_id = None
+    if post_error is None:
+        snapshot = campaign_discount_audit_service._persist(
+            db, plan=plan,
+            evidence_type="plan7_sample_cent_discount_readback",
+            request_id=f"plan7-sample-cent-resume-readback-{secrets.token_hex(6)}",
+            web_agent_job_id=post_read.get("web_agent_job_id"),
+            scope_digest=SCOPE_SHA256,
+            status="complete",
+            summary=post_read.get("platform_summary"),
+            rows=post_read.get("rows"), failure_rows=[],
+            boundary=_boundary(platform_read=True, platform_write=False),
+            artifact=artifact)
+        snapshot_id = snapshot.id
+    attempt = db.get(CampaignExecutionAttempt, RESUME_ATTEMPT_ID)
+    attempt.state = "completed" if post_error is None else "failed"
+    attempt.last_step = "readback_verified" if post_error is None else (
+        "post_submit_readback_failed")
+    attempt.error_code = None if post_error is None else str(
+        post_error.get("error"))[:128]
+    attempt.result_summary = {
+        **(attempt.result_summary or {}),
+        "terminal_receipt_request_id": terminal_receipt,
+        "readback": {
+            "ok": post_error is None,
+            "job_id": post_read.get("web_agent_job_id"),
+            "snapshot_id": snapshot_id,
+            "artifact_sha256": artifact.get("sha256"),
+            "rows": post_read.get("rows"),
+            "error": post_error.get("error") if post_error else None,
+        },
+    }
+    db.commit()
+    if post_error:
+        return {
+            **post_error,
+            "attempt_id": RESUME_ATTEMPT_ID,
+            "submitted": True,
+            "official_terminal": terminal.get("official_terminal"),
+            "execution_boundary": _boundary(
+                platform_read=True, platform_write=True),
+        }
+    return {
+        "ok": True,
+        "workflow_key": WORKFLOW_KEY,
+        "plan_id": PLAN_ID,
+        "attempt_id": RESUME_ATTEMPT_ID,
+        "item_id": ITEM_ID,
+        "activity_id": TARGET_ACTIVITY_ID,
+        "trigger": (attempt.result_summary or {}).get("trigger"),
+        "platform_submit": (attempt.result_summary or {}).get("platform_submit"),
+        "official_terminal": (attempt.result_summary or {}).get("official_terminal"),
+        "readback": (attempt.result_summary or {}).get("readback"),
+        "execution_boundary": _boundary(
+            platform_read=True, platform_write=True),
+    }
 
 
 def execute_plan7_sample_cent(db: Session, *, request_payload: dict) -> dict:
