@@ -1216,3 +1216,19 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - The only formal continuation command is
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v19_nas.ps1`.
   V18 is retired and must not be rerun.
+
+## 2026-09-04 plan-8 V8 template-generation continuation V20
+
+- V19 opened QianNiu's exact `下载模版` configuration modal and then
+  timed out while waiting for an immediate download. The frozen V19 claim
+  SHA-256 is
+  `4f4b6fbd4878985302ad6b25bcf3708f5c773c3ea69a1e715cb43c99a5b35740`;
+  it records `submitted=false`, so no upload, publish or discount write
+  started.
+- V20 accepts only the exact V19 ERP summary/inspection/commit fingerprints
+  and that frozen claim. It selects only `空模板（仅包含表头）` in the exact
+  template modal and clicks the unique enabled `生成文件` action before
+  validating and populating the live official workbook.
+- The only formal continuation command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v20_nas.ps1`.
+  V19 is retired and must not be rerun.

@@ -1037,6 +1037,14 @@ def recover_plan8_final_v8_preupload_resume_v19(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v19")
 
 
+def recover_plan8_final_v8_preupload_resume_v20(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V20 continuation through the exact template-generation modal."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v20")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)
