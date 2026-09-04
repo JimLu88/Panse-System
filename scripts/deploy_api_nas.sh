@@ -54,6 +54,7 @@ if [[ "${BUILD:-0}" == "1" ]]; then
   gc_short=$(git rev-parse --short HEAD)
   echo "[build] panse-system-api:latest @ $gc_short"
   docker build . -f backend/Dockerfile -t "$IMAGE" \
+    --load \
     --build-arg GIT_COMMIT="$gc" \
     --build-arg GIT_COMMIT_MSG="$(git log -1 --pretty=%s)" \
     --build-arg GIT_COMMIT_DATE="$(git log -1 --date=short --pretty=%cd)"
