@@ -1,5 +1,26 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 计划7样块单品立减补报已完成并封口
+
+- 商品 `719436834260` 的 4 个正常 SKU 已补报到活动 `143939511827`，单品立减均为
+  `5.99`。平台官方终态为 `4 成功 / 0 失败`；提交后逐 SKU 只读回读均为
+  `classification=correct_effective`、`actual_deduct=5.99`、`status=进行中`、
+  `activity_ids=["143939511827"]`。4 个 SKU 为 `5024477897617`、
+  `6120623944056`、`6282622238127`、`6285733543660`。
+- 原 attempt `a7280fed1f9d638c41b8f8ae` 已精确复用并封口，禁止再次执行。最终只读回读
+  `snapshot_id=20`，证据 SHA-256 为
+  `d97f24b909cd6d2e867e57439ee0983e7b868cf00fd257315fc17229ba970ca9`。
+- Web-Agent 已修复两个真实页面漂移：`重要消息` 按钮严格绑定所在消息卡片的真实关闭
+  控件；820px 窗口下先滚动普通操作列，再点击唯一实际接收点击的固定列入口。Web-Agent
+  GitHub `main` 为 `d240ccea5fc45b6d0192cb06b0d632fbe925c3c6`，ERP GitHub/生产为
+  `df8a9d2`；计划7专项测试 `40 passed`。
+- 正式运行目录的零写入复验已证明活动唯一、浮层可关闭、4 个 SKU 在执行前确实缺失且
+  添加商品窗口能打开，同时保持选择 0、上传 0、提交 0。Web-Agent 重启后父 PID
+  `36964`、8500 监听 PID `33308`，本机健康访问返回 HTTP 200。
+- 本次未碰定制/咨询 SKU、未改商品或 ERP 日常价、未轮换 SKU、未撤回/暂停/删除活动、
+  未扩大到整批。计划8仍是独立的 unknown/readback-not-exact 状态，禁止因本次成功而自动
+  重试或干预。
+
 ## 2026-09-04 plan-8 V8 semantic batch-import continuation V14
 
 - The sole V13 continuation passed the claim handshake and reached the exact
