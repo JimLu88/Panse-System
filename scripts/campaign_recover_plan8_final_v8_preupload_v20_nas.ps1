@@ -5,6 +5,8 @@ param(
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
 
+throw 'V20 is retired after a verified pre-platform ERP claim-step rejection. Use only the independently released V21 entry.'
+
 $ErrorActionPreference = 'Stop'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'

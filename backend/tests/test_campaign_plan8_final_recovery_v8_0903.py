@@ -2589,6 +2589,9 @@ def test_v21_cli_and_operator_script_are_exact(monkeypatch):
     assert "resume_claimed_preupload_v21" in text
     assert recovery.CLAIMED_TEMPLATE_CLAIM_VERIFY_CONFIRMATION in text
     assert recovery.EXPECTED_TARGET_SCOPE_SHA256 in text
+    retired = (script.parent /
+               "campaign_recover_plan8_final_v8_preupload_v20_nas.ps1")
+    assert "V20 is retired" in retired.read_text(encoding="utf-8")
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():
