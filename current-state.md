@@ -1,5 +1,22 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 verified manual-export continuation V25
+
+- V24 stopped before file selection with `campaign_title_mismatch`; its exact
+  ERP attempt is `edaf6b609dad46fbab90c7e8`, `claim_created=false`, and no
+  platform write was observed. V24 is retired.
+- V25 accepts only the reviewed user export
+  `「26年淘宝9月超级88超级88现货」活动商品导出20260904182846.xlsx`, 14994 bytes,
+  SHA-256 `c7c22b57a95e7db5f3cc8d8a0319ee4b1920a13e73204f1004be3760d71d25da`.
+  It proves 83 rows = 70 exact frozen drafts + 13 protected published rows and
+  exactly the eight expected missing SKUs. The broken automatic pre-export is
+  skipped; live price, SKU, discount, identity, CAS, one-shot and no-retry gates
+  remain mandatory.
+- Formal one-time operator command is
+  `scripts/campaign_recover_plan8_final_v8_manual_export_v25_nas.ps1 -ExportPath <exact reviewed xlsx>`.
+  Maintenance installs but does not invoke it; task 03 owns the single business
+  run.
+
 ## 2026-09-04 plan-8 V8 read-only export retry continuation V24
 
 - V23 passed the corrected claim contract, then its inspection-only QianNiu

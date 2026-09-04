@@ -5,6 +5,8 @@ param(
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
 
+throw 'V24 is retired after its single zero-write title-mismatch stop. Use the reviewed manual-export V25 entry; do not rerun V24.'
+
 $ErrorActionPreference = 'Stop'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'

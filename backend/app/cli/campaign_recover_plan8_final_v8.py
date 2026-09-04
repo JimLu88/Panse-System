@@ -1,6 +1,8 @@
 """Run the fixed Plan 8 V8 continuation through the local API."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import sys
 from urllib import error, request
@@ -12,7 +14,7 @@ from app.services import settings_service
 
 
 _URL = "http://127.0.0.1:8000/api/campaigns/recover-super88-plan8-final-v8"
-_MAX_INPUT_BYTES = 4096
+_MAX_INPUT_BYTES = 400000
 
 
 def _read_payload() -> bytes:
@@ -69,6 +71,8 @@ def _read_payload() -> bytes:
             recovery.CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION),
         "resume_claimed_preupload_v24": (
             recovery.CLAIMED_EXPORT_RETRY_CONFIRMATION),
+        "resume_claimed_preupload_v25": (
+            recovery.CLAIMED_MANUAL_EXPORT_CONFIRMATION),
     }
     expected = {
         "workflow_key": recovery.WORKFLOW_KEY,
@@ -79,8 +83,27 @@ def _read_payload() -> bytes:
         "confirmation": confirmations.get(body.get("mode")),
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
     }
+    if body.get("mode") == "resume_claimed_preupload_v25":
+        expected.update({
+            "manual_export_filename": recovery.MANUAL_EXPORT_FILENAME,
+            "manual_export_size": recovery.MANUAL_EXPORT_SIZE,
+            "manual_export_sha256": recovery.MANUAL_EXPORT_SHA256,
+            "manual_export_base64": body.get("manual_export_base64"),
+        })
+        if not isinstance(body.get("manual_export_base64"), str):
+            raise ValueError("计划8人工导出文件内容缺失")
     if body != expected or body.get("mode") not in confirmations:
         raise ValueError("计划8最终恢复V8输入与程序固化范围不一致")
+    if body.get("mode") == "resume_claimed_preupload_v25":
+        try:
+            workbook = base64.b64decode(
+                body["manual_export_base64"], validate=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("计划8人工导出文件编码无效") from exc
+        if (len(workbook) != recovery.MANUAL_EXPORT_SIZE
+                or hashlib.sha256(workbook).hexdigest()
+                != recovery.MANUAL_EXPORT_SHA256):
+            raise ValueError("计划8人工导出文件指纹不一致")
     return json.dumps(body, ensure_ascii=False,
                       separators=(",", ":")).encode("utf-8")
 

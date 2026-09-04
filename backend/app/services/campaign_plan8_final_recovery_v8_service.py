@@ -1,6 +1,9 @@
 """Claim-bound Plan 8 continuation after V7 proved zero platform writes."""
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import secrets
 import time
 from datetime import datetime, timezone
@@ -137,6 +140,16 @@ CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION = (
 CLAIMED_EXPORT_RETRY_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_V23_READONLY_EXPORT_FAILURE_V24"
 )
+CLAIMED_MANUAL_EXPORT_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_WITH_VERIFIED_MANUAL_EXPORT_V25"
+)
+MANUAL_EXPORT_FILENAME = (
+    "「26年淘宝9月超级88超级88现货」活动商品导出20260904182846.xlsx"
+)
+MANUAL_EXPORT_SIZE = 14994
+MANUAL_EXPORT_SHA256 = (
+    "c7c22b57a95e7db5f3cc8d8a0319ee4b1920a13e73204f1004be3760d71d25da"
+)
 PREUPLOAD_BUSY_WAIT_SECONDS = 600.0
 PREUPLOAD_BUSY_POLL_SECONDS = 5.0
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
@@ -207,6 +220,18 @@ V23_COMMIT_SHA256 = (
 )
 V23_RESUME_SHA256 = (
     "a389a0ba92fc02ca1f8f5e1f37f7768f62d7a5052cc56c92a963f2573063e2e1"
+)
+V24_RESULT_SUMMARY_SHA256 = (
+    "a450e54220d3687a40bd7e48773469df6929945fc3d720a77922bd04574d8b97"
+)
+V24_INSPECTION_SHA256 = (
+    "6702161d149209c420f9dc725228a49ee61a6b373d0ab8fd117023194ba8edc2"
+)
+V24_COMMIT_SHA256 = (
+    "3e85e2795966967e70f3922b67c2b181282f70705e220717c572ebc6a99b533a"
+)
+V24_RESUME_SHA256 = (
+    "613083eb50bb8d322a2fcd3464515f243692ea79adabdd4ac25e9050d3eef938"
 )
 POST_V18_READBACK_ARTIFACT_SHA256 = (
     "3c44dc294b8dc8b098d09e944c942a6bfea27814df1b78f2b90fc7d8998cd010"
@@ -515,7 +540,8 @@ def verify_plan8_final_v8_preupload_claim(
         if step in {
             "platform_write_claim_claimed_preupload_resume_v22",
             "platform_write_claim_claimed_preupload_resume_v23",
-            "platform_write_claim_claimed_preupload_resume_v24"}
+            "platform_write_claim_claimed_preupload_resume_v24",
+            "platform_write_claim_claimed_preupload_resume_v25"}
         else
         CLAIMED_PREUPLOAD_V19_CLAIM_SHA256
         if step in {
@@ -1744,6 +1770,189 @@ def _validate_claimed_preupload_after_v23_export_failure(
     return ok, detail
 
 
+def _validate_claimed_preupload_after_v24_title_mismatch(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    """Accept only V24's exact zero-write stop before any file selection."""
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    inspection = summary.get("inspection") or {}
+    commit = summary.get("commit") or {}
+    resume = summary.get("claimed_preupload_resume") or {}
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "result_summary_sha256": v6._hash(summary),
+        "inspection_sha256": v6._hash(inspection),
+        "commit_sha256": v6._hash(commit),
+        "resume_sha256": v6._hash(resume),
+        "commit": commit,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "unknown_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is None
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "plan8_final_v8_commit"
+        and attempt.error_code == "campaign_title_mismatch"
+        and attempt.web_agent_job_id == "job2"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and v6._hash(summary) == V24_RESULT_SUMMARY_SHA256
+        and v6._hash(inspection) == V24_INSPECTION_SHA256
+        and v6._hash(commit) == V24_COMMIT_SHA256
+        and v6._hash(resume) == V24_RESUME_SHA256
+        and inspection.get("resume_claim_sha256")
+        == CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+        and resume.get("source_claim_sha256")
+        == CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+        and commit.get("scope_sha256") == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and commit.get("platform_write") is None
+        and commit.get("claim_created") is False
+        and commit.get("reservation_consumed") is None
+        and commit.get("last_checkpoint") is None
+        and commit.get("web_agent_error") == "campaign_title_mismatch"
+        and commit.get("web_agent_detail") is None
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written"))
+    return ok, detail
+
+
+def _manual_export_v25_evidence(
+        *, manifest: dict, filename: str, size: int, sha256: str,
+        xlsx_b64: str) -> tuple[dict | None, dict]:
+    """Parse and bind the one user-exported workbook without trusting its name."""
+    import openpyxl
+
+    try:
+        raw = base64.b64decode(xlsx_b64, validate=True)
+    except (TypeError, ValueError):
+        return None, {"error": "manual_export_base64_invalid"}
+    digest = hashlib.sha256(raw).hexdigest()
+    if (filename != MANUAL_EXPORT_FILENAME or size != MANUAL_EXPORT_SIZE
+            or len(raw) != MANUAL_EXPORT_SIZE
+            or sha256.lower() != MANUAL_EXPORT_SHA256
+            or digest != MANUAL_EXPORT_SHA256):
+        return None, {
+            "error": "manual_export_artifact_mismatch", "filename": filename,
+            "size": len(raw), "sha256": digest,
+        }
+    try:
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(raw), read_only=True, data_only=True)
+        try:
+            if "已报商品列表" not in workbook.sheetnames:
+                raise ValueError("manual_export_sheet_missing")
+            sheet = workbook["已报商品列表"]
+            if hasattr(sheet, "reset_dimensions"):
+                sheet.reset_dimensions()
+            headers = [str(cell.value or "").strip() for cell in sheet[2]]
+            required = {"商品ID", "营销ID", "商品状态", "SKUID"}
+            if not required <= set(headers):
+                raise ValueError("manual_export_headers_changed")
+            indexes = {name: headers.index(name) for name in required}
+            current = {"item_id": "", "record_id": "", "status": ""}
+            rows = []
+            for values in sheet.iter_rows(min_row=4, values_only=True):
+                for source, target in (("商品ID", "item_id"),
+                                       ("营销ID", "record_id"),
+                                       ("商品状态", "status")):
+                    value = values[indexes[source]]
+                    if value not in (None, ""):
+                        current[target] = str(value).strip()
+                sku = values[indexes["SKUID"]]
+                sku_id = str(sku or "").strip()
+                if current["item_id"].isdigit() and sku_id.isdigit():
+                    rows.append({**current, "sku_id": sku_id})
+        finally:
+            workbook.close()
+    except Exception as exc:  # noqa: BLE001
+        return None, {"error": str(exc), "error_type": type(exc).__name__}
+
+    draft_specs = v6.DRAFT_RECORDS
+    protected_specs = v6.PROTECTED_RECORDS
+    allowed = {
+        (item_id, spec["record_id"]): spec["current_sku_count"]
+        for item_id, spec in draft_specs.items()
+    } | {
+        (item_id, spec["record_id"]): spec["sku_count"]
+        for item_id, spec in protected_specs.items()
+    }
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for row in rows:
+        grouped.setdefault((row["item_id"], row["record_id"]), []).append(row)
+    duplicate_skus = len({row["sku_id"] for row in rows}) != len(rows)
+    group_ok = set(grouped) == set(allowed)
+    if group_ok:
+        for key, expected_count in allowed.items():
+            values = grouped[key]
+            expected_status = "草稿" if key[0] in draft_specs else "已发布设定"
+            if (len(values) != expected_count
+                    or {row["status"] for row in values} != {expected_status}):
+                group_ok = False
+                break
+    manifest_records = {
+        str(row.get("item_id") or ""): row
+        for row in manifest.get("draft_records") or []
+        if isinstance(row, dict)
+    }
+    final_by_item = {
+        item_id: {str(sku) for sku in (
+            manifest_records.get(item_id, {}).get("final_sku_ids") or [])}
+        for item_id in draft_specs
+    }
+    actual_draft_by_item = {
+        item_id: {row["sku_id"] for row in rows
+                  if row["item_id"] == item_id
+                  and row["record_id"] == spec["record_id"]}
+        for item_id, spec in draft_specs.items()
+    }
+    expected_current_by_item = {
+        item_id: final_by_item[item_id] - set(spec["add_sku_ids"])
+        for item_id, spec in draft_specs.items()
+    }
+    missing = sorted(set(v6.ADD_SKU_IDS) - {row["sku_id"] for row in rows})
+    ok = bool(
+        len(rows) == 83 and not duplicate_skus and group_ok
+        and sum(row["status"] == "草稿" for row in rows) == 70
+        and sum(row["status"] == "已发布设定" for row in rows) == 13
+        and (manifest.get("final_scope") or {}).get("sku_count")
+        == v6.EXPECTED_TARGET_ROW_COUNT
+        and actual_draft_by_item == expected_current_by_item
+        and missing == sorted(v6.ADD_SKU_IDS))
+    evidence = {
+        "filename": filename, "size": len(raw), "sha256": digest,
+        "row_count": len(rows), "record_count": len(grouped),
+        "draft_sku_count": sum(row["status"] == "草稿" for row in rows),
+        "published_sku_count": sum(
+            row["status"] == "已发布设定" for row in rows),
+        "missing_add_sku_ids": missing,
+        "frozen_target_sku_count": (
+            manifest.get("final_scope") or {}).get("sku_count"),
+        "automatic_export": False, "platform_write": False,
+    }
+    if not ok:
+        evidence["error"] = "manual_export_scope_mismatch"
+        return None, evidence
+    return {"filename": filename, "size": size, "sha256": digest,
+            "xlsx_b64": xlsx_b64}, evidence
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
@@ -1763,7 +1972,9 @@ def _commit_and_readback(
         use_preupload_v21_endpoint: bool = False,
         use_preupload_v22_endpoint: bool = False,
         use_preupload_v23_endpoint: bool = False,
-        use_preupload_v24_endpoint: bool = False) -> dict:
+        use_preupload_v24_endpoint: bool = False,
+        use_preupload_v25_endpoint: bool = False,
+        manual_export: dict | None = None) -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID, "operation": OPERATION,
@@ -1806,15 +2017,20 @@ def _commit_and_readback(
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v23
             if use_preupload_v24_endpoint:
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
+            if use_preupload_v25_endpoint:
+                call = web_agent_service.recover_plan8_final_v8_preupload_resume_v25
+        payload = {"phase": ("commit" if commit_phase
+                              == "resume_preupload_commit"
+                              else commit_phase),
+                   "scope_sha256": manifest_sha,
+                   "inspect_scope_sha256": inspect_scope_sha,
+                   "manifest": manifest, "attempt_id": attempt.id,
+                   "reservation_token": reservation_token,
+                   "claim_verification": claim_verification}
+        if use_preupload_v25_endpoint:
+            payload["manual_export"] = manual_export
         committed = call(
-            db, payload={"phase": ("commit" if commit_phase
-                                    == "resume_preupload_commit"
-                                    else commit_phase),
-                         "scope_sha256": manifest_sha,
-                         "inspect_scope_sha256": inspect_scope_sha,
-                         "manifest": manifest, "attempt_id": attempt.id,
-                         "reservation_token": reservation_token,
-                         "claim_verification": claim_verification})
+            db, payload=payload)
     except Exception as exc:  # noqa: BLE001
         committed = {"ok": False, "error": type(exc).__name__,
                      "platform_write": None}
@@ -1900,6 +2116,9 @@ def _resume_claimed_preupload(
         accept_v21_template_obstruction_state: bool = False,
         accept_v22_claim_contract_correction_state: bool = False,
         accept_v23_export_failure_state: bool = False,
+        accept_v24_title_mismatch_state: bool = False,
+        manual_export: dict | None = None,
+        manual_export_evidence: dict | None = None,
         wait_prewrite_busy: bool = False) -> dict:
     validator = _validate_claimed_preupload_attempt
     resume_claim_sha256 = CLAIMED_PREUPLOAD_CLAIM_SHA256
@@ -1957,6 +2176,9 @@ def _resume_claimed_preupload(
     if accept_v23_export_failure_state:
         validator = _validate_claimed_preupload_after_v23_export_failure
         resume_claim_sha256 = CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+    if accept_v24_title_mismatch_state:
+        validator = _validate_claimed_preupload_after_v24_title_mismatch
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
     preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume
     if accept_dialog_mismatch_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v9
@@ -1986,6 +2208,8 @@ def _resume_claimed_preupload(
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v23
     if accept_v23_export_failure_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
+    if accept_v24_title_mismatch_state:
+        preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v25
     resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
@@ -2010,10 +2234,12 @@ def _resume_claimed_preupload(
     busy_observations = 0
     busy_wait_started = time.monotonic()
     while True:
-        inspection = preupload_web_call(
-            db, payload={"phase": "inspect",
-                         "scope_sha256": CLAIMED_PREUPLOAD_SCOPE_SHA256,
-                         "manifest": manifest, "attempt_id": attempt.id})
+        inspect_payload = {"phase": "inspect",
+                           "scope_sha256": CLAIMED_PREUPLOAD_SCOPE_SHA256,
+                           "manifest": manifest, "attempt_id": attempt.id}
+        if accept_v24_title_mismatch_state:
+            inspect_payload["manual_export"] = manual_export
+        inspection = preupload_web_call(db, payload=inspect_payload)
         exact_retryable_busy = bool(
             inspection.get("ok") is False
             and inspection.get("error") == "taobao_profile_busy"
@@ -2077,6 +2303,8 @@ def _resume_claimed_preupload(
         "reservation_token_sha256": v6._hash(reservation_token),
         "reservation_expires_at_epoch": lease_expires,
     }
+    if accept_v24_title_mismatch_state:
+        summary["manual_export_v25"] = dict(manual_export_evidence or {})
     attempt.state = "write_claimed"
     attempt.write_claimed = True
     attempt.write_claimed_at = datetime.now(timezone.utc)
@@ -2103,7 +2331,8 @@ def _resume_claimed_preupload(
             (accept_v20_claim_verify_rejection_state, 21),
             (accept_v21_template_obstruction_state, 22),
             (accept_v22_claim_contract_correction_state, 23),
-            (accept_v23_export_failure_state, 24)):
+            (accept_v23_export_failure_state, 24),
+            (accept_v24_title_mismatch_state, 25)):
         if enabled:
             resume_version = version
     attempt.last_step = (
@@ -2144,14 +2373,18 @@ def _resume_claimed_preupload(
         use_preupload_v21_endpoint=accept_v20_claim_verify_rejection_state,
         use_preupload_v22_endpoint=accept_v21_template_obstruction_state,
         use_preupload_v23_endpoint=accept_v22_claim_contract_correction_state,
-        use_preupload_v24_endpoint=accept_v23_export_failure_state)
+        use_preupload_v24_endpoint=accept_v23_export_failure_state,
+        use_preupload_v25_endpoint=accept_v24_title_mismatch_state,
+        manual_export=manual_export)
 
 
 def recover_plan8_final_v8(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_status: str, recovery_version: int,
         mode: str = "execute", confirmation: str = "",
-        target_scope_sha256: str = "") -> dict:
+        target_scope_sha256: str = "", manual_export_filename: str = "",
+        manual_export_size: int = 0, manual_export_sha256: str = "",
+        manual_export_base64: str = "") -> dict:
     confirmations = {
         "execute": EXECUTE_CONFIRMATION,
         "readback": READBACK_CONFIRMATION,
@@ -2197,6 +2430,8 @@ def recover_plan8_final_v8(
             CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION),
         "resume_claimed_preupload_v24": (
             CLAIMED_EXPORT_RETRY_CONFIRMATION),
+        "resume_claimed_preupload_v25": (
+            CLAIMED_MANUAL_EXPORT_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -2215,6 +2450,23 @@ def recover_plan8_final_v8(
     if not identity_ok:
         return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
     attempts = _attempts(db)
+    manual_export = None
+    manual_export_evidence = None
+    if mode == "resume_claimed_preupload_v25":
+        attempt = db.get(CampaignExecutionAttempt, PRECLAIM_ATTEMPT_ID)
+        manifest = dict(((attempt.result_summary or {}).get("manifest")
+                         if attempt is not None else {}) or {})
+        manual_export, manual_export_evidence = _manual_export_v25_evidence(
+            manifest=manifest, filename=manual_export_filename,
+            size=manual_export_size, sha256=manual_export_sha256,
+            xlsx_b64=manual_export_base64)
+        if manual_export is None:
+            return _fail("plan8_final_v8_manual_export_invalid",
+                         manual_export=manual_export_evidence)
+    elif any((manual_export_filename, manual_export_size,
+              manual_export_sha256, manual_export_base64)):
+        return _fail("plan8_final_v8_manual_export_forbidden_for_mode")
+
     if mode in {"resume_claimed_preupload_v4",
                 "resume_claimed_preupload_v5",
                 "resume_claimed_preupload_v6",
@@ -2235,7 +2487,8 @@ def recover_plan8_final_v8(
                 "resume_claimed_preupload_v21",
                 "resume_claimed_preupload_v22",
                 "resume_claimed_preupload_v23",
-                "resume_claimed_preupload_v24"}:
+                "resume_claimed_preupload_v24",
+                "resume_claimed_preupload_v25"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
@@ -2280,6 +2533,10 @@ def recover_plan8_final_v8(
                 mode == "resume_claimed_preupload_v23"),
             accept_v23_export_failure_state=(
                 mode == "resume_claimed_preupload_v24"),
+            accept_v24_title_mismatch_state=(
+                mode == "resume_claimed_preupload_v25"),
+            manual_export=manual_export,
+            manual_export_evidence=manual_export_evidence,
             wait_prewrite_busy=(
                 mode in {"resume_claimed_preupload_v7",
                          "resume_claimed_preupload_v8",
@@ -2298,7 +2555,8 @@ def recover_plan8_final_v8(
                          "resume_claimed_preupload_v21",
                          "resume_claimed_preupload_v22",
                          "resume_claimed_preupload_v23",
-                         "resume_claimed_preupload_v24"}))
+                         "resume_claimed_preupload_v24",
+                         "resume_claimed_preupload_v25"}))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",
