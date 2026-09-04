@@ -1,5 +1,25 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 official-template modal close continuation V22
+
+- The sole V21 continuation generated and populated the exact official
+  Super-88 workbook, but the template-generation modal remained open and
+  blocked the underlying batch-update dialog. It stopped before file
+  selection/upload; ERP and Web-Agent both record `platform_write=false`, no
+  publish/discount checkpoint, and automatic retry disabled. The frozen claim
+  SHA-256 is
+  `e40cc78c05a0d003b2c602465efe9597fe400c59e406bf3deef3b0ceed359b78`.
+- V22 closes only one visible semantic close control located in the top-right
+  100 pixels of the exact bound template-generation modal. It then requires
+  that modal to disappear and the original batch-update dialog to remain
+  visible. Duplicate/missing/covered controls fail closed; it never force
+  clicks, and all campaign identity, SKU, price, claim, CAS and one-shot gates
+  remain unchanged.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v22_nas.ps1`.
+  V1--V21 are retired. Maintenance installs but does not invoke it; task 03
+  owns the sole business invocation after production/runtime verification.
+
 ## 2026-09-04 计划7样块单品立减补报已完成并封口
 
 - 商品 `719436834260` 的 4 个正常 SKU 已补报到活动 `143939511827`，单品立减均为
