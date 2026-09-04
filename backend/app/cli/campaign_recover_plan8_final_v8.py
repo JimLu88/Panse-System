@@ -57,6 +57,8 @@ def _read_payload() -> bytes:
             recovery.CLAIMED_PREUPLOAD_MOBAN_TEXT_CONFIRMATION),
         "resume_claimed_preupload_v18": (
             recovery.CLAIMED_POSTUPLOAD_READBACK_CONFIRMATION),
+        "resume_claimed_preupload_v19": (
+            recovery.CLAIMED_OFFICIAL_TEMPLATE_CONFIRMATION),
     }
     expected = {
         "workflow_key": recovery.WORKFLOW_KEY,

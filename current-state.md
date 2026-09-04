@@ -1176,3 +1176,22 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - The only formal continuation command is
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v18_nas.ps1`.
   V17 is retired and must not be rerun.
+
+## 2026-09-04 plan-8 V8 live official-template continuation V19
+
+- V18 reached QianNiu's batch processor, which rejected the hand-built
+  three-column workbook with `导入模版有误！第一行应包含【基础信息】`.
+  An independent official readback (`request_id=b0431bd5a4ff`, job4) proved
+  that all eight intended SKUs were still missing, no new discount existed,
+  and every protected/legacy record was unchanged.
+- V19 accepts only the exact V18 claim SHA-256
+  `46bb20b863686ffc992a32f1f66a8fa5bbeaa27a49c7c2e1477a5899713dde7e`
+  plus official readback artifact SHA-256
+  `3c44dc294b8dc8b098d09e944c942a6bfea27814df1b78f2b90fc7d8998cd010`.
+- The Web-Agent now downloads the template from the exact live campaign
+  dialog before selecting any upload file, requires the `模版说明` and
+  `商品SKU导入列表` sheets plus the official `基础信息`/column headers, clears
+  only data rows from row 4 onward, then writes the frozen 78-row scope.
+- The only formal continuation command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v19_nas.ps1`.
+  V18 is retired and must not be rerun.

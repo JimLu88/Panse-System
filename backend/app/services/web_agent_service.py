@@ -1029,6 +1029,14 @@ def recover_plan8_final_v8_preupload_resume_v18(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v18")
 
 
+def recover_plan8_final_v8_preupload_resume_v19(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V19 continuation after exact readback proved template rejection."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v19")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)
