@@ -1146,3 +1146,14 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - The only formal continuation command is
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v16_nas.ps1`.
   V15 is retired.
+
+## 2026-09-04 plan-8 V8 下载模版 continuation V17
+
+- V16 stopped before file selection because the live platform label is
+  `下载模版`; its exact frozen claim SHA-256 is
+  `babe9e91701a4a35d054aa950a05309dfc3b83a62430f35639a362505a08b17d`.
+- V17 accepts only exact V16 ERP hashes and that claim. All identity, scope,
+  price, one-shot and no-retry gates remain unchanged.
+- Formal command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v17_nas.ps1`.
+  V16 is retired.

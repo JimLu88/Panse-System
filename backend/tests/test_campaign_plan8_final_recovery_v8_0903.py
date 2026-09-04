@@ -171,6 +171,22 @@ def test_web_agent_v16_uses_dedicated_nested_modal_path(monkeypatch):
     assert captured["path"].endswith("preupload-resume-v16")
 
 
+def test_web_agent_v17_uses_dedicated_moban_variant_path(monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-v17"}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(web_agent_service, "wait_job",
+                        lambda *_a, **_k: {"result": {"ok": True}})
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v17(
+        object(), payload={"phase": "inspect"})
+    assert result["ok"] is True
+    assert captured["path"].endswith("preupload-resume-v17")
+
+
 def _seed_v7_zero_write(db):
     manifest = {"recovery_version": 7, "evidence": "zero-write"}
     scope = recovery.v6._hash(manifest)
@@ -2039,6 +2055,37 @@ def test_v16_request_schema_accepts_only_exact_mode_and_confirmation():
         confirmation=recovery.CLAIMED_PREUPLOAD_NESTED_MODAL_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
     assert body.mode == "resume_claimed_preupload_v16"
+
+
+def test_v17_request_schema_accepts_only_exact_mode_and_confirmation():
+    body = campaigns.CampaignPlan8FinalRecoveryV8In(
+        workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v17",
+        confirmation=recovery.CLAIMED_PREUPLOAD_MOBAN_TEXT_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert body.mode == "resume_claimed_preupload_v17"
+
+
+def test_v17_mode_maps_only_to_moban_state(db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_v8_claimed_preupload_failure(db_session, monkeypatch)
+    monkeypatch.setattr(recovery.v6, "_identity_allowed",
+                        lambda _plan: (True, {}))
+    captured = {}
+    monkeypatch.setattr(
+        recovery, "_resume_claimed_preupload",
+        lambda _db, **kwargs: captured.update(kwargs) or {"ok": True})
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v17",
+        confirmation=recovery.CLAIMED_PREUPLOAD_MOBAN_TEXT_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert result["ok"] is True
+    assert captured["accept_moban_text_state"] is True
+    assert captured["accept_nested_modal_state"] is False
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():
