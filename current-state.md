@@ -1134,3 +1134,15 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - The only formal continuation command is
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v15_nas.ps1`.
   V14 is retired.
+
+## 2026-09-04 plan-8 V8 nested modal continuation V16
+
+- V15 ended at `draft_patch_terminal` with `platform_write=false`; the frozen
+  Web-Agent claim SHA-256 is
+  `fe35182f8740a64482707f68ceb307f7bd34c86caa3114612291300e7a817d91`.
+- V16 accepts only the exact V15 ERP result, inspection and commit hashes plus
+  that claim, then performs one new inspect/CAS/commit attempt. All campaign,
+  plan, signRecordId, SKU, price and no-retry boundaries remain unchanged.
+- The only formal continuation command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v16_nas.ps1`.
+  V15 is retired.
