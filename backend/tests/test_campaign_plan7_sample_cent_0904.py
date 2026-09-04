@@ -216,3 +216,12 @@ def test_service_identity_and_cli_use_distinct_exact_path():
     assert payload["item_id"] == "719436834260"
     assert payload["target_activity_id"] == "143939511827"
     assert len(payload["rows"]) == 4
+
+
+def test_v1_paused_status_artifact_is_retired():
+    retired = dict(svc.request_payload())
+    retired["readonly_artifact_sha256"] = (
+        svc.RETIRED_V1_READONLY_ARTIFACT_SHA256)
+
+    assert retired["readonly_artifact_sha256"] != svc.READONLY_ARTIFACT_SHA256
+    assert svc._validate_request(retired) is False

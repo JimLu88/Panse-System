@@ -36,8 +36,15 @@ END_AT = "2026-09-05 23:59:59"
 SCOPE_SHA256 = (
     "e2c8bfa1e3db32d0937971ea8481414baacc2d8f82e63484810168efc2f97fce"
 )
-READONLY_ARTIFACT_SHA256 = (
+RETIRED_V1_READONLY_ARTIFACT_SHA256 = (
     "80a9d3d406e4936fe1c801c53fb2119edc752cdb52de32914f8dc3cc1e1cfc8a"
+)
+# V1 froze the bytes produced before Web-Agent's status parser was repaired:
+# every live "即将到期 + 暂停活动" row was incorrectly serialized as 暂停.
+# The V2 hash is the same canonical readback with only those three status
+# fields correctly serialized as 进行中.  The four target rows remain missing.
+READONLY_ARTIFACT_SHA256 = (
+    "626a8abd62c6de30b6a6aff5294894c0641b70ac42afe8dee20e052bdd61038b"
 )
 OPERATION = "plan7_sample_cent_discount"
 DAILY_PRICE = Decimal("30.00")

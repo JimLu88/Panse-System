@@ -5,8 +5,6 @@ param(
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
 
-throw 'V1 已于 2026-09-04 在写入认领前因旧状态指纹停止，永久禁用；只允许使用经复核的 V2 入口。'
-
 $ErrorActionPreference = 'Stop'
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
 $ssh = 'C:\Program Files\Git\usr\bin\ssh.exe'
@@ -25,7 +23,7 @@ $payload = [ordered]@{
         [ordered]@{ item_id='719436834260'; sku_id='6282622238127'; expected_deduct='5.99' }
     )
     scope_sha256 = 'e2c8bfa1e3db32d0937971ea8481414baacc2d8f82e63484810168efc2f97fce'
-    readonly_artifact_sha256 = '80a9d3d406e4936fe1c801c53fb2119edc752cdb52de32914f8dc3cc1e1cfc8a'
+    readonly_artifact_sha256 = '626a8abd62c6de30b6a6aff5294894c0641b70ac42afe8dee20e052bdd61038b'
     start_at = '2026-09-01 00:00:00'
     end_at = '2026-09-05 23:59:59'
 }
@@ -54,7 +52,7 @@ try {
                 if ($detail.error) { $diagnostic = "; error=$($detail.error)" }
             } catch { $diagnostic = '; API 已返回响应 JSON（见上方原文）' }
         }
-        throw "计划7样块四SKU单品立减修复失败，退出码 $exitCode$diagnostic"
+        throw "计划7样块四SKU单品立减 V2 修复失败，退出码 $exitCode$diagnostic"
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding
