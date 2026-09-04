@@ -1,5 +1,24 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 semantic batch-import continuation V14
+
+- The sole V13 continuation passed the claim handshake and reached the exact
+  QianNiu campaign page, but stopped at `draft_patch_terminal` before file
+  selection. Its durable Web-Agent claim SHA-256 is
+  `809914e7bf28f99ef912cb57e65cc128c3b0d19d819d52fc88ea80090ce3220e`;
+  `draft_patch.submitted=false`, no publish/discount checkpoint exists, and
+  ERP recorded `platform_write_observed=false` with automatic retry disabled.
+- V14 accepts only that exact claim plus the frozen ERP V13 result, inspection
+  and commit hashes. It adds a semantic modal-root binder anchored to the one
+  exact `批量导入` title and requires the same modal to contain one exact
+  `下载模板`, `导入表格` and button-like `关闭`. Duplicate or page-level
+  controls fail closed; activity identity, price, SKU, claim and one-shot gates
+  are unchanged.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v14_nas.ps1`.
+  V1--V13 are retired. Maintenance installs but does not run it; task 03 owns
+  the sole business invocation after production/runtime verification.
+
 ## 2026-09-04 plan-8 V8 zero-write readback continuation V5
 
 - V4 was invoked exactly once and stopped before Web-Agent/platform access
