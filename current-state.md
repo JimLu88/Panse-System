@@ -1232,3 +1232,9 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - The only formal continuation command is
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v20_nas.ps1`.
   V19 is retired and must not be rerun.
+# 2026-09-04 Plan 8 V21 claim-step repair
+
+- V20 stopped before any Taobao read or write because the ERP stored the V20 reservation under the default preupload step number. The claim verifier therefore rejected the otherwise exact V19 source claim.
+- V21 accepts only the frozen production V20 failure (`attempt_id=edaf6b609dad46fbab90c7e8`, `platform_write_observed=false`, exact summary/inspection/commit/resume hashes), writes the correct `platform_write_claim_claimed_preupload_resume_v21` step, and uses a dedicated Web-Agent V21 endpoint.
+- The fixed scope, prices, item/SKU set, activity identity, no-retry boundary, and mandatory official readback remain unchanged. V1-V20 are retired and must not be rerun.
+- Operator entry after production deployment: `scripts/campaign_recover_plan8_final_v8_preupload_v21_nas.ps1` (one execution only).
