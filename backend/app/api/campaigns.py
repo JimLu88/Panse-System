@@ -319,7 +319,7 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
         r"resume_claimed_preupload_v20|resume_claimed_preupload_v21|"
         r"resume_claimed_preupload_v22|resume_claimed_preupload_v23|"
         r"resume_claimed_preupload_v24|resume_claimed_preupload_v25|"
-        r"resume_claimed_preupload_v26)$"))
+        r"resume_claimed_preupload_v26|resume_claimed_preupload_v27)$"))
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     manual_export_filename: str = Field(default="", max_length=160)

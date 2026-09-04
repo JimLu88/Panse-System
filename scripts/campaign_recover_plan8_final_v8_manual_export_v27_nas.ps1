@@ -7,8 +7,6 @@ param(
     [string]$SshKey = "$env:USERPROFILE\.ssh\panse_nas"
 )
 
-throw 'V26 is retired after its single zero-write editor-hydration failure. Use V27; do not rerun V26.'
-
 $ErrorActionPreference = 'Stop'
 $resolvedExport = (Resolve-Path -LiteralPath $ExportPath -ErrorAction Stop).Path
 $resolvedKey = (Resolve-Path -LiteralPath $SshKey -ErrorAction Stop).Path
@@ -28,8 +26,8 @@ $payload = [ordered]@{
     plan_id = 8
     expected_status = 'alarmed'
     recovery_version = 8
-    mode = 'resume_claimed_preupload_v26'
-    confirmation = 'RESUME_ONCE_PLAN8_V8_WITH_VERIFIED_MANUAL_EXPORT_FIELDS_V26'
+    mode = 'resume_claimed_preupload_v27'
+    confirmation = 'RESUME_ONCE_PLAN8_V8_AFTER_BOUND_DRAFT_EDITOR_HYDRATION_V27'
     target_scope_sha256 = '40bcd15a5567215d836a1735e0b7216aacc4677a068c36a0f1d68da3a9afdab4'
     manual_export_filename = $file.Name
     manual_export_size = [int]$file.Length
@@ -44,7 +42,7 @@ try {
     $raw | & $ssh -i $resolvedKey -o BatchMode=yes -o ConnectTimeout=20 `
         -p $SshPort $SshHost $remote
     if ($LASTEXITCODE -ne 0) {
-        throw "Plan 8 V26 stopped with exit code $LASTEXITCODE. Do not run this command again; preserve and inspect the returned JSON."
+        throw "Plan 8 V27 stopped with exit code $LASTEXITCODE. Do not run this command again; preserve and inspect the returned JSON."
     }
 } finally {
     $OutputEncoding = $previousOutputEncoding
