@@ -1300,3 +1300,14 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - V21 accepts only the frozen production V20 failure (`attempt_id=edaf6b609dad46fbab90c7e8`, `platform_write_observed=false`, exact summary/inspection/commit/resume hashes), writes the correct `platform_write_claim_claimed_preupload_resume_v21` step, and uses a dedicated Web-Agent V21 endpoint.
 - The fixed scope, prices, item/SKU set, activity identity, no-retry boundary, and mandatory official readback remain unchanged. V1-V20 are retired and must not be rerun.
 - Operator entry after production deployment: `scripts/campaign_recover_plan8_final_v8_preupload_v21_nas.ps1` (one execution only).
+## 2026-09-04 plan-8 manual-export field forwarding V26
+
+- V25 stopped before Web-Agent/platform work because the API route failed to
+  forward the four already validated manual-export fields into the V8 service.
+  V25 is permanently retired; its zero-write result did not change the frozen
+  V24 attempt.
+- V26 fixes that exact route binding, revalidates the same fixed filename,
+  size, SHA-256 and 83-row scope, and uses a distinct CLI, confirmation and
+  Web-Agent route. The existing Taobao-profile busy gate and bounded wait still
+  prevent overlap with order pulling; all identity, price, CAS, one-shot,
+  terminal and readback gates remain unchanged.

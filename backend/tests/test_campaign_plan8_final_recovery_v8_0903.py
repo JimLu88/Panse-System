@@ -2966,21 +2966,21 @@ def test_v24_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     assert "V23 is retired" in retired.read_text(encoding="utf-8")
 
 
-def test_web_agent_v25_uses_manual_export_path(monkeypatch):
+def test_web_agent_v26_uses_manual_export_path(monkeypatch):
     captured = {}
 
     def fake_post(_db, path, payload, timeout):
         captured.update(path=path, payload=payload, timeout=timeout)
-        return {"ok": True, "job": "job-v25"}
+        return {"ok": True, "job": "job-v26"}
 
     monkeypatch.setattr(web_agent_service, "_post", fake_post)
     monkeypatch.setattr(
         web_agent_service, "wait_job",
         lambda *_a, **_k: {"result": {"ok": True}})
-    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v25(
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v26(
         object(), payload={"phase": "inspect", "manual_export": {}})
     assert result["ok"] is True
-    assert captured["path"].endswith("preupload-resume-v25")
+    assert captured["path"].endswith("preupload-resume-v26")
 
 
 def test_v25_validator_accepts_only_exact_v24_title_mismatch(
@@ -3045,7 +3045,7 @@ def test_v25_validator_accepts_only_exact_v24_title_mismatch(
         attempt)[0] is False
 
 
-def test_v25_request_schema_cli_and_operator_script_are_exact(monkeypatch):
+def test_v26_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     raw = b"fixed-manual-export"
     digest = hashlib.sha256(raw).hexdigest()
     monkeypatch.setattr(recovery, "MANUAL_EXPORT_FILENAME", "manual.xlsx")
@@ -3054,30 +3054,30 @@ def test_v25_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     payload = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
         "expected_status": "alarmed", "recovery_version": 8,
-        "mode": "resume_claimed_preupload_v25",
-        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_CONFIRMATION,
+        "mode": "resume_claimed_preupload_v26",
+        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION,
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
         "manual_export_filename": "manual.xlsx",
         "manual_export_size": len(raw), "manual_export_sha256": digest,
         "manual_export_base64": base64.b64encode(raw).decode(),
     }
     body = campaigns.CampaignPlan8FinalRecoveryV8In(**payload)
-    assert body.mode == "resume_claimed_preupload_v25"
+    assert body.mode == "resume_claimed_preupload_v26"
     monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
     assert json.loads(cli._read_payload()) == payload
     script = (Path(__file__).parents[2] / "scripts" /
-              "campaign_recover_plan8_final_v8_manual_export_v25_nas.ps1")
+              "campaign_recover_plan8_final_v8_manual_export_v26_nas.ps1")
     text = script.read_text(encoding="utf-8")
-    assert "resume_claimed_preupload_v25" in text
+    assert "resume_claimed_preupload_v26" in text
     assert "Get-FileHash" in text
     assert "ToBase64String" in text
     retired = (script.parent /
-               "campaign_recover_plan8_final_v8_preupload_v24_nas.ps1")
-    assert "V24 is retired" in retired.read_text(encoding="utf-8")
+               "campaign_recover_plan8_final_v8_manual_export_v25_nas.ps1")
+    assert "V25 is retired" in retired.read_text(encoding="utf-8")
 
 
-def test_v25_mode_passes_only_verified_manual_export(db_session, monkeypatch):
+def test_v26_mode_passes_only_verified_manual_export(db_session, monkeypatch):
     db_session.add(_plan())
     db_session.commit()
     _seed_v8_claimed_preupload_failure(db_session, monkeypatch)
@@ -3099,8 +3099,8 @@ def test_v25_mode_passes_only_verified_manual_export(db_session, monkeypatch):
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_claimed_preupload_v25",
-        confirmation=recovery.CLAIMED_MANUAL_EXPORT_CONFIRMATION,
+        mode="resume_claimed_preupload_v26",
+        confirmation=recovery.CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256,
         manual_export_filename=recovery.MANUAL_EXPORT_FILENAME,
         manual_export_size=recovery.MANUAL_EXPORT_SIZE,
@@ -3108,9 +3108,39 @@ def test_v25_mode_passes_only_verified_manual_export(db_session, monkeypatch):
         manual_export_base64="encoded")
     assert result["ok"] is True
     assert captured["accept_v24_title_mismatch_state"] is True
+    assert captured["manual_export_generation"] == 26
     assert captured["accept_v23_export_failure_state"] is False
     assert captured["manual_export"] == verified
     assert captured["manual_export_evidence"] == evidence
+
+
+def test_v26_api_forwards_all_manual_export_fields(monkeypatch):
+    payload = {
+        "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
+        "expected_status": "alarmed", "recovery_version": 8,
+        "mode": "resume_claimed_preupload_v26",
+        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION,
+        "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
+        "manual_export_filename": "manual.xlsx",
+        "manual_export_size": 123,
+        "manual_export_sha256": "a" * 64,
+        "manual_export_base64": "encoded",
+    }
+    captured = {}
+
+    def fake_recover(_db, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(recovery, "recover_plan8_final_v8", fake_recover)
+    result = campaigns.recover_super88_plan8_final_v8(
+        campaigns.CampaignPlan8FinalRecoveryV8In(**payload),
+        db=object(), _=object())
+    assert result == {"ok": True}
+    assert captured["manual_export_filename"] == "manual.xlsx"
+    assert captured["manual_export_size"] == 123
+    assert captured["manual_export_sha256"] == "a" * 64
+    assert captured["manual_export_base64"] == "encoded"
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():

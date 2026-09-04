@@ -143,6 +143,9 @@ CLAIMED_EXPORT_RETRY_CONFIRMATION = (
 CLAIMED_MANUAL_EXPORT_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_WITH_VERIFIED_MANUAL_EXPORT_V25"
 )
+CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_WITH_VERIFIED_MANUAL_EXPORT_FIELDS_V26"
+)
 MANUAL_EXPORT_FILENAME = (
     "「26年淘宝9月超级88超级88现货」活动商品导出20260904182846.xlsx"
 )
@@ -1974,6 +1977,7 @@ def _commit_and_readback(
         use_preupload_v23_endpoint: bool = False,
         use_preupload_v24_endpoint: bool = False,
         use_preupload_v25_endpoint: bool = False,
+        use_preupload_v26_endpoint: bool = False,
         manual_export: dict | None = None) -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
@@ -2019,6 +2023,8 @@ def _commit_and_readback(
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
             if use_preupload_v25_endpoint:
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v25
+            if use_preupload_v26_endpoint:
+                call = web_agent_service.recover_plan8_final_v8_preupload_resume_v26
         payload = {"phase": ("commit" if commit_phase
                               == "resume_preupload_commit"
                               else commit_phase),
@@ -2027,7 +2033,7 @@ def _commit_and_readback(
                    "manifest": manifest, "attempt_id": attempt.id,
                    "reservation_token": reservation_token,
                    "claim_verification": claim_verification}
-        if use_preupload_v25_endpoint:
+        if use_preupload_v25_endpoint or use_preupload_v26_endpoint:
             payload["manual_export"] = manual_export
         committed = call(
             db, payload=payload)
@@ -2117,6 +2123,7 @@ def _resume_claimed_preupload(
         accept_v22_claim_contract_correction_state: bool = False,
         accept_v23_export_failure_state: bool = False,
         accept_v24_title_mismatch_state: bool = False,
+        manual_export_generation: int = 0,
         manual_export: dict | None = None,
         manual_export_evidence: dict | None = None,
         wait_prewrite_busy: bool = False) -> dict:
@@ -2209,7 +2216,10 @@ def _resume_claimed_preupload(
     if accept_v23_export_failure_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v24
     if accept_v24_title_mismatch_state:
-        preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v25
+        preupload_web_call = (
+            web_agent_service.recover_plan8_final_v8_preupload_resume_v26
+            if manual_export_generation == 26
+            else web_agent_service.recover_plan8_final_v8_preupload_resume_v25)
     resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
@@ -2304,7 +2314,8 @@ def _resume_claimed_preupload(
         "reservation_expires_at_epoch": lease_expires,
     }
     if accept_v24_title_mismatch_state:
-        summary["manual_export_v25"] = dict(manual_export_evidence or {})
+        summary[f"manual_export_v{manual_export_generation or 25}"] = dict(
+            manual_export_evidence or {})
     attempt.state = "write_claimed"
     attempt.write_claimed = True
     attempt.write_claimed_at = datetime.now(timezone.utc)
@@ -2332,7 +2343,8 @@ def _resume_claimed_preupload(
             (accept_v21_template_obstruction_state, 22),
             (accept_v22_claim_contract_correction_state, 23),
             (accept_v23_export_failure_state, 24),
-            (accept_v24_title_mismatch_state, 25)):
+            (accept_v24_title_mismatch_state,
+             manual_export_generation or 25)):
         if enabled:
             resume_version = version
     attempt.last_step = (
@@ -2374,7 +2386,12 @@ def _resume_claimed_preupload(
         use_preupload_v22_endpoint=accept_v21_template_obstruction_state,
         use_preupload_v23_endpoint=accept_v22_claim_contract_correction_state,
         use_preupload_v24_endpoint=accept_v23_export_failure_state,
-        use_preupload_v25_endpoint=accept_v24_title_mismatch_state,
+        use_preupload_v25_endpoint=(
+            accept_v24_title_mismatch_state
+            and manual_export_generation != 26),
+        use_preupload_v26_endpoint=(
+            accept_v24_title_mismatch_state
+            and manual_export_generation == 26),
         manual_export=manual_export)
 
 
@@ -2432,6 +2449,8 @@ def recover_plan8_final_v8(
             CLAIMED_EXPORT_RETRY_CONFIRMATION),
         "resume_claimed_preupload_v25": (
             CLAIMED_MANUAL_EXPORT_CONFIRMATION),
+        "resume_claimed_preupload_v26": (
+            CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -2450,9 +2469,11 @@ def recover_plan8_final_v8(
     if not identity_ok:
         return _fail("plan8_final_v8_identity_not_allowed", identity=identity)
     attempts = _attempts(db)
+    if mode == "resume_claimed_preupload_v25":
+        return _fail("plan8_final_v8_manual_export_v25_retired")
     manual_export = None
     manual_export_evidence = None
-    if mode == "resume_claimed_preupload_v25":
+    if mode == "resume_claimed_preupload_v26":
         attempt = db.get(CampaignExecutionAttempt, PRECLAIM_ATTEMPT_ID)
         manifest = dict(((attempt.result_summary or {}).get("manifest")
                          if attempt is not None else {}) or {})
@@ -2488,7 +2509,8 @@ def recover_plan8_final_v8(
                 "resume_claimed_preupload_v22",
                 "resume_claimed_preupload_v23",
                 "resume_claimed_preupload_v24",
-                "resume_claimed_preupload_v25"}:
+                "resume_claimed_preupload_v25",
+                "resume_claimed_preupload_v26"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
@@ -2534,7 +2556,9 @@ def recover_plan8_final_v8(
             accept_v23_export_failure_state=(
                 mode == "resume_claimed_preupload_v24"),
             accept_v24_title_mismatch_state=(
-                mode == "resume_claimed_preupload_v25"),
+                mode == "resume_claimed_preupload_v26"),
+            manual_export_generation=(26 if mode
+                                      == "resume_claimed_preupload_v26" else 0),
             manual_export=manual_export,
             manual_export_evidence=manual_export_evidence,
             wait_prewrite_busy=(
@@ -2556,7 +2580,8 @@ def recover_plan8_final_v8(
                          "resume_claimed_preupload_v22",
                          "resume_claimed_preupload_v23",
                          "resume_claimed_preupload_v24",
-                         "resume_claimed_preupload_v25"}))
+                         "resume_claimed_preupload_v25",
+                         "resume_claimed_preupload_v26"}))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",

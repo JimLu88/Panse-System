@@ -71,8 +71,8 @@ def _read_payload() -> bytes:
             recovery.CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION),
         "resume_claimed_preupload_v24": (
             recovery.CLAIMED_EXPORT_RETRY_CONFIRMATION),
-        "resume_claimed_preupload_v25": (
-            recovery.CLAIMED_MANUAL_EXPORT_CONFIRMATION),
+        "resume_claimed_preupload_v26": (
+            recovery.CLAIMED_MANUAL_EXPORT_V26_CONFIRMATION),
     }
     expected = {
         "workflow_key": recovery.WORKFLOW_KEY,
@@ -83,7 +83,7 @@ def _read_payload() -> bytes:
         "confirmation": confirmations.get(body.get("mode")),
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
     }
-    if body.get("mode") == "resume_claimed_preupload_v25":
+    if body.get("mode") == "resume_claimed_preupload_v26":
         expected.update({
             "manual_export_filename": recovery.MANUAL_EXPORT_FILENAME,
             "manual_export_size": recovery.MANUAL_EXPORT_SIZE,
@@ -94,7 +94,7 @@ def _read_payload() -> bytes:
             raise ValueError("计划8人工导出文件内容缺失")
     if body != expected or body.get("mode") not in confirmations:
         raise ValueError("计划8最终恢复V8输入与程序固化范围不一致")
-    if body.get("mode") == "resume_claimed_preupload_v25":
+    if body.get("mode") == "resume_claimed_preupload_v26":
         try:
             workbook = base64.b64decode(
                 body["manual_export_base64"], validate=True)

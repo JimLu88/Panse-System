@@ -318,7 +318,8 @@ class CampaignPlan8FinalRecoveryV8In(BaseModel):
         r"resume_claimed_preupload_v18|resume_claimed_preupload_v19|"
         r"resume_claimed_preupload_v20|resume_claimed_preupload_v21|"
         r"resume_claimed_preupload_v22|resume_claimed_preupload_v23|"
-        r"resume_claimed_preupload_v24|resume_claimed_preupload_v25)$"))
+        r"resume_claimed_preupload_v24|resume_claimed_preupload_v25|"
+        r"resume_claimed_preupload_v26)$"))
     confirmation: str
     target_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     manual_export_filename: str = Field(default="", max_length=160)
@@ -1165,10 +1166,6 @@ def recover_super88_plan8_final_v4(
         mode=body.mode,
         confirmation=body.confirmation,
         target_scope_sha256=body.target_scope_sha256,
-        manual_export_filename=body.manual_export_filename,
-        manual_export_size=body.manual_export_size,
-        manual_export_sha256=body.manual_export_sha256,
-        manual_export_base64=body.manual_export_base64,
     )
     if not result.get("ok"):
         error = result.get("error")
@@ -1369,6 +1366,10 @@ def recover_super88_plan8_final_v8(
         mode=body.mode,
         confirmation=body.confirmation,
         target_scope_sha256=body.target_scope_sha256,
+        manual_export_filename=body.manual_export_filename,
+        manual_export_size=body.manual_export_size,
+        manual_export_sha256=body.manual_export_sha256,
+        manual_export_base64=body.manual_export_base64,
     )
     if not result.get("ok"):
         error = str(result.get("error") or "")
