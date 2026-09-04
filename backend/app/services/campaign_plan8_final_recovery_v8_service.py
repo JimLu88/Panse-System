@@ -116,6 +116,9 @@ CLAIMED_PREUPLOAD_NESTED_MODAL_CONFIRMATION = (
 CLAIMED_PREUPLOAD_MOBAN_TEXT_CONFIRMATION = (
     "RESUME_ONCE_PLAN8_V8_AFTER_MOBAN_TEXT_VARIANT_FIX_V17"
 )
+CLAIMED_POSTUPLOAD_READBACK_CONFIRMATION = (
+    "RESUME_ONCE_PLAN8_V8_AFTER_V17_UNPERSISTED_READBACK_V18"
+)
 PREUPLOAD_BUSY_WAIT_SECONDS = 600.0
 PREUPLOAD_BUSY_POLL_SECONDS = 5.0
 CLAIMED_PREUPLOAD_SCOPE_SHA256 = (
@@ -138,6 +141,9 @@ CLAIMED_PREUPLOAD_V15_CLAIM_SHA256 = (
 )
 CLAIMED_PREUPLOAD_V16_CLAIM_SHA256 = (
     "babe9e91701a4a35d054aa950a05309dfc3b83a62430f35639a362505a08b17d"
+)
+CLAIMED_PREUPLOAD_V17_CLAIM_SHA256 = (
+    "77972047e50b33f9e03ab08926c0536e6e06ee64e2d2a912a9d2b86f88c5082e"
 )
 CLAIMED_PREUPLOAD_LAST_STEP = "draft_patch_terminal"
 CLAIMED_PREUPLOAD_ERROR_CODE = "plan8_v8_unknown_outcome_no_retry"
@@ -430,6 +436,9 @@ def verify_plan8_final_v8_preupload_claim(
     }
     step = getattr(attempt, "last_step", None)
     expected_resume_claim_sha256 = (
+        CLAIMED_PREUPLOAD_V17_CLAIM_SHA256
+        if step == "platform_write_claim_claimed_preupload_resume_v18"
+        else (
         CLAIMED_PREUPLOAD_V16_CLAIM_SHA256
         if step == "platform_write_claim_claimed_preupload_resume_v17"
         else (
@@ -446,7 +455,7 @@ def verify_plan8_final_v8_preupload_claim(
             "platform_write_claim_claimed_preupload_resume_v13"}
         else (CLAIMED_PREUPLOAD_V9_CLAIM_SHA256
               if step in v9_claim_steps
-              else CLAIMED_PREUPLOAD_CLAIM_SHA256)))))
+              else CLAIMED_PREUPLOAD_CLAIM_SHA256))))))
     verified = bool(
         attempt is not None and workflow_key == WORKFLOW_KEY
         and plan_id == PLAN_ID and operation == OPERATION
@@ -1300,6 +1309,91 @@ def _validate_claimed_preupload_after_moban_text_attempt(
     return ok, detail
 
 
+def _validate_claimed_postupload_after_unpersisted_readback(
+        attempt: CampaignExecutionAttempt | None) -> tuple[bool, dict]:
+    """Accept V17 only after an independent official readback proved no patch."""
+    summary = dict(getattr(attempt, "result_summary", None) or {})
+    manifest = summary.get("manifest")
+    inspection = summary.get("inspection") or {}
+    commit = summary.get("commit") or {}
+    readback = summary.get("last_readback") or {}
+    baseline = ((manifest or {}).get("inspection_baseline")
+                if isinstance(manifest, dict) else {}) or {}
+    protected = {
+        str(row.get("item_id") or ""): str(row.get("after_hash") or "")
+        for row in readback.get("protected_records") or []
+    }
+    expected_protected = {
+        str(key): str(value) for key, value in (
+            baseline.get("protected_record_before_hashes") or {}).items()
+    }
+    missing = sorted(str(value) for value in (
+        readback.get("missing_sku_ids") or []))
+    detail = {
+        "attempt_id": getattr(attempt, "id", None),
+        "scope_sha256": getattr(attempt, "scope_sha256", None),
+        "state": getattr(attempt, "state", None),
+        "write_claimed": getattr(attempt, "write_claimed", None),
+        "platform_write_observed": getattr(
+            attempt, "platform_write_observed", None),
+        "automatic_retry_allowed": getattr(
+            attempt, "automatic_retry_allowed", None),
+        "request_id": getattr(attempt, "request_id", None),
+        "last_step": getattr(attempt, "last_step", None),
+        "error_code": getattr(attempt, "error_code", None),
+        "web_agent_job_id": getattr(attempt, "web_agent_job_id", None),
+        "commit": commit,
+        "last_readback": readback,
+    }
+    ok = bool(
+        attempt is not None and attempt.id == PRECLAIM_ATTEMPT_ID
+        and attempt.plan_id == PLAN_ID and attempt.workflow_key == WORKFLOW_KEY
+        and attempt.operation == OPERATION
+        and attempt.scope_sha256 == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and attempt.state == "failed_no_retry"
+        and attempt.write_claimed is True
+        and attempt.platform_write_observed is True
+        and attempt.automatic_retry_allowed is False
+        and attempt.request_id == PRECLAIM_REQUEST_ID
+        and attempt.last_step == "readback_not_complete"
+        and attempt.error_code == "post_submit_readback_not_complete"
+        and attempt.web_agent_job_id == "job4"
+        and isinstance(manifest, dict)
+        and v6._hash(manifest) == CLAIMED_PREUPLOAD_SCOPE_SHA256
+        and inspection.get("resume_claim_sha256")
+        == CLAIMED_PREUPLOAD_V16_CLAIM_SHA256
+        and commit.get("platform_write") is True
+        and commit.get("reservation_consumed") is True
+        and commit.get("claim_created") is True
+        and commit.get("last_checkpoint") == "draft_patch_terminal"
+        and commit.get("web_agent_job_id") == "job3"
+        and commit.get("web_agent_error")
+        == "plan8_v8_unknown_outcome_no_retry"
+        and commit.get("web_agent_detail") is None
+        and not commit.get("patched_record_ids")
+        and not commit.get("published_record_ids")
+        and not commit.get("discount_pairs_written")
+        and readback.get("record_count") == 6
+        and readback.get("sku_count") == 70
+        and readback.get("custom_sku_count") == 18
+        and missing == sorted(POST_READBACK_MISSING_SKU_IDS)
+        and not readback.get("unexpected_sku_ids")
+        and not readback.get("discount_rows")
+        and protected == expected_protected
+        and (readback.get("legacy_discount_baseline") or {}).get("sha256")
+        == baseline.get("legacy_discount_sha256")
+        and (readback.get("legacy_discount_baseline") or {}).get("row_count")
+        == 53
+        and sorted(readback.get("all_record_ids") or [])
+        == sorted(baseline.get("all_record_ids") or [])
+        and sorted(readback.get("excluded_item_ids") or [])
+        == sorted([v6.ZERO_SALES_EXCLUDED_ITEM_ID,
+                   v6.WAREHOUSE_EXCLUDED_ITEM_ID])
+        and isinstance(readback.get("artifact_sha256"), str)
+        and len(readback["artifact_sha256"]) == 64)
+    return ok, detail
+
+
 def _commit_and_readback(
         db: Session, *, plan: CampaignPlan,
         attempt: CampaignExecutionAttempt, manifest: dict,
@@ -1312,7 +1406,8 @@ def _commit_and_readback(
         use_preupload_v14_endpoint: bool = False,
         use_preupload_v15_endpoint: bool = False,
         use_preupload_v16_endpoint: bool = False,
-        use_preupload_v17_endpoint: bool = False) -> dict:
+        use_preupload_v17_endpoint: bool = False,
+        use_preupload_v18_endpoint: bool = False) -> dict:
     claim_verification = {
         "attempt_id": attempt.id, "workflow_key": WORKFLOW_KEY,
         "plan_id": PLAN_ID, "operation": OPERATION,
@@ -1341,6 +1436,8 @@ def _commit_and_readback(
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v16
             if use_preupload_v17_endpoint:
                 call = web_agent_service.recover_plan8_final_v8_preupload_resume_v17
+            if use_preupload_v18_endpoint:
+                call = web_agent_service.recover_plan8_final_v8_preupload_resume_v18
         committed = call(
             db, payload={"phase": ("commit" if commit_phase
                                     == "resume_preupload_commit"
@@ -1428,52 +1525,46 @@ def _resume_claimed_preupload(
         accept_editor_identity_state: bool = False,
         accept_nested_modal_state: bool = False,
         accept_moban_text_state: bool = False,
+        accept_unpersisted_postupload_state: bool = False,
         wait_prewrite_busy: bool = False) -> dict:
-    validator = (
-        _validate_claimed_preupload_after_moban_text_attempt
-        if accept_moban_text_state
-        else (
-        _validate_claimed_preupload_after_nested_modal_attempt
-        if accept_nested_modal_state
-        else (
-        _validate_claimed_preupload_after_editor_identity_attempt
-        if accept_editor_identity_state
-        else (
-        _validate_claimed_preupload_after_semantic_modal_attempt
-        if accept_semantic_modal_state
-        else (_validate_claimed_preupload_after_allowlist_attempt
-        if accept_preupload_claim_allowlist_state
-        else (_validate_claimed_preupload_after_lazy_import_attempt
-        if accept_lazy_import_state
-        else (_validate_claimed_preupload_after_claim_verify_attempt
-        if accept_claim_verify_state
-        else (_validate_claimed_preupload_after_campaign_guard_attempt
-        if accept_campaign_guard_state
-        else (_validate_claimed_preupload_after_dialog_mismatch_attempt
-        if accept_dialog_mismatch_state
-        else (_validate_claimed_preupload_after_lease_expiry_attempt
-        if accept_lease_expiry_state
-        else (_validate_claimed_preupload_after_lease_scope_attempt
-              if accept_lease_scope_state
-              else (_validate_claimed_preupload_after_readback_attempt
-                    if accept_post_readback_state
-                    else _validate_claimed_preupload_attempt))))))))))))
-    resume_claim_sha256 = (
-        CLAIMED_PREUPLOAD_V16_CLAIM_SHA256
-        if accept_moban_text_state
-        else (
-        CLAIMED_PREUPLOAD_V15_CLAIM_SHA256
-        if accept_nested_modal_state
-        else (
-        CLAIMED_PREUPLOAD_V13_CLAIM_SHA256
-        if (accept_semantic_modal_state or accept_editor_identity_state)
-        else (CLAIMED_PREUPLOAD_V11_CLAIM_SHA256
-        if (accept_lazy_import_state
-            or accept_preupload_claim_allowlist_state)
-        else (CLAIMED_PREUPLOAD_V9_CLAIM_SHA256
-        if (accept_dialog_mismatch_state or accept_campaign_guard_state
-            or accept_claim_verify_state)
-        else CLAIMED_PREUPLOAD_CLAIM_SHA256)))))
+    validator = _validate_claimed_preupload_attempt
+    resume_claim_sha256 = CLAIMED_PREUPLOAD_CLAIM_SHA256
+    if accept_post_readback_state:
+        validator = _validate_claimed_preupload_after_readback_attempt
+    if accept_lease_scope_state:
+        validator = _validate_claimed_preupload_after_lease_scope_attempt
+    if accept_lease_expiry_state:
+        validator = _validate_claimed_preupload_after_lease_expiry_attempt
+    if accept_dialog_mismatch_state:
+        validator = _validate_claimed_preupload_after_dialog_mismatch_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V9_CLAIM_SHA256
+    if accept_campaign_guard_state:
+        validator = _validate_claimed_preupload_after_campaign_guard_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V9_CLAIM_SHA256
+    if accept_claim_verify_state:
+        validator = _validate_claimed_preupload_after_claim_verify_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V9_CLAIM_SHA256
+    if accept_lazy_import_state:
+        validator = _validate_claimed_preupload_after_lazy_import_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V11_CLAIM_SHA256
+    if accept_preupload_claim_allowlist_state:
+        validator = _validate_claimed_preupload_after_allowlist_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V11_CLAIM_SHA256
+    if accept_semantic_modal_state:
+        validator = _validate_claimed_preupload_after_semantic_modal_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V13_CLAIM_SHA256
+    if accept_editor_identity_state:
+        validator = _validate_claimed_preupload_after_editor_identity_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V13_CLAIM_SHA256
+    if accept_nested_modal_state:
+        validator = _validate_claimed_preupload_after_nested_modal_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V15_CLAIM_SHA256
+    if accept_moban_text_state:
+        validator = _validate_claimed_preupload_after_moban_text_attempt
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V16_CLAIM_SHA256
+    if accept_unpersisted_postupload_state:
+        validator = _validate_claimed_postupload_after_unpersisted_readback
+        resume_claim_sha256 = CLAIMED_PREUPLOAD_V17_CLAIM_SHA256
     preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume
     if accept_dialog_mismatch_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v9
@@ -1489,6 +1580,8 @@ def _resume_claimed_preupload(
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v16
     if accept_moban_text_state:
         preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v17
+    if accept_unpersisted_postupload_state:
+        preupload_web_call = web_agent_service.recover_plan8_final_v8_preupload_resume_v18
     resume_ok, resume_detail = validator(attempt)
     if not resume_ok:
         return _fail("plan8_final_v8_claimed_preupload_attempt_mismatch",
@@ -1585,37 +1678,26 @@ def _resume_claimed_preupload(
     attempt.write_claimed_at = datetime.now(timezone.utc)
     attempt.platform_write_observed = False
     attempt.automatic_retry_allowed = False
+    resume_version = 4
+    for enabled, version in (
+            (accept_post_readback_state, 5),
+            (accept_lease_scope_state, 6),
+            (wait_prewrite_busy, 7),
+            (accept_lease_expiry_state, 8),
+            (accept_dialog_mismatch_state, 9),
+            (accept_campaign_guard_state, 10),
+            (accept_claim_verify_state, 11),
+            (accept_lazy_import_state, 12),
+            (accept_preupload_claim_allowlist_state, 13),
+            (accept_semantic_modal_state, 14),
+            (accept_editor_identity_state, 15),
+            (accept_nested_modal_state, 16),
+            (accept_moban_text_state, 17),
+            (accept_unpersisted_postupload_state, 18)):
+        if enabled:
+            resume_version = version
     attempt.last_step = (
-        "platform_write_claim_claimed_preupload_resume_v17"
-        if accept_moban_text_state
-        else (
-        "platform_write_claim_claimed_preupload_resume_v16"
-        if accept_nested_modal_state
-        else (
-        "platform_write_claim_claimed_preupload_resume_v15"
-        if accept_editor_identity_state
-        else (
-        "platform_write_claim_claimed_preupload_resume_v14"
-        if accept_semantic_modal_state
-        else ("platform_write_claim_claimed_preupload_resume_v13"
-        if accept_preupload_claim_allowlist_state
-        else ("platform_write_claim_claimed_preupload_resume_v12"
-        if accept_lazy_import_state
-        else ("platform_write_claim_claimed_preupload_resume_v11"
-        if accept_claim_verify_state
-        else ("platform_write_claim_claimed_preupload_resume_v10"
-        if accept_campaign_guard_state
-        else ("platform_write_claim_claimed_preupload_resume_v9"
-        if accept_dialog_mismatch_state
-        else ("platform_write_claim_claimed_preupload_resume_v8"
-        if accept_lease_expiry_state
-        else ("platform_write_claim_claimed_preupload_resume_v7"
-              if wait_prewrite_busy
-              else ("platform_write_claim_claimed_preupload_resume_v6"
-                    if accept_lease_scope_state
-                    else ("platform_write_claim_claimed_preupload_resume_v5"
-                          if accept_post_readback_state
-                          else "platform_write_claim_claimed_preupload_resume_v4")))))))))))))
+        f"platform_write_claim_claimed_preupload_resume_v{resume_version}")
     attempt.error_code = None
     attempt.web_agent_job_id = None
     attempt.result_summary = summary
@@ -1645,7 +1727,8 @@ def _resume_claimed_preupload(
         use_preupload_v14_endpoint=accept_semantic_modal_state,
         use_preupload_v15_endpoint=accept_editor_identity_state,
         use_preupload_v16_endpoint=accept_nested_modal_state,
-        use_preupload_v17_endpoint=accept_moban_text_state)
+        use_preupload_v17_endpoint=accept_moban_text_state,
+        use_preupload_v18_endpoint=accept_unpersisted_postupload_state)
 
 
 def recover_plan8_final_v8(
@@ -1684,6 +1767,8 @@ def recover_plan8_final_v8(
             CLAIMED_PREUPLOAD_NESTED_MODAL_CONFIRMATION),
         "resume_claimed_preupload_v17": (
             CLAIMED_PREUPLOAD_MOBAN_TEXT_CONFIRMATION),
+        "resume_claimed_preupload_v18": (
+            CLAIMED_POSTUPLOAD_READBACK_CONFIRMATION),
     }
     if (workflow_key != WORKFLOW_KEY or expected_plan_id != PLAN_ID
             or expected_status != EXPECTED_STATUS
@@ -1715,7 +1800,8 @@ def recover_plan8_final_v8(
                 "resume_claimed_preupload_v14",
                 "resume_claimed_preupload_v15",
                 "resume_claimed_preupload_v16",
-                "resume_claimed_preupload_v17"}:
+                "resume_claimed_preupload_v17",
+                "resume_claimed_preupload_v18"}:
         if len(attempts) != 1:
             return _fail("plan8_final_v8_claimed_preupload_attempt_ambiguous",
                          attempt_count=len(attempts))
@@ -1746,6 +1832,8 @@ def recover_plan8_final_v8(
                 mode == "resume_claimed_preupload_v16"),
             accept_moban_text_state=(
                 mode == "resume_claimed_preupload_v17"),
+            accept_unpersisted_postupload_state=(
+                mode == "resume_claimed_preupload_v18"),
             wait_prewrite_busy=(
                 mode in {"resume_claimed_preupload_v7",
                          "resume_claimed_preupload_v8",
@@ -1757,7 +1845,8 @@ def recover_plan8_final_v8(
                          "resume_claimed_preupload_v14",
                          "resume_claimed_preupload_v15",
                          "resume_claimed_preupload_v16",
-                         "resume_claimed_preupload_v17"}))
+                         "resume_claimed_preupload_v17",
+                         "resume_claimed_preupload_v18"}))
     if mode == "readback":
         if len(attempts) != 1:
             return _fail("plan8_final_v8_readback_attempt_ambiguous",

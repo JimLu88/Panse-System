@@ -1157,3 +1157,22 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - Formal command:
   `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v17_nas.ps1`.
   V16 is retired.
+
+## 2026-09-04 plan-8 V8 detached import-result continuation V18
+
+- V17 selected the exact file, but QianNiu replaced the import modal and the
+  detached locator produced an unknown outcome. No continuation was allowed
+  until an independent official readback completed.
+- The official readback proved that the eight intended SKU rows were still
+  missing, no unexpected SKU or discount row existed, the protected records
+  and all record IDs were unchanged, and the legacy 53-row discount snapshot
+  was unchanged. V18 accepts only that exact ERP state and the frozen V17
+  Web-Agent claim SHA-256
+  `77972047e50b33f9e03ab08926c0536e6e06ee64e2d2a912a9d2b86f88c5082e`.
+- V18 snapshots every visible pre-upload terminal context so the historical
+  six-item success row cannot be mistaken for the new task. It observes the
+  live replacement modal or a genuinely new page-level terminal result, then
+  keeps the existing exact 78-row official readback gate.
+- The only formal continuation command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v18_nas.ps1`.
+  V17 is retired and must not be rerun.

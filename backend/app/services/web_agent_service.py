@@ -1021,6 +1021,14 @@ def recover_plan8_final_v8_preupload_resume_v17(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v17")
 
 
+def recover_plan8_final_v8_preupload_resume_v18(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V18-only continuation after official readback proved V17 unpersisted."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v18")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)

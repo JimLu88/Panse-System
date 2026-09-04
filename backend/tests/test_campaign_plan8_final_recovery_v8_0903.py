@@ -1,5 +1,6 @@
 import json
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 
@@ -2086,6 +2087,125 @@ def test_v17_mode_maps_only_to_moban_state(db_session, monkeypatch):
     assert result["ok"] is True
     assert captured["accept_moban_text_state"] is True
     assert captured["accept_nested_modal_state"] is False
+
+
+def test_web_agent_v18_uses_readback_proved_unpersisted_path(monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-v18"}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_a, **_k: {"result": {"ok": True}})
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v18(
+        object(), payload={"phase": "inspect"})
+    assert result["ok"] is True
+    assert captured["path"].endswith("preupload-resume-v18")
+
+
+def test_v18_validator_requires_exact_official_unpersisted_readback(monkeypatch):
+    baseline = {
+        "protected_record_before_hashes": {"protected": "same-hash"},
+        "legacy_discount_sha256": "legacy-sha",
+        "all_record_ids": ["record-a", "record-b"],
+    }
+    manifest = {"inspection_baseline": baseline}
+    scope_sha = recovery.v6._hash(manifest)
+    monkeypatch.setattr(recovery, "CLAIMED_PREUPLOAD_SCOPE_SHA256", scope_sha)
+    readback = {
+        "record_count": 6,
+        "sku_count": 70,
+        "custom_sku_count": 18,
+        "missing_sku_ids": list(recovery.POST_READBACK_MISSING_SKU_IDS),
+        "unexpected_sku_ids": [],
+        "discount_rows": [],
+        "protected_records": [
+            {"item_id": "protected", "after_hash": "same-hash"}],
+        "legacy_discount_baseline": {
+            "sha256": "legacy-sha", "row_count": 53},
+        "all_record_ids": ["record-a", "record-b"],
+        "excluded_item_ids": [
+            recovery.v6.ZERO_SALES_EXCLUDED_ITEM_ID,
+            recovery.v6.WAREHOUSE_EXCLUDED_ITEM_ID,
+        ],
+        "artifact_sha256": "a" * 64,
+    }
+    commit = {
+        "platform_write": True,
+        "reservation_consumed": True,
+        "claim_created": True,
+        "last_checkpoint": "draft_patch_terminal",
+        "web_agent_job_id": "job3",
+        "web_agent_error": "plan8_v8_unknown_outcome_no_retry",
+        "web_agent_detail": None,
+        "patched_record_ids": [],
+        "published_record_ids": [],
+        "discount_pairs_written": [],
+    }
+    attempt = SimpleNamespace(
+        id=recovery.PRECLAIM_ATTEMPT_ID,
+        plan_id=recovery.PLAN_ID,
+        workflow_key=recovery.WORKFLOW_KEY,
+        operation=recovery.OPERATION,
+        scope_sha256=scope_sha,
+        state="failed_no_retry",
+        write_claimed=True,
+        platform_write_observed=True,
+        automatic_retry_allowed=False,
+        request_id=recovery.PRECLAIM_REQUEST_ID,
+        last_step="readback_not_complete",
+        error_code="post_submit_readback_not_complete",
+        web_agent_job_id="job4",
+        result_summary={
+            "manifest": manifest,
+            "inspection": {
+                "resume_claim_sha256":
+                    recovery.CLAIMED_PREUPLOAD_V16_CLAIM_SHA256},
+            "commit": commit,
+            "last_readback": readback,
+        },
+    )
+    ok, detail = recovery._validate_claimed_postupload_after_unpersisted_readback(
+        attempt)
+    assert ok is True, detail
+    readback["missing_sku_ids"] = readback["missing_sku_ids"][:-1]
+    assert recovery._validate_claimed_postupload_after_unpersisted_readback(
+        attempt)[0] is False
+
+
+def test_v18_mode_maps_only_to_verified_unpersisted_state(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_v8_claimed_preupload_failure(db_session, monkeypatch)
+    monkeypatch.setattr(recovery.v6, "_identity_allowed",
+                        lambda _plan: (True, {}))
+    captured = {}
+    monkeypatch.setattr(
+        recovery, "_resume_claimed_preupload",
+        lambda _db, **kwargs: captured.update(kwargs) or {"ok": True})
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v18",
+        confirmation=recovery.CLAIMED_POSTUPLOAD_READBACK_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert result["ok"] is True
+    assert captured["accept_unpersisted_postupload_state"] is True
+    assert captured["accept_moban_text_state"] is False
+
+
+def test_v18_request_schema_accepts_only_exact_mode_and_confirmation():
+    body = campaigns.CampaignPlan8FinalRecoveryV8In(
+        workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v18",
+        confirmation=recovery.CLAIMED_POSTUPLOAD_READBACK_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert body.mode == "resume_claimed_preupload_v18"
 
 
 def test_v8_commit_preserves_state_drift_diagnostics():
