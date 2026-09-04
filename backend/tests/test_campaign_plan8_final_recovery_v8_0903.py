@@ -2966,21 +2966,21 @@ def test_v24_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     assert "V23 is retired" in retired.read_text(encoding="utf-8")
 
 
-def test_web_agent_v27_uses_manual_export_path(monkeypatch):
+def test_web_agent_v28_uses_manual_export_path(monkeypatch):
     captured = {}
 
     def fake_post(_db, path, payload, timeout):
         captured.update(path=path, payload=payload, timeout=timeout)
-        return {"ok": True, "job": "job-v27"}
+        return {"ok": True, "job": "job-v28"}
 
     monkeypatch.setattr(web_agent_service, "_post", fake_post)
     monkeypatch.setattr(
         web_agent_service, "wait_job",
         lambda *_a, **_k: {"result": {"ok": True}})
-    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v27(
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v28(
         object(), payload={"phase": "inspect", "manual_export": {}})
     assert result["ok"] is True
-    assert captured["path"].endswith("preupload-resume-v27")
+    assert captured["path"].endswith("preupload-resume-v28")
 
 
 def test_v25_validator_accepts_only_exact_v24_title_mismatch(
@@ -3045,7 +3045,7 @@ def test_v25_validator_accepts_only_exact_v24_title_mismatch(
         attempt)[0] is False
 
 
-def test_v27_request_schema_cli_and_operator_script_are_exact(monkeypatch):
+def test_v28_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     raw = b"fixed-manual-export"
     digest = hashlib.sha256(raw).hexdigest()
     monkeypatch.setattr(recovery, "MANUAL_EXPORT_FILENAME", "manual.xlsx")
@@ -3054,27 +3054,27 @@ def test_v27_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     payload = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
         "expected_status": "alarmed", "recovery_version": 8,
-        "mode": "resume_claimed_preupload_v27",
-        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V27_CONFIRMATION,
+        "mode": "resume_claimed_preupload_v28",
+        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V28_CONFIRMATION,
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
         "manual_export_filename": "manual.xlsx",
         "manual_export_size": len(raw), "manual_export_sha256": digest,
         "manual_export_base64": base64.b64encode(raw).decode(),
     }
     body = campaigns.CampaignPlan8FinalRecoveryV8In(**payload)
-    assert body.mode == "resume_claimed_preupload_v27"
+    assert body.mode == "resume_claimed_preupload_v28"
     monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
         "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
     assert json.loads(cli._read_payload()) == payload
     script = (Path(__file__).parents[2] / "scripts" /
-              "campaign_recover_plan8_final_v8_manual_export_v27_nas.ps1")
+              "campaign_recover_plan8_final_v8_manual_export_v28_nas.ps1")
     text = script.read_text(encoding="utf-8")
-    assert "resume_claimed_preupload_v27" in text
+    assert "resume_claimed_preupload_v28" in text
     assert "Get-FileHash" in text
     assert "ToBase64String" in text
     retired = (script.parent /
-               "campaign_recover_plan8_final_v8_manual_export_v26_nas.ps1")
-    assert "V26 is retired" in retired.read_text(encoding="utf-8")
+               "campaign_recover_plan8_final_v8_manual_export_v27_nas.ps1")
+    assert "V27 is retired" in retired.read_text(encoding="utf-8")
 
 
 def test_v27_validator_accepts_only_exact_v26_zero_write_editor_loading(
@@ -3149,7 +3149,118 @@ def test_v27_validator_accepts_only_exact_v26_zero_write_editor_loading(
         attempt)[0] is False
 
 
-def test_v27_mode_passes_only_verified_manual_export(db_session, monkeypatch):
+def test_claim_verifier_accepts_v21_claim_for_v27_and_v28_steps(
+        db_session, monkeypatch):
+    _, scope, _ = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    claim = recovery.CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    attempt.state = "write_claimed"
+    attempt.write_claimed = True
+    attempt.platform_write_observed = False
+    attempt.automatic_retry_allowed = False
+    attempt.result_summary = {**attempt.result_summary,
+        "claimed_preupload_resume": {
+            "source_claim_sha256": claim,
+            "inspect_scope_sha256": "d" * 64,
+            "reservation_token_sha256": "e" * 64,
+            "reservation_expires_at_epoch": 4102444800.0,
+        }}
+    for version in (27, 28):
+        attempt.last_step = (
+            f"platform_write_claim_claimed_preupload_resume_v{version}")
+        db_session.commit()
+        result = recovery.verify_plan8_final_v8_preupload_claim(
+            db_session, attempt_id=attempt.id,
+            workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+            operation=recovery.OPERATION, scope_sha256=scope,
+            inspect_scope_sha256="d" * 64,
+            reservation_token_sha256="e" * 64,
+            resume_claim_sha256=claim)
+        assert result["ok"] is True, (version, result)
+    attempt.last_step = "platform_write_claim_claimed_preupload_resume_v29"
+    db_session.commit()
+    assert recovery.verify_plan8_final_v8_preupload_claim(
+        db_session, attempt_id=attempt.id,
+        workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+        operation=recovery.OPERATION, scope_sha256=scope,
+        inspect_scope_sha256="d" * 64,
+        reservation_token_sha256="e" * 64,
+        resume_claim_sha256=claim)["ok"] is False
+
+
+def test_v28_validator_accepts_only_exact_v27_zero_write_claim_rejection(
+        db_session, monkeypatch):
+    manifest, _, _ = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    inspection = {
+        "resume_claim_sha256": recovery.CLAIMED_PREUPLOAD_V21_CLAIM_SHA256,
+        "inspect_scope_sha256": "a" * 64,
+        "reservation_token_sha256": "b" * 64,
+        "lease_expires_at_epoch": 4102444800.0,
+        "web_agent_job_id": "job1",
+    }
+    resume = {
+        "source_claim_sha256": recovery.CLAIMED_PREUPLOAD_V21_CLAIM_SHA256,
+        "inspect_scope_sha256": "a" * 64,
+        "reservation_token_sha256": "b" * 64,
+        "reservation_expires_at_epoch": 4102444800.0,
+    }
+    verify_response = {
+        "verified": False, "state": "write_claimed", "write_claimed": True,
+        "platform_write_observed": False,
+        "resume_claim_sha256": recovery.CLAIMED_PREUPLOAD_V21_CLAIM_SHA256,
+    }
+    commit = {
+        "platform_write": False, "claim_created": False,
+        "reservation_consumed": None, "last_checkpoint": None,
+        "web_agent_error": "plan8_v8_erp_claim_not_verified",
+        "web_agent_detail": {
+            "error": "erp_preupload_claim_verify_rejected", "http_status": 409,
+            "response": {"detail": verify_response}},
+        "patched_record_ids": [], "published_record_ids": [],
+        "discount_pairs_written": [],
+    }
+    manual = {
+        "sha256": recovery.MANUAL_EXPORT_SHA256, "row_count": 83,
+        "draft_sku_count": 70, "published_sku_count": 13,
+        "platform_write": False,
+    }
+    attempt.state = "failed_no_retry"
+    attempt.write_claimed = True
+    attempt.platform_write_observed = False
+    attempt.automatic_retry_allowed = False
+    attempt.request_id = recovery.PRECLAIM_REQUEST_ID
+    attempt.last_step = "plan8_final_v8_commit"
+    attempt.error_code = "plan8_v8_erp_claim_not_verified"
+    attempt.web_agent_job_id = "job2"
+    attempt.result_summary = {
+        "manifest": manifest, "inspection": inspection,
+        "claimed_preupload_resume": resume, "manual_export_v27": manual,
+        "commit": commit}
+    db_session.commit()
+    monkeypatch.setattr(recovery, "V27_RESULT_SUMMARY_SHA256",
+                        recovery.v6._hash(attempt.result_summary))
+    monkeypatch.setattr(recovery, "V27_INSPECTION_SHA256",
+                        recovery.v6._hash(inspection))
+    monkeypatch.setattr(recovery, "V27_COMMIT_SHA256",
+                        recovery.v6._hash(commit))
+    monkeypatch.setattr(recovery, "V27_RESUME_SHA256",
+                        recovery.v6._hash(resume))
+    monkeypatch.setattr(recovery, "V27_MANUAL_EXPORT_SHA256",
+                        recovery.v6._hash(manual))
+    ok, detail = recovery._validate_claimed_preupload_after_v27_claim_rejection(
+        attempt)
+    assert ok is True, detail
+    attempt.platform_write_observed = True
+    assert recovery._validate_claimed_preupload_after_v27_claim_rejection(
+        attempt)[0] is False
+
+
+def test_v28_mode_passes_only_verified_manual_export(db_session, monkeypatch):
     db_session.add(_plan())
     db_session.commit()
     _seed_v8_claimed_preupload_failure(db_session, monkeypatch)
@@ -3171,8 +3282,8 @@ def test_v27_mode_passes_only_verified_manual_export(db_session, monkeypatch):
     result = recovery.recover_plan8_final_v8(
         db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
         expected_status="alarmed", recovery_version=8,
-        mode="resume_claimed_preupload_v27",
-        confirmation=recovery.CLAIMED_MANUAL_EXPORT_V27_CONFIRMATION,
+        mode="resume_claimed_preupload_v28",
+        confirmation=recovery.CLAIMED_MANUAL_EXPORT_V28_CONFIRMATION,
         target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256,
         manual_export_filename=recovery.MANUAL_EXPORT_FILENAME,
         manual_export_size=recovery.MANUAL_EXPORT_SIZE,
@@ -3180,19 +3291,20 @@ def test_v27_mode_passes_only_verified_manual_export(db_session, monkeypatch):
         manual_export_base64="encoded")
     assert result["ok"] is True
     assert captured["accept_v24_title_mismatch_state"] is False
-    assert captured["accept_v26_editor_loading_state"] is True
-    assert captured["manual_export_generation"] == 27
+    assert captured["accept_v26_editor_loading_state"] is False
+    assert captured["accept_v27_claim_rejection_state"] is True
+    assert captured["manual_export_generation"] == 28
     assert captured["accept_v23_export_failure_state"] is False
     assert captured["manual_export"] == verified
     assert captured["manual_export_evidence"] == evidence
 
 
-def test_v27_api_forwards_all_manual_export_fields(monkeypatch):
+def test_v28_api_forwards_all_manual_export_fields(monkeypatch):
     payload = {
         "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
         "expected_status": "alarmed", "recovery_version": 8,
-        "mode": "resume_claimed_preupload_v27",
-        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V27_CONFIRMATION,
+        "mode": "resume_claimed_preupload_v28",
+        "confirmation": recovery.CLAIMED_MANUAL_EXPORT_V28_CONFIRMATION,
         "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
         "manual_export_filename": "manual.xlsx",
         "manual_export_size": 123,

@@ -1,5 +1,20 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 ERP claim-step allowlist continuation V28
+
+- V27 ran once and stopped before file selection because ERP did not recognize
+  its own `platform_write_claim_claimed_preupload_resume_v27` audit step. The
+  frozen result has `platform_write=false`, `claim_created=false` and automatic
+  retry disabled; V27 is retired.
+- V28 accepts only that exact V27 zero-write result and the exact reviewed
+  14994-byte manual export. It maps V27/V28 audit steps to the unchanged V21
+  frozen claim SHA-256, preserving campaign identity, SKU, price, discount,
+  CAS, one-shot and no-retry gates.
+- Formal one-time operator command is
+  `scripts/campaign_recover_plan8_final_v8_manual_export_v28_nas.ps1 -ExportPath <exact reviewed xlsx>`.
+  Maintenance installs but does not invoke it; task 03 owns the single business
+  run after production and Web-Agent runtime verification.
+
 ## 2026-09-04 plan-8 verified manual-export continuation V25
 
 - V24 stopped before file selection with `campaign_title_mismatch`; its exact

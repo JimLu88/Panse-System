@@ -1101,6 +1101,14 @@ def recover_plan8_final_v8_preupload_resume_v27(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v27")
 
 
+def recover_plan8_final_v8_preupload_resume_v28(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V28 continuation after the ERP V27 claim-step allowlist repair."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v28")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)
