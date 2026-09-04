@@ -1123,3 +1123,14 @@ At this update, the primary working tree also contains unrelated Tachikoma conne
 ## Where to continue
 
 Start with `docs/logistics-bill-product-analytics.md`. For the next engineering task, the safest first target is the 78 unmatched rows plus the service-link leakage test, because both directly affect analysis credibility.
+## 2026-09-04 plan-8 V8 editor identity continuation V15
+
+- Production V14 stopped before file selection with
+  `plan8_v6_bound_draft_editor_identity_mismatch`; the Web-Agent claim remained
+  byte-for-byte at the frozen V13 SHA-256 and no platform write was observed.
+- V15 accepts only the exact frozen ERP V14 result/inspection/commit hashes and
+  the unchanged V13 Web-Agent claim. It cannot change plan/campaign identity,
+  scope, SKU prices or retry an ambiguous write.
+- The only formal continuation command is
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v15_nas.ps1`.
+  V14 is retired.
