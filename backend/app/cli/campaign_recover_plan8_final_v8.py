@@ -45,6 +45,8 @@ def _read_payload() -> bytes:
             recovery.CLAIMED_PREUPLOAD_CLAIM_VERIFY_CONFIRMATION),
         "resume_claimed_preupload_v12": (
             recovery.CLAIMED_PREUPLOAD_LAZY_IMPORT_CONFIRMATION),
+        "resume_claimed_preupload_v13": (
+            recovery.CLAIMED_PREUPLOAD_ALLOWLIST_CONFIRMATION),
     }
     expected = {
         "workflow_key": recovery.WORKFLOW_KEY,
