@@ -1061,6 +1061,14 @@ def recover_plan8_final_v8_preupload_resume_v22(
         path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v22")
 
 
+def recover_plan8_final_v8_preupload_resume_v23(
+        db: Session, *, payload: dict, timeout_s: int = 2400) -> dict:
+    """V23 continuation with the corrected frozen V21 claim contract."""
+    return _recover_plan8_final_v8_preupload_resume(
+        db, payload=payload, timeout_s=timeout_s,
+        path="/api/campaign/plan8-final-recovery-v8-preupload-resume-v23")
+
+
 def _recover_plan8_final_v8_preupload_resume(
         db: Session, *, payload: dict, timeout_s: int, path: str) -> dict:
     start_timeout_s = min(max(int(timeout_s), 30), 420)

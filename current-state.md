@@ -1,5 +1,18 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-04 plan-8 V8 frozen-claim contract correction V23
+
+- V22 was invoked once and stopped during local claimed-preupload inspection;
+  it made no upload or platform write. The claim itself was unchanged. The
+  mismatch was limited to the frozen diagnostic text: the real V21 claim says
+  `Timeout 45000ms`, while V22 expected `Timeout 15000ms`.
+- V23 retains the exact claim SHA-256, attempt, plan/workflow, campaign
+  identity, scope, CAS, price, SKU and no-retry gates, but validates the real
+  45-second text. V22 is permanently retired.
+- Formal one-time operator command:
+  `D:\AI\畔色ERP系统\ERP程序\scripts\campaign_recover_plan8_final_v8_preupload_v23_nas.ps1`.
+  Maintenance installs but does not invoke it; task 03 owns the sole run.
+
 ## 2026-09-04 plan-8 V8 official-template modal close continuation V22
 
 - The sole V21 continuation generated and populated the exact official

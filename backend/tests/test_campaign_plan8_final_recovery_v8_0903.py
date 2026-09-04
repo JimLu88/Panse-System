@@ -2748,6 +2748,98 @@ def test_v22_request_schema_cli_and_operator_script_are_exact(monkeypatch):
     assert "V21 is retired" in retired.read_text(encoding="utf-8")
 
 
+def test_web_agent_v23_uses_corrected_claim_contract_path(monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-v23"}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_a, **_k: {"result": {"ok": True}})
+    result = web_agent_service.recover_plan8_final_v8_preupload_resume_v23(
+        object(), payload={"phase": "inspect"})
+    assert result["ok"] is True
+    assert captured["path"].endswith("preupload-resume-v23")
+
+
+def test_v23_mode_reuses_only_exact_v21_zero_upload_state(
+        db_session, monkeypatch):
+    db_session.add(_plan())
+    db_session.commit()
+    _seed_v8_claimed_preupload_failure(db_session, monkeypatch)
+    monkeypatch.setattr(recovery.v6, "_identity_allowed",
+                        lambda _plan: (True, {}))
+    captured = {}
+    monkeypatch.setattr(
+        recovery, "_resume_claimed_preupload",
+        lambda _db, **kwargs: captured.update(kwargs) or {"ok": True})
+    result = recovery.recover_plan8_final_v8(
+        db_session, workflow_key=recovery.WORKFLOW_KEY, expected_plan_id=8,
+        expected_status="alarmed", recovery_version=8,
+        mode="resume_claimed_preupload_v23",
+        confirmation=recovery.CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION,
+        target_scope_sha256=recovery.EXPECTED_TARGET_SCOPE_SHA256)
+    assert result["ok"] is True
+    assert captured["accept_v22_claim_contract_correction_state"] is True
+    assert captured["accept_v21_template_obstruction_state"] is False
+
+
+def test_v23_claim_verifier_accepts_v21_claim_for_v23_step(
+        db_session, monkeypatch):
+    _, scope, _ = _seed_v8_claimed_preupload_failure(
+        db_session, monkeypatch)
+    claim = recovery.CLAIMED_PREUPLOAD_V21_CLAIM_SHA256
+    attempt = db_session.get(
+        CampaignExecutionAttempt, recovery.PRECLAIM_ATTEMPT_ID)
+    attempt.state = "write_claimed"
+    attempt.write_claimed = True
+    attempt.platform_write_observed = False
+    attempt.last_step = "platform_write_claim_claimed_preupload_resume_v23"
+    attempt.result_summary = {**attempt.result_summary,
+        "claimed_preupload_resume": {
+            "source_claim_sha256": claim,
+            "inspect_scope_sha256": "d" * 64,
+            "reservation_token_sha256": "e" * 64,
+            "reservation_expires_at_epoch": 4102444800.0,
+        }}
+    db_session.commit()
+    result = recovery.verify_plan8_final_v8_preupload_claim(
+        db_session, attempt_id=attempt.id,
+        workflow_key=recovery.WORKFLOW_KEY, plan_id=8,
+        operation=recovery.OPERATION, scope_sha256=scope,
+        inspect_scope_sha256="d" * 64,
+        reservation_token_sha256="e" * 64,
+        resume_claim_sha256=claim)
+    assert result["ok"] is True, result
+
+
+def test_v23_request_schema_cli_and_operator_script_are_exact(monkeypatch):
+    payload = {
+        "workflow_key": recovery.WORKFLOW_KEY, "plan_id": 8,
+        "expected_status": "alarmed", "recovery_version": 8,
+        "mode": "resume_claimed_preupload_v23",
+        "confirmation": recovery.CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION,
+        "target_scope_sha256": recovery.EXPECTED_TARGET_SCOPE_SHA256,
+    }
+    body = campaigns.CampaignPlan8FinalRecoveryV8In(**payload)
+    assert body.mode == "resume_claimed_preupload_v23"
+    monkeypatch.setattr(cli.sys, "stdin", type("Input", (), {
+        "buffer": BytesIO(json.dumps(payload).encode("utf-8"))})())
+    assert json.loads(cli._read_payload()) == payload
+    script = (Path(__file__).parents[2] / "scripts" /
+              "campaign_recover_plan8_final_v8_preupload_v23_nas.ps1")
+    text = script.read_text(encoding="utf-8")
+    assert "resume_claimed_preupload_v23" in text
+    assert recovery.CLAIMED_TEMPLATE_CONTRACT_CONFIRMATION in text
+    assert recovery.EXPECTED_TARGET_SCOPE_SHA256 in text
+    retired = (script.parent /
+               "campaign_recover_plan8_final_v8_preupload_v22_nas.ps1")
+    assert "V22 is retired" in retired.read_text(encoding="utf-8")
+
+
 def test_v8_commit_preserves_state_drift_diagnostics():
     manifest = recovery._fixed_manifest(
         _signup_rows(), _discount_rows(), recovery.EXPECTED_POLICY_SHA256)
