@@ -1,5 +1,41 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-06 Super-88 official success and incomplete price closeout
+
+- User requested read-only full price verification before final workflow solidification.
+  Future routine signup owner is `01｜畔色ERP系统`
+  (verified current title, thread `01a04666-6895-7b40-a07d-c7cfe38d9a02`).
+- Receipt: `docs/receipts/campaign-49462-price-audit-20260906.json`.
+  Fresh official export `20260906002843`, SHA-256
+  `5009e541e6ba8fcb7c267d01ffb15057dfc1bc54bcf2c04f7ad41b1a7b5fe4a6`.
+  All 51 exported items are NOT successful: 45 items / 354 SKU rows are
+  已发布设定; 6 items / 70 rows remain 草稿.
+- The repaired 15+9 items / 228 SKU rows all have exact submitted signup prices
+  and 已发布设定 readback. Batches 790318164, 793048029 (six successful items
+  only), 794292184 and 794707209 must not be replayed.
+- Full-price verification is incomplete: two items (1038071596128,
+  840659847455) lack official final prices for 24 rows; three custom rows have
+  0.04–0.07 yuan final-price differences from the local low-price formula.
+- Outside the repaired 24-item scope, 1047741358718, 1047744482178 and
+  1047742974354 have 12 official final prices above current ERP big targets
+  by 537.96–1304.48 yuan. Their values equal signup less official discount
+  only; missing/unapplied concurrent single-item discount is an inference.
+  No new discount, signup or price change was performed.
+- Item 1001358847694 has two signup prices below 20% of current ERP daily
+  price; verify first-original-price provenance before any correction.
+  Four other published items / 16 rows lack ERP SKU mapping.
+- This receipt records successful outcomes, exact mappings and unresolved
+  evidence separately. It does not mark the campaign fully price-correct,
+  mutate ERP prices/mapping tables, or claim the short-flow runtime deployed.
+  Current user-frozen short flow remains authoritative: fresh exact template,
+  full sellable scope first attempt, one price version, single-item discount
+  then signup, bounded terminal waits, failure report once, no automatic retry,
+  no candidate scan / R16/R17 / evidence-refresh preflight. Inactive reserve
+  SKUs use off/gray switches with stock preserved, not stock zero.
+- Existing historical state sections below are retained for audit, not permission
+  to resume V28 or other retired attempts. This post-signup audit must not become
+  a new mandatory pre-submit gate.
+
 ## 2026-09-04 plan-8 ERP claim-step allowlist continuation V28
 
 - V27 ran once and stopped before file selection because ERP did not recognize
