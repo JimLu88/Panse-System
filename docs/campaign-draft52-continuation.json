@@ -1,0 +1,491 @@
+{
+  "schema_version": 1,
+  "submission_checkpoint": {
+    "status": "uploaded_no_replay",
+    "platform_operation_time_beijing": "2026-09-06 02:22:11",
+    "output_sha256": "139ede27d6e9ad1862ee8ae2562a34dbf176495adc4d4159603a1fae1a7768e2",
+    "source_receipt": "docs/receipts/campaign-draft52-single-upload-20260906.json",
+    "new_generation_allowed": false,
+    "official_terminal_at_checkpoint": null
+  },
+  "campaign_id": "49462",
+  "united_activity_id": "49469",
+  "sign_record_id": "3527841611",
+  "start": "2026-09-06 20:00:00",
+  "end": "2026-09-13 23:59:59",
+  "existing_discount_activity_id": "144226431384",
+  "discount_source_sha256": "fe37a8d47c3463e0a7026008e4a9015485c89d4f533c775351dfdcda7f03be31",
+  "template_sha256": "426e42e7ee9db4e62260da6f78610370aaffe6bc30866d1ad31232692a7b3fc9",
+  "template_filename": "「26年淘宝9月超级88超级88现货」商品导入模版20260906020807.xlsx",
+  "discount_filename": "单品立减_144226431384_202609060200.xlsx",
+  "ordinary_scope": [
+    {
+      "item_id": "917179577721",
+      "sku_id": "6241018727157",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1744.46",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6276222279109",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1828.34",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6274657207191",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1929.03",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6241018727158",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2059.05",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6276222279110",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2182.53",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6274657207192",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2290.43",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318345",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1538.95",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318346",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1318.63",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318347",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1563.22",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318348",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1356.00",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318349",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1591.30",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318350",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1381.18",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318351",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1650.05",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318352",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1430.00",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318353",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1653.00",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318355",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1693.10",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318357",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1749.06",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318359",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1814.50",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6114554036970",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "648.83",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6279716779897",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "666.69",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6279716779898",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "693.66",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6274010454721",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "849.53",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6047448121201",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "649.33",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6047448121204",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "666.69",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6240794599102",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "693.66",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6274010454720",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "849.53",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898872",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1691.11",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898873",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1368.59",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6280283835626",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1715.49",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6280283835627",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1392.37",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898876",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1767.84",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898877",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1427.34",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898878",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1836.79",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898879",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1480.09",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898880",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1638.36",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898882",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1656.33",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898884",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1725.29",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898886",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "1777.43",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708130",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2254.15",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708131",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2448.80",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708132",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2566.76",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708127",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2308.64",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708128",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2471.55",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708129",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2593.73",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708133",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2369.73",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708134",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2500.90",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708135",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2625.47",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708124",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2794.97",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6056628708125",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "2895.61",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6109968105693",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "3036.42",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036312802226",
+      "sku_id": "6115345265876",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "341.48",
+      "legacy_is_current_proof": false
+    },
+    {
+      "item_id": "1036312802226",
+      "sku_id": "6070256093122",
+      "legacy_activity_id": "144226431384",
+      "legacy_deduct": "317.00",
+      "legacy_is_current_proof": false
+    }
+  ],
+  "blocked_custom": [
+    {
+      "item_id": "917179577721",
+      "sku_id": "6107353122531",
+      "name": "其他定制"
+    },
+    {
+      "item_id": "917179577721",
+      "sku_id": "6075878504283",
+      "name": "尺寸微定制"
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318361",
+      "name": "黑胡桃木材质定制咨询,榉木"
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318362",
+      "name": "黑胡桃木材质定制咨询,松木"
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318363",
+      "name": "尺寸微定制,榉木"
+    },
+    {
+      "item_id": "1074244132390",
+      "sku_id": "6287431318364",
+      "name": "尺寸微定制,松木"
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6047448121205",
+      "name": "其他尺寸定制咨询"
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6047448121203",
+      "name": "其他材质定制咨询"
+    },
+    {
+      "item_id": "841201084787",
+      "sku_id": "6240794599103",
+      "name": "岩板定制"
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898868",
+      "name": "黑胡桃木材质定制咨询,榉木"
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898869",
+      "name": "黑胡桃木材质定制咨询,松木"
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898870",
+      "name": "尺寸微定制,榉木"
+    },
+    {
+      "item_id": "1036279566778",
+      "sku_id": "6234601898871",
+      "name": "尺寸微定制,松木"
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6004764276985",
+      "name": "定制尺寸"
+    },
+    {
+      "item_id": "837902729785",
+      "sku_id": "6076746217857",
+      "name": "尺寸微定制"
+    },
+    {
+      "item_id": "1036312802226",
+      "sku_id": "6218230362902",
+      "name": "材质定制,免安装"
+    },
+    {
+      "item_id": "1036312802226",
+      "sku_id": "6218230362901",
+      "name": "颜色定制,免安装"
+    },
+    {
+      "item_id": "1036312802226",
+      "sku_id": "6068820148476",
+      "name": "尺寸微定制,免安装"
+    }
+  ],
+  "price_tolerance": {
+    "min_delta": "0.00",
+    "max_delta": "2.00",
+    "source_thread_id": "01a04666-6895-7b40-a07d-c7cfe38d9a02",
+    "verbatim": "2元以内全部可以",
+    "only_this_continuation": true,
+    "allows_daily_price_change": false,
+    "allows_below_target": false,
+    "allows_custom": false
+  },
+  "existing_discount_upload": false,
+  "automatic_retry": false
+}

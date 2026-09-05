@@ -94,7 +94,9 @@ def verify_repository(root=ROOT):
     raw = (root / RECEIPT.relative_to(ROOT)).read_bytes()
     receipt = json.loads(raw.decode("utf-8-sig"))
     errors = verify(contract, receipt)
-    if hashlib.sha256(raw).hexdigest() != contract["outcome_receipt_sha256"].lower():
+    # Older Windows worktrees may still have CRLF from before the exact-path
+    # .gitattributes rule. Compare the immutable Git/LF JSON, not checkout EOLs.
+    if hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest() != contract["outcome_receipt_sha256"].lower():
         errors.append("historical_receipt_bytes_changed")
     if contract["outcome_receipt"] != RECEIPT.relative_to(ROOT).as_posix():
         errors.append("receipt_path_changed")
