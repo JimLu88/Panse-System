@@ -18,10 +18,23 @@ class FrozenOutcomesTest(unittest.TestCase):
     def test_repository_and_receipt_hash(self):
         self.assertEqual(CHECK.verify_repository(), [])
 
+    def test_user_collaboration_is_frozen(self):
+        self.contract["collaboration"]["mode"] = "unattended"
+        self.assertIn("frozen_rule_changed:collaboration", CHECK.verify(self.contract, self.receipt))
+
     def test_no_mutation(self):
         before = copy.deepcopy((self.contract, self.receipt))
         CHECK.verify(self.contract, self.receipt)
         self.assertEqual(before, (self.contract, self.receipt))
+
+    def test_failed_52_scope_cannot_be_replayed_or_called_success(self):
+        scope = json.loads((CHECK.ROOT / 'docs/campaign-draft52-continuation.json').read_text(encoding='utf-8-sig'))
+        terminal = json.loads((CHECK.ROOT / 'docs/receipts/campaign-draft52-full-sku-terminal-snapshot-20260906.json').read_text(encoding='utf-8-sig'))
+        self.assertIs(scope['submission_checkpoint']['new_generation_allowed'], False)
+        self.assertEqual(terminal['official_success_items'], 0)
+        self.assertEqual(terminal['official_failed_items'], 6)
+        self.assertEqual(scope['submission_checkpoint']['official_terminal_at_checkpoint']['batch_id'], terminal['batch_id'])
+        self.assertEqual({(i, sku) for i, skus in terminal['missing_custom_skus'].items() for sku in skus}, {(r['item_id'], r['sku_id']) for r in scope['blocked_custom']})
 
     def test_owner_not_maintenance(self):
         self.contract["owner"] = "02"

@@ -21,6 +21,7 @@ def verify(contract, receipt):
         "owner": "01｜畔色ERP系统",
         "owner_thread_id": "01a04666-6895-7b40-a07d-c7cfe38d9a02",
         "maintenance_business_execution": False,
+        "collaboration": {"mode":"01_with_user","automatic_work_owner":"01","maintenance_owner":"02","user_handles":["blocked_download_or_upload","login_or_captcha","price_or_sku_decisions_outside_current_authorization"],"technical_transfer_timeout_seconds":180,"repeat_same_blocked_action":False,"report_requires_exact_page_file_and_minimum_action":True},
         "rule_changes_require_current_direct_user_instruction": True,
         "first_attempt_scope": "all_current_erp_sellable_items",
         "historical_sales_prefilter": False,

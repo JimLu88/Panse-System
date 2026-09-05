@@ -14,7 +14,7 @@
 
 **本轮已于2026-09-06 02:22:11由01上传一次，入口已封口。下列生成命令仅供审计，不能再次执行；CLI在任何文件生成/ERP查询之前拒绝重放。**
 已交付文件为 `draft52-20260906-verified/计划8-52普通SKU-仅活动报名.xlsx`，SHA256 `139ede27d6e9ad1862ee8ae2562a34dbf176495adc4d4159603a1fae1a7768e2`。
-此检查点当时只有“处理中”，不把它改称官方终态；后续结果由01回执负责。
+最新官方终态：批次795099195，0成功、6失败，要求全部SKU报名，缺失精确18定制SKU。52-only 已证实不能独立报名，不得重传。官方失败文件 SHA256 `dcd58fdafeac2151a5a286a733e6c5cbbee8b00e9252ca03763823fd613ad426`。这是本场失败后的处理事实，不新增常规平台预检；文件生成、公式检查通过不代表平台价格审核通过。
 
 ```powershell
 python scripts/campaign_prepare_draft52.py --template "C:\Users\lzdwy\Desktop\「26年淘宝9月超级88超级88现货」商品导入模版20260906020807.xlsx" --discount-export "C:\Users\lzdwy\Desktop\单品立减_144226431384_202609060200.xlsx" --output-dir "D:\AI\畔色ERP系统\outputs\01a03341-b2cd-7810-92f3-66fad189521d\draft52-20260906-verified" --erp-snapshot "D:\AI\畔色ERP系统\outputs\01a03341-b2cd-7810-92f3-66fad189521d\draft52-erp-price-version-20260906.json"
@@ -28,7 +28,7 @@ python scripts/campaign_prepare_draft52.py --template "C:\Users\lzdwy\Desktop\�
 
 生成状态 `file_ready_for_01_single_activity_upload` 仅代表本地文件可交给01，不代表已上传或平台已接受。01在精确活动的批量导入上传该文件一次，等官方终态约3分钟；失败下载一次错误报告，未知不重传。此次**不上传立减表**。
 
-模板只说可按不同SKU设置价格，没有明确禁止部分SKU报名；这不是平台已接受52行的证明。若本次官方终态要求整商品SKU完整，原文报告并保留阻塞，不自行加入18定制或已关闭SKU。
+本场官方已证实要求整商品SKU完整。失败续办必须处理相应整商品范围；定制价格依当前授权及已有明确原价记录固定底价，不将此次降低后的价格递归作为基准。真实低于底价的冲突交01与用户处理，不凭缺基准自动轮换。
 
 ## 模板结构修复
 

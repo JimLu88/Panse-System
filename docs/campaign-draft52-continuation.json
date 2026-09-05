@@ -1,12 +1,19 @@
 {
   "schema_version": 1,
   "submission_checkpoint": {
-    "status": "uploaded_no_replay",
+    "status": "official_terminal_failed_full_sku_required_no_52_replay",
     "platform_operation_time_beijing": "2026-09-06 02:22:11",
     "output_sha256": "139ede27d6e9ad1862ee8ae2562a34dbf176495adc4d4159603a1fae1a7768e2",
     "source_receipt": "docs/receipts/campaign-draft52-single-upload-20260906.json",
     "new_generation_allowed": false,
-    "official_terminal_at_checkpoint": null
+    "official_terminal_at_checkpoint": {
+      "batch_id": "795099195",
+      "success": 0,
+      "failed": 6,
+      "missing_custom": 18,
+      "reason": "列【活动价】要求全部SKU报名",
+      "failure_file_sha256": "dcd58fdafeac2151a5a286a733e6c5cbbee8b00e9252ca03763823fd613ad426"
+    }
   },
   "campaign_id": "49462",
   "united_activity_id": "49469",

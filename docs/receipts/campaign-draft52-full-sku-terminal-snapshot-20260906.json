@@ -1,0 +1,55 @@
+{
+  "status": "official_terminal_all_6_failed_full_sku_required_do_not_replay_52_only",
+  "batch_id": "795099195",
+  "official_success_items": 0,
+  "official_failed_items": 6,
+  "failure_file": "C:\\Users\\lzdwy\\Desktop\\「26年淘宝9月超级88_超级88现货」批量报名结果 (3).xlsx",
+  "failure_file_sha256": "dcd58fdafeac2151a5a286a733e6c5cbbee8b00e9252ca03763823fd613ad426",
+  "official_failure_reason_common": "列【活动价】要求全部SKU报名",
+  "missing_custom_skus": {
+    "917179577721": [
+      "6107353122531",
+      "6075878504283"
+    ],
+    "1074244132390": [
+      "6287431318361",
+      "6287431318362",
+      "6287431318363",
+      "6287431318364"
+    ],
+    "841201084787": [
+      "6047448121205",
+      "6047448121203",
+      "6240794599103"
+    ],
+    "1036279566778": [
+      "6234601898868",
+      "6234601898869",
+      "6234601898870",
+      "6234601898871"
+    ],
+    "837902729785": [
+      "6004764276985",
+      "6076746217857"
+    ],
+    "1036312802226": [
+      "6218230362902",
+      "6218230362901",
+      "6068820148476"
+    ]
+  },
+  "platform_operation_time_beijing": "2026-09-06 02:22:11",
+  "platform_processing_items": 6,
+  "campaign_id": "49462",
+  "united_activity_id": "49469",
+  "sign_record_id": "3527841611",
+  "file": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\draft52-20260906-verified\\计划8-52普通SKU-仅活动报名.xlsx",
+  "sha256": "139ede27d6e9ad1862ee8ae2562a34dbf176495adc4d4159603a1fae1a7768e2",
+  "items": 6,
+  "sku_rows": 52,
+  "scope": "Only ordinary pending SKU rows from maintenance verified receipt; 18 custom rows excluded from this upload.",
+  "discount_upload": false,
+  "official_terminal": "0成功，6失败，0待查看；批次执行完成不等于报名成功。",
+  "note": "Reserved immediately before file chooser. If interrupted, read current platform status before any further action. Never repeat this file upload blindly.",
+  "snapshot_note": "Maintenance immutable copy of 01 official terminal; applies to this failed batch only, not a new preflight."
+}

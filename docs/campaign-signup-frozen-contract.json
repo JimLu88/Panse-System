@@ -5,10 +5,24 @@
   "owner_thread_id": "01a04666-6895-7b40-a07d-c7cfe38d9a02",
   "maintenance_business_execution": false,
   "rule_changes_require_current_direct_user_instruction": true,
-  "template": {"fresh_per_campaign": true, "dimension": "sku", "reference_data": true, "smart_fill": "none", "preserve_custom_properties": true, "preserve_non_data_parts": true, "preserve_merge_geometry": true},
+  "template": {
+    "fresh_per_campaign": true,
+    "dimension": "sku",
+    "reference_data": true,
+    "smart_fill": "none",
+    "preserve_custom_properties": true,
+    "preserve_non_data_parts": true,
+    "preserve_merge_geometry": true
+  },
   "first_attempt_scope": "all_current_erp_sellable_items",
   "historical_sales_prefilter": false,
-  "steps": ["download_current_official_template", "generate_two_files_one_price_version", "single_discount_terminal_success", "activity_signup_terminal", "save_result_or_one_failure_report"],
+  "steps": [
+    "download_current_official_template",
+    "generate_two_files_one_price_version",
+    "single_discount_terminal_success",
+    "activity_signup_terminal",
+    "save_result_or_one_failure_report"
+  ],
   "terminal_wait_seconds_approx": 180,
   "no_progress_report_seconds_max": 600,
   "failure_report_download_attempts": 1,
@@ -20,11 +34,18 @@
   "preflight_price_evidence_refresh": false,
   "preflight_r16_r17_loop": false,
   "normal_signup_price": "erp_daily_price",
-  "price_targets": {"super_reduce": "medium_promo", "super88_12_percent": "big_promo", "major_15_percent": "big_promo"},
+  "price_targets": {
+    "super_reduce": "medium_promo",
+    "super88_12_percent": "big_promo",
+    "major_15_percent": "big_promo"
+  },
   "custom_floor_ratio": "0.20",
   "custom_floor_basis": "first_original_custom_price",
   "automatically_rotate_sku": false,
-  "reserve_sku": {"enabled": false, "stock": "preserve"},
+  "reserve_sku": {
+    "enabled": false,
+    "stock": "preserve"
+  },
   "missing_required_installation_detail": "提供简单安装工具",
   "overwrite_valid_installation_detail": false,
   "optional_images_before_signup": false,
@@ -34,5 +55,18 @@
   "outcome_receipt_sha256": "d31eff5c1310c9412f30c52cf2322eeb389d153ca80edbbad3413b04ded538fa",
   "audit_is_historical_snapshot": true,
   "runtime_short_flow_deployed_by_this_freeze": false,
-  "database_mapping_updated_by_this_freeze": false
+  "database_mapping_updated_by_this_freeze": false,
+  "collaboration": {
+    "mode": "01_with_user",
+    "automatic_work_owner": "01",
+    "maintenance_owner": "02",
+    "user_handles": [
+      "blocked_download_or_upload",
+      "login_or_captcha",
+      "price_or_sku_decisions_outside_current_authorization"
+    ],
+    "technical_transfer_timeout_seconds": 180,
+    "repeat_same_blocked_action": false,
+    "report_requires_exact_page_file_and_minimum_action": true
+  }
 }
