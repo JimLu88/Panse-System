@@ -1,0 +1,91 @@
+{
+  "schema": "campaign_temporary_business_progress_v1",
+  "date": "2026-09-06",
+  "operator_thread": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "campaign_id": "49462",
+  "united_activity_id": "49469",
+  "sign_record_id": "3527841611",
+  "authority": "Current user asked 02 to finish this campaign and authorized remaining SKU rotation. Future 01-with-user frozen workflow unchanged.",
+  "published_item_count_last_observed": 51,
+  "draft_item_count_last_observed": 0,
+  "do_not_replay_batches": ["795099381", "795099195", "795728875"],
+  "latest_confirmed_campaign_batch": {"id": "795728875", "success": 4, "failure": 0, "operator": "02"},
+  "remaining_items": [],
+  "final_receipt": "campaign-four38-single-upload-20260906.json",
+  "historical_entries_note": "The per-product entries below record product-save checkpoints before campaign upload; their null new IDs / not_uploaded flags are historical. Final official SKU mapping and successful signup are in final_receipt.",
+  "product_edits": [{
+    "item_id": "837902729785",
+    "old_sku_id": "6004764276985",
+    "old_label": "定制尺寸",
+    "new_label": "尺寸定制（联系客服）",
+    "new_sku_id": null,
+    "merchant_code": "PPS2425008080199",
+    "price": "10000.00",
+    "stock": 909,
+    "fixed_original_price": "10000.00",
+    "fixed_protection_floor": "2000.00",
+    "cabinet_material": "实木",
+    "door_material": "樱桃木",
+    "top_material": "实木",
+    "custom_flag": "是",
+    "old_switch": "off",
+    "new_switch": "on",
+    "other_rows_preserved": true,
+    "product_submit_terminal": "商品提交成功",
+    "platform_item_id_readback": "837902729785",
+    "new_color_image": "not_added; official image picker search fill did not persist; optional image deferred; submit succeeded",
+    "campaign_signup": "not_uploaded_by_02",
+    "notes": "New platform SKU ID must be obtained from fresh official template. Product submit success does not establish campaign success. Old inactive SKU and inventory preserved."
+  }, {
+    "item_id": "841201084787",
+    "product_submit_terminal": "商品提交成功",
+    "platform_item_id_readback": "841201084787",
+    "new_sku_ids": null,
+    "fixed_original_price": "1700.00",
+    "fixed_protection_floor": "340.00",
+    "rotations": [
+      {"old_sku_id": "6047448121205", "old_label": "其他尺寸定制咨询", "new_label": "尺寸定制（联系客服）", "merchant_code": "PPS2421007090199", "price": "1700.00", "stock": 938, "table_length_mm": 1600, "dimensions_mm": [1600, 800, 750], "people": "1-10人"},
+      {"old_sku_id": "6047448121203", "old_label": "其他材质定制咨询", "new_label": "材质定制（联系客服）", "merchant_code": "PPS2421007090198", "price": "1700.00", "stock": 929, "table_length_mm": 1600, "dimensions_mm": [1800, 800, 750], "people": "1-6人"}
+    ],
+    "common_fields": {"classification": "单品", "shape": "长方形", "frame": "实木", "top": "岩板", "thickness_mm": 12, "legs": "实木", "custom": "是"},
+    "old_switches": "off",
+    "new_switches": "on",
+    "other_rows_preserved": true,
+    "optional_new_color_images": "deferred",
+    "campaign_signup": "not_uploaded_by_02"
+  }, {
+    "item_id": "917179577721",
+    "product_submit_terminal": "商品提交成功",
+    "platform_item_id_readback": "917179577721",
+    "new_sku_ids": null,
+    "rotations": [
+      {"old_sku_id": "6107353122531", "old_label": "其他定制", "new_label": "定制咨询（联系客服）", "merchant_code": "PPS2525010040599", "price": "4000.00", "stock": 934, "fixed_original_price": "4000.00", "fixed_protection_floor": "800.00", "custom": "是"},
+      {"old_sku_id": "6075878504283", "old_label": "尺寸微定制", "new_label": "微调尺寸（联系客服）", "merchant_code": "PPS2525010040598", "price": "1000.00", "stock": 14, "fixed_original_price": "1000.00", "fixed_protection_floor": "200.00", "custom": "否"}
+    ],
+    "common_fields": {"classification": "单品", "cabinet_material": "实木", "door_material": "实木", "top_material": "实木", "socket": "支持插座功能"},
+    "old_switches": "off",
+    "new_switches": "on",
+    "other_rows_preserved": true,
+    "optional_new_color_images": "deferred",
+    "campaign_signup": "not_uploaded_by_02"
+  }, {
+    "item_id": "1036312802226",
+    "product_submit_terminal": "商品提交成功",
+    "platform_item_id_readback": "1036312802226",
+    "new_sku_ids": null,
+    "fixed_original_price": "1500.00",
+    "fixed_protection_floor": "300.00",
+    "rotations": [
+      {"old_sku_id": "6218230362901", "old_label": "颜色定制", "new_label": "定制颜色（联系客服）", "merchant_code": "PPS2638004022596", "price": "1500.00", "stock": 98, "classification": "单品", "cabinet_material": "榉木", "surface": "木蜡油", "length_mm": 450, "dimensions_mm": [450, 400, 450], "drawers": 2, "shape": "方形", "mobility": "不支持移动", "custom": "否"},
+      {"old_sku_id": "6068820148476", "old_label": "尺寸微定制", "new_label": "微调尺寸（联系客服）", "merchant_code": "PPS2638004022598", "price": "1500.00", "stock": 98, "classification": "信息说明", "disabled_attributes_preserved": true, "custom": "否"}
+    ],
+    "installation": "免安装",
+    "old_switches": "off",
+    "new_switches": "on",
+    "other_rows_preserved": true,
+    "optional_new_color_images": "deferred",
+    "campaign_signup": "not_uploaded_by_02"
+  }],
+  "platform_payment_or_campaign_withdrawal": false,
+  "rules_modified": false
+}
