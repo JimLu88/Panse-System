@@ -1,5 +1,16 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-06 已验证活动成果与01操作步骤固化
+
+- 当前入口：`docs/campaign-signup-frozen-steps.md`；机器规则：
+  `docs/campaign-signup-frozen-contract.json`。AGENTS 已指向此入口；旧准备包与
+  备用槽方案标注为历史，不再作为新增预检或自动轮换的依据。
+- 原价格审计回执保持原字节与哈希，保存成功范围和未解决项，不改写为全店完成。
+  `scripts/verify_campaign_frozen_outcomes.py` 和对应离线回归仅校验仓库成果；
+  无网络、无浏览器、无数据库、无报名动作，不增加报名当天步骤。
+- 用户已指定 01 执行报名。本次不重启/部署运行时，不改业务价格、SKU 映射或在途批次；
+  后续进展由 01 追加新回执。本段不宣称新短流程运行时已经实现或部署。
+
 ## 2026-09-06 Super-88 official success and incomplete price closeout
 
 - User requested read-only full price verification before final workflow solidification.

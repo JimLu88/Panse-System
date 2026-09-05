@@ -1,5 +1,15 @@
 # Panse-System agent instructions
 
+## Campaign signup authority
+
+For campaign work, first read `docs/campaign-signup-frozen-steps.md` and
+`docs/campaign-signup-frozen-contract.json`. They record the user's September 4–6
+short-flow rules and exact successful scope; older preparation/recovery documents
+are history, not authority to restore preflight scans or replay successful batches.
+Routine signup belongs to `01｜畔色ERP系统`; maintenance does not execute it.
+Do not change frozen rules without the user's current direct instruction.
+The offline receipt tests are maintenance verification, not a new signup gate.
+
 ## First read
 
 Before modifying the logistics-bill product analytics feature, read:
