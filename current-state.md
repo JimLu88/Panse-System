@@ -1,5 +1,13 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-06 当场力度文件工具 READY（02 不报名）
+
+- `scripts/campaign_official_template.py` 的 `fill_selected_rows(..., official_rate=...)` 现在必须传当场明确力度，无默认12%。兼容大促20列与本场超级立减25列：后者N活动价/Q数值10/R金额空；包邮/素材/表头/自定义属性及非数据ZIP部件保留。单品5列模板用 `fill_single_discount_rows`。
+- `scripts/campaign_price_snapshot.py` 一次只读一致性事务获取价格与商品状态，7个新SKU按正式回执作文件映射，不写数据库，不滤历史无动销。09:26快照已取得，60候选商品；两表复用同一价格版本。使用说明 `docs/campaign-current-file-tools.md`。
+- 56项离线回归通过；真实25列模板32个未完成商品/301行内存结构测试通过，未生成业务上传文件、未上传。两表入口 `scripts/campaign_generate_current_files.py` 复用快照，缺映射/价格时一次输出问题、不猜价；定制首轮保留ERP当前价，不把原始底价调查设为前置门。回执 `docs/receipts/campaign-explicit-rate-tools-20260906.json`。01独占浏览器，02没有报名/改价/运行旧prepare链，无需NAS部署或重启。
+- 同一价格快照另从成功回执恢复14条精确SKU映射，未改价格/数据库；剩余3商品31条未知逐项见 `docs/receipts/campaign-verified-mapping-recovery-20260906.json`。不按名称猜配、不默默过滤；报名与优惠仅接受01明确的独立整品范围。
+- 新窗口单品立减与长期报名是不同范围：不能因28商品已长期报名就漏掉它们的新窗口优惠。秋季批797261540据01复查只是7商品入草稿，已发布0，不计报名成功。
+
 ## 2026-09-06 05:15 超级88本场商品报名已完成
 
 - 用户当前精确授权 02 临时接手并轮换剩余 SKU；已完成 4 商品的 7 个新定制 SKU，旧 SKU 灰色下架、保留原库存，原商品其他规格不变。新旧编号见 `docs/receipts/campaign-four38-single-upload-20260906.json`。

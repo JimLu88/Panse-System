@@ -113,7 +113,7 @@ def prepare(template_path, discount_path, output_dir, erp=None):
     successful = {(r['item'],r['sku']) for r in prior['repaired_rows']}
     if successful & {(r['item'],r['sku']) for r in rows}:
         raise ValueError('successful_scope_replay_forbidden')
-    output = fill_selected_rows(template, rows)
+    output = fill_selected_rows(template, rows, official_rate='12%')
     receipt = {
         'status':'file_ready_for_01_single_activity_upload',
         'created_at':datetime.now(timezone.utc).isoformat(),

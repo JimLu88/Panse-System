@@ -41,11 +41,11 @@ class OfficialTemplateTest(unittest.TestCase):
         self.assertEqual(len(tpl.template_rows(self.raw)),4)
 
     def test_projection_preserves_identity_anchor(self):
-        out=tpl.fill_selected_rows(self.raw,self.selected)
+        out=tpl.fill_selected_rows(self.raw,self.selected,official_rate='12%')
         self.assertEqual([(r['item'],r['sku']) for r in tpl.template_rows(out)],[(r['item'],r['sku']) for r in self.selected])
 
     def test_merge_compaction_and_no_orphan(self):
-        out=tpl.fill_selected_rows(self.raw,self.selected)
+        out=tpl.fill_selected_rows(self.raw,self.selected,official_rate='12%')
         with ZipFile(BytesIO(out)) as z:
             xml=z.read('xl/worksheets/sheet1.xml').decode()
             self.assertIn('A4:A5',xml)
@@ -53,14 +53,14 @@ class OfficialTemplateTest(unittest.TestCase):
             self.assertIn('A1:T5',xml)
 
     def test_non_data_parts_identical(self):
-        with ZipFile(BytesIO(self.raw)) as a, ZipFile(BytesIO(tpl.fill_selected_rows(self.raw,self.selected))) as b:
+        with ZipFile(BytesIO(self.raw)) as a, ZipFile(BytesIO(tpl.fill_selected_rows(self.raw,self.selected,official_rate='12%'))) as b:
             self.assertEqual(a.namelist(),b.namelist())
             for name in a.namelist():
                 if name!='xl/worksheets/sheet1.xml':
                     self.assertEqual(a.read(name),b.read(name))
 
     def test_prices_and_existing_percentage_preserved(self):
-        rows=tpl.read_rows(tpl.fill_selected_rows(self.raw,self.selected),'商品SKU导入列表')
+        rows=tpl.read_rows(tpl.fill_selected_rows(self.raw,self.selected,official_rate='12%'),'商品SKU导入列表')
         self.assertEqual(rows[4]['P'],'100.00')
         self.assertEqual(rows[5]['P'],'200.00')
         self.assertEqual(rows[4]['S'],'12%')
@@ -68,21 +68,21 @@ class OfficialTemplateTest(unittest.TestCase):
 
     def test_duplicate_selected_rejected(self):
         with self.assertRaisesRegex(ValueError,'duplicate'):
-            tpl.fill_selected_rows(self.raw,self.selected*2)
+            tpl.fill_selected_rows(self.raw,self.selected*2,official_rate='12%')
 
     def test_missing_pair_rejected(self):
         self.selected[0]['sku']='9999999999999'
         with self.assertRaisesRegex(ValueError,'missing'):
-            tpl.fill_selected_rows(self.raw,self.selected)
+            tpl.fill_selected_rows(self.raw,self.selected,official_rate='12%')
 
     def test_formula_features_not_silently_corrupted(self):
         with self.assertRaisesRegex(ValueError,'unsupported_row_bound'):
-            tpl.fill_selected_rows(fixture('<dataValidations/>'),self.selected)
+            tpl.fill_selected_rows(fixture('<dataValidations/>'),self.selected,official_rate='12%')
 
     def test_unsafe_money_rejected(self):
         for price in ('NaN','Infinity','-1','1.001','0'):
             with self.subTest(price=price),self.assertRaises(ValueError):
-                tpl.fill_selected_rows(self.raw,[dict(self.selected[0],activity_price=price)])
+                tpl.fill_selected_rows(self.raw,[dict(self.selected[0],activity_price=price)],official_rate='12%')
 
     def test_self_closing_cell_does_not_consume_next_cell(self):
         xml='<row r="4"><c r="P4" s="1"/><c r="Q4" t="inlineStr"><is><t>全部库存</t></is></c></row>'
@@ -91,7 +91,7 @@ class OfficialTemplateTest(unittest.TestCase):
 
     def test_empty_signup_percentage_written_as_literal_percent(self):
         xml='<row r="4"><c r="S4" s="1"/><c r="T4"/></row>'
-        changed=tpl._set_percent_text(xml,4)
+        changed=tpl._set_percent_text(xml,4,'12%')
         self.assertIn('<t>12%</t>',changed)
         self.assertIn('<c r="T4"/>',changed)
 

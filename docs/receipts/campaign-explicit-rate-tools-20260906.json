@@ -1,0 +1,63 @@
+{
+  "status": "local_file_tools_ready",
+  "maintenance_only": true,
+  "browser_operations": 0,
+  "platform_write": false,
+  "database_write": false,
+  "old_prepare_chain_started": false,
+  "runtime_deployment_required": false,
+  "frozen_business_rules_changed": false,
+  "read_only_snapshot_captured_at": "2026-09-06T01:26:03.926650+00:00",
+  "erp_price_version_sha256": "2ecbb6577a04d06560b2734ace325395fc64096c3508a27365c9b4aba8bf20ba",
+  "resolved_price_version_sha256": "582939924e096f99400bba74499fc314f4dca0d72eb6aa2d90e826f46ede4674",
+  "snapshot_path": "D:/AI/畔色ERP系统/outputs/01a03341-b2cd-7810-92f3-66fad189521d/current-campaign-price-snapshot-resolved-20260906.json",
+  "rotation_overlay_count": 7,
+  "sellable_candidate_item_ids": 60,
+  "super_reduce_current_template": {
+    "path": "C:/Users/lzdwy/Desktop/「超级立减长期活动」商品导入模版20260906092948.xlsx",
+    "sha256": "7aa3f409fdbbf788b11b648f3fe2e2ea64bb40c9fe4852165f16d255eeac0024",
+    "columns": 25,
+    "sku_rows": 575,
+    "items": 60,
+    "item_states": {
+      "活动中": 28,
+      "异常": 21,
+      "草稿": 2,
+      "未报名": 9
+    },
+    "in_memory_structural_canary": {
+      "items": 32,
+      "sku_rows": 301,
+      "ok": true,
+      "saved_upload_file": false,
+      "business_prices_validated": false
+    }
+  },
+  "verification": {
+    "offline_tests_passed": 56,
+    "python_compile": true,
+    "git_diff_check": true,
+    "non_data_zip_parts_byte_preserved": true
+  },
+  "two_file_cli": "scripts/campaign_generate_current_files.py",
+  "autumn_template_readback": {
+    "file": "「2026年淘宝秋季家装节秋季家装节现货」商品导入模版20260906093633.xlsx",
+    "items": 60,
+    "sku_rows": 575,
+    "official_rate": "12%",
+    "states": {
+      "草稿": 7,
+      "未报名": 53
+    }
+  },
+  "usage_document": "docs/campaign-current-file-tools.md",
+  "notes": "Rate is required explicitly. 20-column campaign template uses S percent text; current 25-column super-reduce uses Q numeric percentage points. 5-column current single-discount template is filled without historical filters. Actual signup and new-window discount scopes remain distinct; 01 owns calculation, upload and official terminal. Autumn batch797261540 is selection into drafts, not signup completion per 01 reload.",
+  "verified_mapping_recovery": {
+    "additional_exact_pairs": 14,
+    "unresolved_pairs": 31,
+    "unresolved_items": 3,
+    "prices_unchanged": true,
+    "receipt": "docs/receipts/campaign-verified-mapping-recovery-20260906.json"
+  },
+  "custom_first_attempt": "keep current ERP daily; no global historical floor scan"
+}

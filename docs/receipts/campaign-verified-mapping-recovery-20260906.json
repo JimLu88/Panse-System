@@ -1,0 +1,264 @@
+{
+  "status": "verified_partial_mapping_restored",
+  "source_snapshot": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\current-campaign-price-snapshot-20260906.json",
+  "output_snapshot": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\current-campaign-price-snapshot-resolved-20260906.json",
+  "erp_price_version_sha256": "2ecbb6577a04d06560b2734ace325395fc64096c3508a27365c9b4aba8bf20ba",
+  "resolved_price_version_sha256": "582939924e096f99400bba74499fc314f4dca0d72eb6aa2d90e826f46ede4674",
+  "prices_unchanged": true,
+  "database_write": false,
+  "platform_write": false,
+  "restored": [
+    {
+      "item": "1007407909979",
+      "sku": "6134048133857",
+      "erp_code": "PPS2525012041599",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "1036471324464",
+      "sku": "6298076182714",
+      "erp_code": "PPS2525013042099",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040412",
+      "erp_code": "PPS2325005020295",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040413",
+      "erp_code": "PPS2325005020296",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040414",
+      "erp_code": "PPS2325005020297",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040415",
+      "erp_code": "PPS2325005020298",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "717809819543",
+      "sku": "6298312823107",
+      "erp_code": "PPS2341002020121",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423528",
+      "erp_code": "PPS2425007090197",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423529",
+      "erp_code": "PPS2425007090198",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423530",
+      "erp_code": "PPS2425007090199",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "793178436895",
+      "sku": "6298236974050",
+      "erp_code": "PPS2435002042511",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6298238302289",
+      "erp_code": "PPS2445003091599",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-manifest.json",
+      "mapping_source_sha256": "9cb84fe3fa8290408e55ac7a3397e62d252379c5ab7e72d555408e2431ba3749",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "1046992283533",
+      "sku": "6134045289446",
+      "erp_code": "PFG2521102122211",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\honey-values.json",
+      "mapping_source_sha256": "00369f84d5a698825b693a3bee864d5501800f1502c733b651662791d296fc75",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    },
+    {
+      "item": "1046992283533",
+      "sku": "6298236290403",
+      "erp_code": "PFG2521102122212",
+      "mapping_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\honey-values.json",
+      "mapping_source_sha256": "00369f84d5a698825b693a3bee864d5501800f1502c733b651662791d296fc75",
+      "completion_source": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-nine-completed-20260905.json",
+      "completion_source_sha256": "e47cdf751d7f47ef820ca5070083d1406dfc1c58935997771d77abe0acb5b959"
+    }
+  ],
+  "unresolved": [
+    {
+      "item": "1038064128030",
+      "sku": "6070329937246"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937247"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937248"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937249"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937250"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937251"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937252"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937253"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937254"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937255"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937256"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6070329937257"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6234587998488"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6234587998490"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6234587998492"
+    },
+    {
+      "item": "1038064128030",
+      "sku": "6234587998494"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5069394321177"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299378"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299385"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299386"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299387"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299391"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299392"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299393"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299403"
+    },
+    {
+      "item": "724042164333",
+      "sku": "5215853299404"
+    },
+    {
+      "item": "919649052479",
+      "sku": "6075496168779"
+    },
+    {
+      "item": "919649052479",
+      "sku": "6159692730805"
+    },
+    {
+      "item": "919649052479",
+      "sku": "6207736483216"
+    },
+    {
+      "item": "919649052479",
+      "sku": "6207736483217"
+    },
+    {
+      "item": "919649052479",
+      "sku": "6207736483218"
+    }
+  ]
+}
