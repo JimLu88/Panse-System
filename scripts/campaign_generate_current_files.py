@@ -12,6 +12,7 @@ from pathlib import Path
 
 from campaign_official_template import discount_rate, fill_selected_rows, fill_single_discount_rows, money, template_rows
 from campaign_price_snapshot import digest
+from campaign_reserve_policy import fixed_basis, inherit_basis
 
 SUCCESS = {'活动中','进行中','已生效','已发布设定'}
 
@@ -40,14 +41,22 @@ def load_bases(paths):
         for row in receipt.get('rows', []):
             if 'fixed_original_record' not in row or 'fixed_floor' not in row:
                 continue
-            original, floor = money(row['fixed_original_record']), Decimal(str(row['fixed_floor']))
-            if original <= 0 or floor != original * Decimal('.20'):
-                raise ValueError('invalid_fixed_custom_basis:' + str(path))
+            original, floor = fixed_basis(row['fixed_original_record'], row['fixed_floor'])
             key = str(row['item']), str(row['sku'])
             basis = dict(original=str(original), floor=str(floor), source=str(path), source_sha256=sha(path.read_bytes()), provenance=row.get('floor_provenance') or row.get('rotation_source') or 'explicit_fixed_original_record', first_ever_historical_record_claimed=row.get('first_ever_historical_record_claimed'))
             if key in bases and bases[key]['original'] != basis['original']:
                 raise ValueError('conflicting_fixed_custom_basis:' + '/'.join(key))
             bases[key] = basis
+            for lineage in row.get('verified_replacement_lineage', []):
+                if (lineage.get('item'), lineage.get('source_sku')) != key:
+                    raise ValueError('lineage_source_not_receipt_identity')
+                if not row.get('erp_code') or lineage.get('erp_code') != row['erp_code']:
+                    raise ValueError('lineage_erp_code_not_receipt_identity')
+                basis = inherit_basis(basis, lineage)
+                key = lineage['item'], lineage['replacement_sku']
+                if key in bases and bases[key]['original'] != basis['original']:
+                    raise ValueError('conflicting_fixed_custom_basis:' + '/'.join(key))
+                bases[key] = basis
     return bases
 
 
@@ -98,6 +107,8 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
                 raise ValueError('daily_price_missing_or_nonpositive')
             if row['custom']:
                 basis = bases.get(pair)
+                if basis is not None and basis.get('lineage') and basis['lineage'][-1]['erp_code'] != row['code']:
+                    raise ValueError('lineage_erp_code_not_current_snapshot')
                 if basis is not None and daily < Decimal(basis['floor']):
                     raise ValueError('current_daily_below_fixed_custom_floor_requires_user_decision')
                 activity.append(dict(**row_common,activity_price=str(daily),custom=True,custom_basis=basis,price_action='keep_current_erp_daily_no_lowering',basis_required_before_lowering=True))

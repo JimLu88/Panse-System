@@ -9,6 +9,11 @@ are history, not authority to restore preflight scans or replay successful batch
 Routine signup belongs to `01｜畔色ERP系统`; maintenance does not execute it.
 Do not change frozen rules without the user's current direct instruction.
 The offline receipt tests are maintenance verification, not a new signup gate.
+The user now communicates through 02; 01 remains the sole business/browser writer.
+Necessary custom reserve work requires the current scoped instruction. Prefer
+verified existing inactive reserves, preserve stock and the first-original 20%
+floor across exact old/new SKU mappings. Unknown inventory is not a missing SKU;
+ordinary SKUs and successful campaigns are never implicitly rotated or replayed.
 
 ## First read
 

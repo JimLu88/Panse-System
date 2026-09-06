@@ -95,3 +95,32 @@ discount_bytes = fill_single_discount_rows(
 - 如01已明确决定本次先处理哪些完整商品，可传 `--signup-items "商品ID,商品ID"` 和独立的 `--discount-items "商品ID,商品ID"`。省略表示模板全范围；参数不是自动筛选规则，也不新增平台步骤。
 - 01本次已明确暂缓717418169535的新窗口中促单品优惠，因为其17条已报普通SKU价格高于ERP daily 0.2–1元；不继承上场2元例外、不重传已成功报名。此暂缓不自动延伸到秋季活动。
 - 用户再次确认：零碎兼容性修复不得改变冻结短流程，不增加预检、候选扫描、价格证据循环、自动轮换或重试。任何业务规则改动仍需用户直接同意。
+
+## 固定基准跨 SKU 继承（2026-09-06 用户直接要求）
+
+`campaign_generate_current_files.load_bases` 继续接受既有含 `fixed_original_record` / `fixed_floor` 的回执。没有基准的首次不降价报名不增加调查步骤。新旧映射确已保存后，可在源行附加以下可选字段；生成器会为新 SKU 保留同一个原基准、来源文件哈希和映射链，拒绝不连续的链或 ERP 编码冲突：
+
+```json
+{
+  "item": "精确商品ID", "sku": "源SKU", "erp_code": "同一ERP业务编码",
+  "fixed_original_record": "1000.00", "fixed_floor": "200.00",
+  "verified_replacement_lineage": [{
+    "item": "精确商品ID", "erp_code": "同一ERP业务编码",
+    "source_sku": "源SKU", "replacement_sku": "新SKU",
+    "mapping_verified": true, "receipt": "真实保存并回读的新旧映射回执路径"
+  }]
+}
+```
+
+这是结构示例，不是实际商品数据或授权。映射应追加至新的事件回执，原文件保留；基准最初来源、事实确认程度不得随新映射升级。连续轮换按顺序追加，不能用新编号的新价格覆盖老基准。
+
+可选的 `python scripts/campaign_reserve_policy.py 已有失败盘点.json` 只读本地 JSON，输出建议与分类计数；不会执行任何价格修改或平台操作。输入 `rows` 每行必含字符串 `item`、`sku`、`erp_code`；以精确 ID 去重，重复拒绝。可选事实字段：
+
+- `custom`、`classification_verified`、`failed_current_scope`：仅明确为本场失败定制项继续分类。
+- `basis`：`original`、`floor`、`source`；有固定来源才可用于修价或轮换判断。
+- `verified_feasible_signup_price`：经本场全部适用限制证明可行的报名价；大于等于固定底线优先直接修正，不凭一个报错上限推算所有要求都满足。
+- `rotation_needed_verified`：是否确有必要；缺少不擅推断。
+- `reserves`：逐项 `item/erp_code/sku/mapping_verified/enabled/attributes_match/usable_verified/evidence`，只有明确灰色下架且真实可用的精确对应项建议复用。`unusable_verified=true` 代表有据确认不可用，不是未检查。
+- `reserve_inventory_complete`、`reserve_inventory_evidence`：完整的当前范围证据才可确认缺口；ERP alt 为空、名称搜索无结果或历史记录不构成该证据。
+
+输出 `create_reserve_needed` 仅是确认缺口，仍非写入授权；当前一次性授权单独由执行回执限定两场失败范围。工具不要求每天运行，也不列入两表报名入口。

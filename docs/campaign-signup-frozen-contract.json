@@ -42,6 +42,21 @@
   "custom_floor_ratio": "0.20",
   "custom_floor_basis": "first_original_custom_price",
   "automatically_rotate_sku": false,
+  "custom_replacement_policy": {
+    "scope": "current_failed_custom_skus_only_with_current_user_authorization",
+    "ordinary_default_rotation": false,
+    "verified_classification_required": true,
+    "direct_feasible_price_fix_first": true,
+    "reuse_verified_inactive_reserve_first": true,
+    "unknown_is_missing": false,
+    "identity": ["item", "erp_code", "source_sku", "replacement_sku"],
+    "floor_follows_original_business_sku_across_replacements": true,
+    "replacement_resets_platform_history_guaranteed": false,
+    "record_on_actual_change_or_submission": true,
+    "daily_price_scan": false,
+    "batch_fill_identical_attributes": true,
+    "one_time_authorization_is_recurring": false
+  },
   "reserve_sku": {
     "enabled": false,
     "stock": "preserve"
@@ -57,7 +72,9 @@
   "runtime_short_flow_deployed_by_this_freeze": false,
   "database_mapping_updated_by_this_freeze": false,
   "collaboration": {
-    "mode": "01_with_user",
+    "mode": "user_to_02_to_01",
+    "user_contact_owner": "02",
+    "browser_write_owner": "01",
     "automatic_work_owner": "01",
     "maintenance_owner": "02",
     "user_handles": [
