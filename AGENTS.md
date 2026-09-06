@@ -1,5 +1,16 @@
 # Panse-System agent instructions
 
+## Browser failures (not a campaign preflight)
+
+After a browser-control failure, use `docs/browser-control-short-recovery.md`.
+Keep the current authorized Edge session and sole business-page owner. Distinguish
+caller timeout/kernel reset, stale tab, ownership conflict, debugger detach,
+policy failure and file-transfer failure. Unknown action outcomes are not retries.
+Use bounded single-stage calls and fresh semantic page evidence; never invent a
+connect button, reset profiles, open full CDP, or change frozen campaign rules.
+`scripts/browser_control_triage.py` is offline advisory classification only, not
+a mandatory signup gate or a browser runtime replacement.
+
 ## Campaign signup authority
 
 For campaign work, first read `docs/campaign-signup-frozen-steps.md` and
