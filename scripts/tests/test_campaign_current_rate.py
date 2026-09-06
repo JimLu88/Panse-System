@@ -220,6 +220,23 @@ class TwoFilePriceRowsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'snapshot_changed'):
             generate.build_rows(self.snapshot,self.identities,tpl.discount_rate('12%'),'big',self.bases)
 
+    def test_official_cut_matches_existing_high_and_low_price_rule(self):
+        from decimal import Decimal
+        for daily, rate, expected in [('5685','.12','683'),('7807.50','.12','937'),('3393','.10','340'),('1734','.15','261'),('30','.12','3.60'),('25','.10','2.50')]:
+            with self.subTest(daily=daily,rate=rate):
+                self.assertEqual(generate.official_cut(Decimal(daily),Decimal(rate)),Decimal(expected))
+
+    def test_desk_target_not_undercut_by_integer_official_discount(self):
+        row=self.erp[0]
+        row.update(daily='7807.50',medium_target='4603.47',big_target='4469.39')
+        self.snapshot['resolved_price_version_sha256']=snap.digest(self.erp)
+        a,d,issues=generate.build_rows(self.snapshot,self.identities,tpl.discount_rate('12%'),'big',{})
+        self.assertFalse(issues)
+        self.assertEqual(a[0]['activity_price'],'7807.50')
+        self.assertEqual(d[0]['official_cut'],'937')
+        self.assertEqual(d[0]['deduct'],'2401.11')
+        self.assertEqual(d[0]['final'],'4469.39')
+
     def test_explicit_scopes_are_independent_and_not_automatic_filters(self):
         self.identities[0]['state']='活动中'
         self.identities.append({'item':'999999999999','sku':'9999999999999','state':'未报名'})

@@ -1,5 +1,11 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-06 升降桌补报前本地舍入修复（未报名回执）
+
+- 新两表工具漏用既有普通价位官方立减整元向上取整规则，导致目标以下0.10等偏差。现与既有campaign_service对齐；低于100元仍到分，报名价/力度不变，不切换金额申报模式。
+- 主目录58项离线测试通过；793202812082最高普通SKU原单品2401.21改为2401.11，按既有取整规则最终4469.39。旧未上传文件保留但不得上传，01用新目录重新生成后继续原短流程。
+- 仅改本地生成器；已成功中促/秋季优惠与报名未改，未重传。此前生成结果不能因此冒称平台价格全部正确，其他已成功范围不自动修价。本次依据及边界见 `docs/receipts/campaign-local-rounding-repair-20260906.json`。
+
 ## 2026-09-06 当场力度文件工具 READY（02 不报名）
 
 - `scripts/campaign_official_template.py` 的 `fill_selected_rows(..., official_rate=...)` 现在必须传当场明确力度，无默认12%。兼容大促20列与本场超级立减25列：后者N活动价/Q数值10/R金额空；包邮/素材/表头/自定义属性及非数据ZIP部件保留。单品5列模板用 `fill_single_discount_rows`。

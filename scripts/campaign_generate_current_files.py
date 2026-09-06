@@ -5,7 +5,7 @@ not guessed or silently excluded. Does not authorize upload or a new discount.
 """
 import argparse
 from datetime import datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +14,15 @@ from campaign_official_template import discount_rate, fill_selected_rows, fill_s
 from campaign_price_snapshot import digest
 
 SUCCESS = {'活动中','进行中','已生效','已发布设定'}
+
+
+def official_cut(daily, rate):
+    # Match campaign_service._discount_row_for_sale: existing platform evidence
+    # uses whole-yuan ceiling at ordinary prices, exact cents below 100 yuan.
+    exact = daily * rate
+    if daily < Decimal('100'):
+        return exact.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    return exact.to_integral_value(rounding=ROUND_CEILING)
 
 
 def load(path):
@@ -94,7 +103,7 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
                 activity.append(dict(**row_common,activity_price=str(daily),custom=True,custom_basis=basis,price_action='keep_current_erp_daily_no_lowering',basis_required_before_lowering=True))
                 continue
             goal, big = money(row[target+'_target']), money(row['big_target'])
-            cut = (daily*rate).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
+            cut = official_cut(daily, rate)
             deduct = daily-cut-goal
             if goal <= 0 or big <= 0 or goal < big or deduct < 0 or daily-cut-deduct != goal:
                 raise ValueError('price_formula_cannot_meet_frozen_target')

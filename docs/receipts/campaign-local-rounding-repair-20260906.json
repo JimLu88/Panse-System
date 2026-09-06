@@ -1,0 +1,33 @@
+{
+  "status": "local_rounding_repair_ready",
+  "date": "2026-09-06",
+  "reason": "New local generator rounded official deduction to cents instead of existing ordinary-price whole-yuan ceiling.",
+  "evidence": [
+    "backend/app/services/campaign_service.py:693 records platform measurement 339.3->340 and 260.1->261",
+    "backend/app/services/campaign_service.py:1153 retains exact cents below 100",
+    "docs/活动生命周期系统_执行plan.md:22"
+  ],
+  "current_template_statement": "S/T instructions allow rate or amount exclusively; do not specify rounding. Not used as rounding proof.",
+  "calculation": "daily>=100: ceil(daily*rate) to whole yuan; daily<100: HALF_UP to cents; single=daily-official-target",
+  "signup_rate_and_daily_unchanged": true,
+  "low_price_exception_preserved": true,
+  "offline_tests": 58,
+  "source_receipt": "D:/AI/畔色ERP系统/outputs/01a04666-6895-7b40-a07d-c7cfe38d9a02/next-campaigns-20260906/desk-super88-priority/receipt.json",
+  "unuploaded_prior_desk_files": "superseded; preserve but do not upload",
+  "example": {
+    "sku": "6274602787683",
+    "daily": "7807.50",
+    "rate": "0.12",
+    "old_official": "936.90",
+    "official": "937",
+    "old_single": "2401.21",
+    "single": "2401.11",
+    "target": "4469.39"
+  },
+  "platform_operations": 0,
+  "database_write": false,
+  "existing_successful_autumn_changed": false,
+  "platform_final_price_verified": false,
+  "no_new_preflight": true,
+  "runtime_deployment_required": false
+}
