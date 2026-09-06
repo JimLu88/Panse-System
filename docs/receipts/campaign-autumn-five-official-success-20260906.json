@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "recorded_by": "02 maintenance",
+  "evidence_source": "01 saved official execution and published readback",
+  "status": "authorized_five_official_success_other_scope_skipped",
+  "campaign_id": "49557",
+  "united_activity_id": "49560",
+  "sign_record_id": "3538210379",
+  "batch_id": "801000629",
+  "submitted_at": "2026-09-06 23:20:08 Asia/Shanghai",
+  "official_terminal": {
+    "total_items": 5,
+    "success_items": 5,
+    "failed_items": 0,
+    "pending_items": 0
+  },
+  "protected_successful_items": [
+    "1036279566778",
+    "1074244132390",
+    "841201084787",
+    "837902729785",
+    "1036312802226"
+  ],
+  "submitted_sku_count": 62,
+  "ordinary_skus": 46,
+  "custom_skus": 16,
+  "custom_price_changes": 11,
+  "existing_exact_tolerance_scope": 40,
+  "upload_attempts": 1,
+  "discount_reused": "144956016253",
+  "discount_written": false,
+  "new_reserves": 0,
+  "ordinary_daily_prices_changed": false,
+  "published_readback": {
+    "all_five": true,
+    "total_published": 12,
+    "total_drafts": 1,
+    "remaining_draft": "793084818113"
+  },
+  "per_sku_official_final_price_export": false,
+  "file_sha256": "5d3c896e246ce0c1c242030a99afe095c260a3e1455828cbefd8c965ae3c7577",
+  "file_hash_locally_verified": true,
+  "remaining": {
+    "autumn": {
+      "failed_scope": 45,
+      "no_sales": 8,
+      "unresolved_price": 37
+    },
+    "super_reduce": {
+      "failed_scope": 30,
+      "no_sales": 8,
+      "unresolved_price": 22,
+      "previous_active_preserved": 28
+    },
+    "unknown_custom_bases": 82,
+    "unknown_unit": "basis entries, not item count",
+    "classification_question_in_unknown": 1,
+    "mapping_missing_outside_failed_scope": {
+      "items": 3,
+      "skus": 31
+    }
+  },
+  "no_success_replay": true,
+  "new_authority_granted": false,
+  "execution_path": "D:\\AI\\畔色ERP系统\\outputs\\01a04666-6895-7b40-a07d-c7cfe38d9a02\\next-campaigns-20260906\\autumn-five-authorized-2312\\execution.json",
+  "file_stage_receipt_path": "D:\\AI\\畔色ERP系统\\outputs\\01a04666-6895-7b40-a07d-c7cfe38d9a02\\next-campaigns-20260906\\autumn-five-authorized-2312\\receipt.json",
+  "complete_classification_path": "D:\\AI\\畔色ERP系统\\outputs\\01a04666-6895-7b40-a07d-c7cfe38d9a02\\next-campaigns-20260906\\campaign-authorized-five-final-20260906.json"
+}
