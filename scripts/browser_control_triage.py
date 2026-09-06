@@ -16,6 +16,7 @@ SIGNATURES = (
     ("already part of browser session", "OWNER_CONFLICT", "ownership", "return_to_owner"),
     ("js execution timed out", "CALLER_TIMEOUT", "caller_budget", "reconcile_read_only"),
     ("kernel reset", "KERNEL_RESET", "caller_runtime", "reinitialize_once_then_read"),
+    ("waiting for cdp command", "CDP_COMMAND_TIMEOUT", "browser_command_ack", "report_exact_command_timeout"),
     ("admin-enforced policy could not be verified", "POLICY_CHECK_FAILED", "authorization", "report_exact_policy_error"),
     ("trusted rpc dependency", "TRUSTED_PACKAGE_FAILED", "runtime_package", "report_package_versions"),
     ("debugger unattached", "DEBUGGER_UNATTACHED", "debugger", "read_current_tab_once"),

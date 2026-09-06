@@ -16,6 +16,7 @@ def obs(**values):
     ("Tab 1 is already part of browser session abc", "OWNER_CONFLICT"),
     ("js execution timed out; kernel reset, rerun your request", "CALLER_TIMEOUT"),
     ("kernel reset", "KERNEL_RESET"),
+    ("Timed out after 10000ms waiting for CDP command Emulation.setFocusEmulationEnabled", "CDP_COMMAND_TIMEOUT"),
     ("Debugger unattached", "DEBUGGER_UNATTACHED"),
     ("Tab not found: 123. Existing tabs: 456", "TAB_STALE"),
     ("Target page, context or browser has been closed", "TARGET_CLOSED"),
@@ -39,6 +40,14 @@ def test_outer_timeout_not_invented_attach_failure():
     r = classify(obs(error="js execution timed out; kernel reset"))
     assert r["layer"] == "caller_budget"
     assert r["readonly_recovery_allowed"]
+
+
+def test_internal_command_timeout_not_outer_budget_or_retry():
+    r = classify(obs(stage="claim", error="Timed out after 10000ms waiting for CDP command Emulation.setFocusEmulationEnabled"))
+    assert r["layer"] == "browser_command_ack"
+    assert not r["readonly_recovery_allowed"]
+    assert r["next_action"] == "report_exact_command_timeout"
+    assert not r["requires_user_now"]  # No invented UI approval button.
 
 
 def test_timeout_but_actual_effect_observed_do_not_replay():
