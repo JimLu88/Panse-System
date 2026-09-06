@@ -30,6 +30,8 @@ def test_keyword_transition_sends_once_today_and_repeats_next_day(db_session, mo
     assert remote_report_service.capture_transition(order, was_remote=False) is True
     db_session.add(order)
     settings_service.set_value(db_session, "feishu_push_chat_id", "chat-1")
+    settings_service.set_value(db_session, "feishu_alert_chat_id", "alert-chat")
+    settings_service.set_value(db_session, "notify_route_mode", "feishu_split")
     db_session.commit()
 
     cards = []
@@ -43,6 +45,7 @@ def test_keyword_transition_sends_once_today_and_repeats_next_day(db_session, mo
     result = remote_report_service.send_pending_reminders(db_session, now=first)
     assert result == {"ok": True, "due": 1, "sent": 1, "failed": [], "closed": 0}
     assert len(cards) == 1
+    assert cards[0][0] == "chat-1"
     assert "等通知" in str(cards[0][1])
     assert order.taobao_remote_report_required is True
     assert order.taobao_remote_report_card_message_id == "card-1"
@@ -69,7 +72,25 @@ def test_keyword_transition_sends_once_today_and_repeats_next_day(db_session, mo
     )
     assert next_day["sent"] == 1
     assert len(cards) == 2
+    assert cards[1][0] == "chat-1"
     assert "此前未确认" in str(cards[1][1])
+
+
+def test_missing_factory_chat_does_not_fallback_to_alert_or_consume_day(db_session, monkeypatch):
+    order = _order(seller_memo="等通知")
+    remote_report_service.capture_transition(order, was_remote=False)
+    db_session.add(order)
+    settings_service.set_value(db_session, "feishu_alert_chat_id", "alert-only")
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(feishu_client, "send_card", lambda *args, **kwargs: sent.append(args))
+    result = remote_report_service.send_pending_reminders(db_session)
+    assert result["ok"] is False
+    assert result["sent"] == 0
+    assert result["failed"][0]["reason"] == "未配置飞书工厂下单群"
+    assert sent == []
+    assert order.taobao_remote_report_last_prompt_at is None
+    assert order.taobao_remote_report_required is True
 
 
 def test_manual_remote_or_existing_remote_does_not_create_report_task(db_session):

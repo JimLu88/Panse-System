@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
-from app.services import feishu_client, notify_service, order_flags
+from app.services import feishu_client, order_flags, settings_service
 
 
 _log = logging.getLogger("panse.remote_report")
@@ -139,7 +139,8 @@ def _eligible(order: Order) -> bool:
 def send_pending_reminders(db: Session, *, now: Optional[datetime] = None) -> dict:
     """发送今天尚未提醒的待报备卡片；发送成功后才落去重时间。"""
     current = (now or datetime.now().astimezone()).astimezone()
-    chat_id = notify_service.get_alert_chat_id(db)
+    # 用户指定此类报备卡片随工厂下单走订单群，不改变其他告警的分流。
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False) or ""
     orders = db.execute(
         select(Order)
         .where(Order.taobao_remote_report_required.is_(True))
@@ -180,7 +181,7 @@ def send_pending_reminders(db: Session, *, now: Optional[datetime] = None) -> di
             "ok": False,
             "due": len(due),
             "sent": 0,
-            "failed": [{"order_no": order.order_no, "reason": "未配置飞书提醒群"} for order in due],
+            "failed": [{"order_no": order.order_no, "reason": "未配置飞书工厂下单群"} for order in due],
             "closed": closed,
         }
 
