@@ -35,28 +35,21 @@ def sha(raw):
 
 
 def load_bases(paths):
+    # Shared receipt adapter: no two-source allowlist or fixed coverage count.
+    # First-pass generation still accepts no basis. Historical daily is not fixed.
+    from campaign_price_basis import receipt_records
     bases = {}
     for path in paths:
-        receipt = load(path)
-        for row in receipt.get('rows', []):
-            if 'fixed_original_record' not in row or 'fixed_floor' not in row:
-                continue
-            original, floor = fixed_basis(row['fixed_original_record'], row['fixed_floor'])
-            key = str(row['item']), str(row['sku'])
-            basis = dict(original=str(original), floor=str(floor), source=str(path), source_sha256=sha(path.read_bytes()), provenance=row.get('floor_provenance') or row.get('rotation_source') or 'explicit_fixed_original_record', first_ever_historical_record_claimed=row.get('first_ever_historical_record_claimed'))
-            if key in bases and bases[key]['original'] != basis['original']:
+        raw = path.read_bytes()
+        for record in receipt_records(json.loads(raw.decode('utf-8-sig')), path):
+            key = record['item'], record['sku']
+            basis = dict(record['basis'], source_sha256=sha(raw))
+            if key in bases and (
+                Decimal(bases[key]['original']) != Decimal(basis['original'])
+                or bases[key].get('erp_code') != basis.get('erp_code')
+            ):
                 raise ValueError('conflicting_fixed_custom_basis:' + '/'.join(key))
             bases[key] = basis
-            for lineage in row.get('verified_replacement_lineage', []):
-                if (lineage.get('item'), lineage.get('source_sku')) != key:
-                    raise ValueError('lineage_source_not_receipt_identity')
-                if not row.get('erp_code') or lineage.get('erp_code') != row['erp_code']:
-                    raise ValueError('lineage_erp_code_not_receipt_identity')
-                basis = inherit_basis(basis, lineage)
-                key = lineage['item'], lineage['replacement_sku']
-                if key in bases and bases[key]['original'] != basis['original']:
-                    raise ValueError('conflicting_fixed_custom_basis:' + '/'.join(key))
-                bases[key] = basis
     return bases
 
 

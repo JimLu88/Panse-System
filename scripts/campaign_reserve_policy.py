@@ -52,10 +52,24 @@ def inherit_basis(basis, lineage):
 
 def decide(row):
     """Classify one already-failed SKU; no automatic price change or rotation."""
-    if row.get('classification_verified') is not True or row.get('custom') is not True:
-        return 'ordinary_or_classification_needs_decision'
+    # Scope protection precedes classification, so neither locked nor successful
+    # ordinary rows leak into colleague handoff lists.
+    if row.get('successful') is True or row.get('protected') is True or row.get('campaign') in row.get('successful_campaigns', []):
+        return 'skip_successful_or_protected'
+    if row.get('locked') is True:
+        return 'skip_locked'
+    if row.get('saved_pending_readback') is True:
+        return 'saved_pending_mapping_readback_no_recreate'
     if row.get('failed_current_scope') is not True:
         return 'outside_current_failed_scope'
+    if row.get('identity_error'):
+        return 'unknown_business_identity'
+    if row.get('classification_verified') is not True or row.get('custom') is not True:
+        return 'ordinary_or_classification_needs_decision'
+    if row.get('basis_status') not in (None, 'confirmed'):
+        return 'unknown_original_basis'
+    if row.get('price_evidence_error'):
+        return 'unknown_price_evidence'
     if row.get('basis') is None:
         return 'unknown_original_basis'
     basis = row['basis']
