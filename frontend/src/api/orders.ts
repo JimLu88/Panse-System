@@ -95,6 +95,10 @@ export interface FactoryCard {
   original_deadline: string | null;    // 客户延期前的截止(手动截止或下单+30天)
   is_customer_delayed: boolean;        // 客户主动要求顺延交期, 不等同远期挂起
   customer_delay_deadline: string | null; // 客户确认的新截止日期
+  customer_shipping_month?: string | null;
+  shipping_delay_description?: string;
+  platform_remark_tags?: string | null;
+  platform_remark_tags_source?: string | null;
   effective_deadline: string | null;   // 生效截止(手动优先, 否则下单+30天)
   days_left: number | null;            // 距截止剩余天数(负=超期)
   customer_name: string | null;

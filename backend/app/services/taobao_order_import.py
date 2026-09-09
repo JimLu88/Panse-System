@@ -22,10 +22,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -333,6 +334,9 @@ class _OrderRow:
     shop: Any = None                 # 店铺名称
     buyer_message: Any = None        # 买家留言 (平台, 重导覆盖)
     seller_memo: Any = None          # 卖家备注/商家备注 (平台, 重导覆盖)
+    platform_remark_tags: Any = None
+    platform_remark_tags_present: bool = False  # Missing column != explicit empty cell.
+    platform_remark_tags_source: str | None = None
     # 订单级财务权威度 (2026-07-09): "order"=单级权威源(订单报表/已卖出宝贝导出, 一单一行, 财务列完整);
     # "line"=行级销售明细(一行一商品, 订单级金额需按行求和, 不完整时会低估)。重导幂等护栏据此决定
     # 是否允许覆盖已有订单的订单级财务字段 —— 行级源不许覆盖(防不完整明细把订单报表的正确值压掉)。
@@ -469,6 +473,22 @@ def detect_report_role(filename: str, raw: bytes) -> str | None:
 
 
 # ── 解析: 千牛多表 Excel ──────────────────────────────────────────────────────
+def _merge_platform_tags(order: _OrderRow, value, present: bool, rep: TaobaoImportReport, raw: bytes) -> None:
+    if not present:
+        return
+    prior = _clean(order.platform_remark_tags) or ""
+    current = _clean(value) or ""
+    # A blank child row is not proof of a blank entire order. Keep all distinct tags.
+    pieces = list(dict.fromkeys(x for x in (prior.split("\n") + current.split("\n")) if x))
+    if prior and current and current not in prior.split("\n"):
+        warning = "同主单备注标签存在多种非空值，全部保留；发货冲突需核实"
+        if warning not in rep.warnings:
+            rep.warnings.append(warning)
+    order.platform_remark_tags = "\n".join(pieces)
+    order.platform_remark_tags_present = True
+    order.platform_remark_tags_source = "淘宝导入：备注标签 sha256:" + hashlib.sha256(raw).hexdigest()
+
+
 def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _OrderRow]:
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     orders: dict[str, _OrderRow] = {}
@@ -508,6 +528,8 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "ship_time": g(row, "发货时间"),
                 "confirm_time": g(row, "确认收货时间"),
                 "shop": g(row, "店铺名称"),
+                "tags": g(row, "备注标签"),
+                "tags_present": "备注标签" in h,
             }
 
     # 发货报表: 单级 客户信息
@@ -566,10 +588,14 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                     ship_time=r.get("ship_time") or g3(row, "发货时间"),
                     confirm_time=r.get("confirm_time") or g3(row, "确认收货时间"),
                     shop=r.get("shop"),
-                    buyer_message=g3(row, "买家留言", "买家留言备注", "买家备注"),
+                    buyer_message=g3(row, "买家留言", "主订单买家留言", "买家留言备注", "买家备注"),
                     seller_memo=g3(row, "卖家备注", "商家备注", "卖家留言"),
+                    platform_remark_tags=r.get("tags") if r.get("tags_present") else g3(row, "备注标签"),
+                    platform_remark_tags_present=bool(r.get("tags_present") or "备注标签" in h),
                 )
                 orders[no] = o
+            _merge_platform_tags(o, r.get("tags") if r.get("tags_present") else g3(row, "备注标签"),
+                                 bool(r.get("tags_present") or "备注标签" in h), rep, raw)
             merchant = g3(row, "商家编码", "外部系统编号")
             o.lines.append({
                 "sub_order_no": _clean(g3(row, "子订单编号")) or no,
@@ -666,10 +692,13 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
                 ship_time=gv(row, "发货时间"),
                 confirm_time=gv(row, "确认收货时间"),
                 shop=gv(row, "店铺名称"),
-                buyer_message=gv(row, "买家留言", "买家留言备注", "买家备注"),
+                buyer_message=gv(row, "买家留言", "主订单买家留言", "买家留言备注", "买家备注"),
                 seller_memo=gv(row, "卖家备注", "商家备注", "卖家留言", "常用备注"),
+                platform_remark_tags=row.get("备注标签"),
+                platform_remark_tags_present="备注标签" in row,
             )
             orders[no] = o
+        _merge_platform_tags(o, row.get("备注标签"), "备注标签" in row, rep, raw)
         merchant = gv(row, "商家编码", "外部系统编号")
         o.lines.append({
             "sub_order_no": _clean(gv(row, "子订单编号")) or no,
@@ -1020,6 +1049,14 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             if _smemo:
                 _trace("seller_memo", "商家备注", existing.seller_memo, _smemo)
                 existing.seller_memo = _smemo
+            if o.platform_remark_tags_present:
+                tags = _clean(o.platform_remark_tags) or ""
+                tags_source = o.platform_remark_tags_source or "淘宝导入：备注标签"
+                if existing.platform_remark_tags != tags or existing.platform_remark_tags_source != tags_source:
+                    _trace("platform_remark_tags", "平台备注标签", existing.platform_remark_tags, tags)
+                    existing.platform_remark_tags = tags
+                    existing.platform_remark_tags_source = tags_source
+                    existing.platform_remark_tags_updated_at = datetime.now(timezone.utc)
             if _shop and not existing.shop:
                 existing.shop = _shop
             if _pname and not existing.product_name:
@@ -1071,6 +1108,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             remark=remark,
             buyer_message=_clean(o.buyer_message),
             seller_memo=_clean(o.seller_memo),
+            platform_remark_tags=(_clean(o.platform_remark_tags) or "") if o.platform_remark_tags_present else None,
+            platform_remark_tags_source=(o.platform_remark_tags_source or "淘宝导入：备注标签") if o.platform_remark_tags_present else None,
+            platform_remark_tags_updated_at=datetime.now(timezone.utc) if o.platform_remark_tags_present else None,
             warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )
         remote_report_service.capture_transition(order, was_remote=False)

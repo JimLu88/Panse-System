@@ -194,7 +194,7 @@ export default function FactoryProductionView() {
       ship_date: c.ship_date ?? c.ship_deadline ?? c.ship_eta ?? null,
       days_left: c.days_left ?? c.days ?? null,
       status_label: STATUS_META[c.status]?.label ?? c.status,
-      customer_delay: c.is_customer_delayed ? `客户延期至 ${c.customer_delay_deadline || '未填写'}` : '',
+      customer_delay: c.shipping_delay_description || (c.is_customer_delayed ? `客户延期至 ${c.customer_delay_deadline || '未填写'}` : ''),
       original_deadline: c.is_customer_delayed ? c.original_deadline : '',
       customer_name: c.customer_name, customer_address: c.customer_address,
       product_name: c.product_name, sku: c.sku, remark: c.remark ?? c.note ?? null,
@@ -235,7 +235,8 @@ export default function FactoryProductionView() {
         </div>
         <div class="row"><b>下单</b> ${esc(c.order_date || '—')} ·
           <span style="color:${ds.color};font-weight:${ds.weight}">${esc(daysText(c.days_left))}</span></div>
-        ${c.is_customer_delayed ? `<div class="row" style="color:${CUSTOMER_DELAY_COLOR}"><b>客户延期至</b> ${esc(c.customer_delay_deadline || '—')}　<span style="color:#888">原截止 ${esc(c.original_deadline || '—')}</span></div>` : ''}
+        ${c.shipping_delay_description ? `<div class="row">${esc(c.shipping_delay_description)}</div>` : c.is_customer_delayed ? `<div class="row" style="color:${CUSTOMER_DELAY_COLOR}"><b>客户延期至</b> ${esc(c.customer_delay_deadline || '—')}　<span style="color:#888">原截止 ${esc(c.original_deadline || '—')}</span></div>` : ''}
+        ${c.platform_remark_tags ? `<div class="row">平台备注标签：${esc(c.platform_remark_tags)}</div>` : ''}
         <div class="row"><b>客户</b> ${esc(c.customer_name || '—')}　${esc(c.customer_phone || '')}</div>
         <div class="row"><b>地址</b> ${esc(c.customer_address || '—')}</div>
         <div class="row prod"><b>产品</b> ${esc(c.product_name || '—')} <b>×${esc(c.qty ?? 1)}</b></div>
@@ -409,7 +410,7 @@ export default function FactoryProductionView() {
                     <span style={{ marginLeft: 8, color: ds.color, fontWeight: ds.weight }}>
                       {daysText(c.days_left)}
                     </span>
-                    {c.is_customer_delayed ? (
+                    {c.shipping_delay_description ? <Tag color="orange">{c.shipping_delay_description}</Tag> : c.is_customer_delayed ? (
                       <>
                         <Tag style={{ marginLeft: 6, color: CUSTOMER_DELAY_COLOR,
                           background: CUSTOMER_DELAY_BG, borderColor: CUSTOMER_DELAY_BORDER }}>
@@ -435,6 +436,7 @@ export default function FactoryProductionView() {
                       </Tag>
                     )}
                   </div>
+                  {c.platform_remark_tags && <div>平台备注标签：{c.platform_remark_tags}</div>}
                   {c.remark && (
                     <div style={{ fontSize: 12, background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, padding: '2px 6px' }}>
                       客户备注: {c.remark}
@@ -515,7 +517,7 @@ export default function FactoryProductionView() {
         onCancel={() => setEditing(null)}
         onOk={() => {
           if (!editing) return;
-          if (editCustomerDelayed && !editCustomerDelayDeadline) {
+          if (editCustomerDelayed && !editCustomerDelayDeadline && !editing.customer_shipping_month) {
             message.warning('请填写客户延期后的截止日期');
             return;
           }
@@ -542,12 +544,12 @@ export default function FactoryProductionView() {
               <div>
                 <Typography.Text strong style={{ color: CUSTOMER_DELAY_COLOR }}>客户延期</Typography.Text>
                 <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  客户主动调整交期；默认转远期并暂停排程，备注明确写“开始制作”后才恢复倒计时
+                  {editing?.customer_shipping_month ? editing.shipping_delay_description : '客户主动调整交期；默认转远期并暂停排程，备注明确写“开始制作”后才恢复倒计时'}
                 </Typography.Text></div>
               </div>
-              <Switch checked={editCustomerDelayed} onChange={setEditCustomerDelayed} />
+              <Switch checked={editCustomerDelayed} onChange={setEditCustomerDelayed} disabled={!!editing?.customer_shipping_month} />
             </Space>
-            {editCustomerDelayed && (
+            {editCustomerDelayed && !editing?.customer_shipping_month && (
               <DatePicker value={editCustomerDelayDeadline} onChange={setEditCustomerDelayDeadline}
                 placeholder="选择客户确认的新截止日期" style={{ width: '100%', marginTop: 10 }} allowClear />
             )}

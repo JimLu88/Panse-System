@@ -258,6 +258,8 @@ def _order_notes(order: Order) -> str:
         ("卖家", order.seller_memo),
         ("ERP", order.remark),
         ("生产", order.production_note),
+        ("平台备注标签", getattr(order, "platform_remark_tags", None)),
+        ("发货要求", order_flags.shipping_delay_label(order)),
     ):
         text = str(value or "").strip()
         if text and text not in seen:
@@ -292,7 +294,7 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
         return "待核实"
     if remote:
         return "等客户通知"
-    if order.is_customer_delayed:
+    if order_flags.has_shipping_delay(order):
         return "客户延期"
     if normalized == "aftersales":
         return "售后中"
@@ -325,6 +327,8 @@ def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> 
         return "售后核实（暂勿发货）"
     if normalized not in {"paid", "production"}:
         return "待核实（暂勿发货）"
+    if order_flags.shipping_delay_label(order):
+        return "需拍照后通知爱群" if photo_requested else "做好后等通知发货"
     if photo_requested:
         return "需拍照后通知爱群"
     if remote:
@@ -586,10 +590,14 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                         db, projected, ps_line, production_qty=production_qty)
                 photo_requested = _photo_requested(projected)
                 alerts = []
-                if projected.is_customer_delayed:
+                if order_flags.shipping_delay_label(projected):
+                    alerts.append(order_flags.shipping_delay_label(projected))
+                elif projected.is_customer_delayed:
                     alerts.append("⏳ 远期等通知" if remote else "⏳ 客户延期（已开始制作）")
                 if photo_requested:
                     alerts.append("📷 通知拍照")
+                if order_service.normalize_status(projected.status) in {"shipped", "signed", "cancelled", "aftersales"}:
+                    alerts = []  # History remains in notes; no contradictory current shipping action.
                 out.append({
                     "订单号": order.order_no,
                     "子订单号": sub_order_no,
@@ -614,7 +622,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "订单状态": _status(projected, remote=remote, refunded=False),
                     "交期紧急度": _urgency_label(projected, refunded=False, schedule=schedule),
                     "发货安排": _ship_plan(projected, remote=remote, photo_requested=photo_requested),
-                    "客户延期单": bool(order.is_customer_delayed),
+                    "客户延期单": order_flags.has_shipping_delay(projected),
                     "客户通知拍照": photo_requested,
                     "订单提醒": " · ".join(alerts),
                     "订单备注": _order_notes(order),
@@ -681,10 +689,14 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             system_sort_key = f"3-{order_day}-{order.id:010d}"
         photo_requested = _photo_requested(order)
         alerts = []
-        if order.is_customer_delayed:
+        if order_flags.shipping_delay_label(order):
+            alerts.append(order_flags.shipping_delay_label(order))
+        elif order.is_customer_delayed:
             alerts.append("⏳ 远期等通知" if remote else "⏳ 客户延期（已开始制作）")
         if photo_requested:
             alerts.append("📷 通知拍照")
+        if order_service.normalize_status(order.status) in {"shipped", "signed", "cancelled", "aftersales"}:
+            alerts = []
         out.append({
             "订单号": order.order_no,
             "子订单号": "",
@@ -712,7 +724,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 remote=remote,
                 photo_requested=photo_requested,
             ),
-            "客户延期单": bool(order.is_customer_delayed),
+            "客户延期单": order_flags.has_shipping_delay(order),
             "客户通知拍照": photo_requested,
             "订单提醒": " · ".join(alerts),
             "订单备注": _order_notes(order),
