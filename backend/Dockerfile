@@ -9,10 +9,13 @@ WORKDIR /app
 # 工厂下单图 HTML → 图片 (用户拍板 2026-06-12: 下单图推飞书成图片):
 #   官方 wkhtmltox patched .deb 自带无头 Qt(wkhtmltoimage); fonts-noto-cjk 中文字体; xvfb 兜底无头显示。
 #   bookworm 默认源已无 wkhtmltopdf, 故钉 bookworm 基础镜像 + 装官方 .deb。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Use the same official source over TLS; bound transient CDN retries.
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=20 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=20 install -y --no-install-recommends \
         wget ca-certificates fonts-noto-cjk fontconfig xvfb \
     && wget -q https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6.1-3/wkhtmltox_0.12.6.1-3.bookworm_amd64.deb -O /tmp/wk.deb \
-    && apt-get install -y --no-install-recommends /tmp/wk.deb \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=20 install -y --no-install-recommends /tmp/wk.deb \
     && rm /tmp/wk.deb \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
