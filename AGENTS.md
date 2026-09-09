@@ -13,6 +13,13 @@ a mandatory signup gate or a browser runtime replacement.
 
 ## Campaign signup authority
 
+Single-discount template is the user's fixed 2026-09-09 master:
+`D:/AI/畔色ERP系统/活动准备/固定模板/单品立减-SKU级-固定官方模板.xlsx`.
+Never download it again or ask the user to do so. Fill a new copy using current
+SKU/amount rows; never reuse previous filled rows. Activity signup templates
+still require the current exact campaign's official download. See the frozen
+contract's single_discount_template field; prices/windows/short flow unchanged.
+
 For campaign work, first read `docs/campaign-signup-frozen-steps.md` and
 `docs/campaign-signup-frozen-contract.json`. They record the user's September 4–6
 short-flow rules and exact successful scope; older preparation/recovery documents

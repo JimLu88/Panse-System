@@ -27,7 +27,7 @@ python scripts/campaign_price_snapshot.py --output <本次价格快照.json> --r
 在 ERP 权威目录使用 `scripts/campaign_generate_current_files.py`。一次运行仅本地计算/填表；没有网络。本次直接复用已下载模板和已取得的价格快照，输出目录必须全新。默认范围完整；已知缺映射会一次列出，不擅自排除。
 
 ```powershell
-python scripts/campaign_generate_current_files.py --snapshot "D:\AI\畔色ERP系统\outputs\01a03341-b2cd-7810-92f3-66fad189521d\current-campaign-price-snapshot-resolved-20260906.json" --activity-template "C:\Users\lzdwy\Desktop\「超级立减长期活动」商品导入模版20260906092948.xlsx" --discount-template "C:\Users\lzdwy\Desktop\1788658932873.xlsx" --official-rate "10%" --target medium --start "2026-09-14 00:00:00" --end "2026-09-16 19:59:59" --output-dir "D:\AI\畔色ERP系统\outputs\01-super-reduce-gap-20260906"
+python scripts/campaign_generate_current_files.py --snapshot "D:\AI\畔色ERP系统\outputs\01a03341-b2cd-7810-92f3-66fad189521d\current-campaign-price-snapshot-resolved-20260906.json" --activity-template "C:\Users\lzdwy\Desktop\「超级立减长期活动」商品导入模版20260906092948.xlsx" --official-rate "10%" --target medium --start "2026-09-14 00:00:00" --end "2026-09-16 19:59:59" --output-dir "D:\AI\畔色ERP系统\outputs\01-super-reduce-gap-20260906"
 ```
 
 秋季复用同一命令和快照，只替换为：
@@ -43,13 +43,16 @@ python scripts/campaign_generate_current_files.py --snapshot "D:\AI\畔色ERP系
 
 上传前由01按既有记录确认新窗口不与同商品其他单品立减重叠；本地文件工具不查平台、不自动建立优惠，也不把未知重叠状态当“无”。本 CLI 是固定规则下的文件计算入口，不是替代01业务状态管理的新prepare链。
 
-01 先下载当场最新官方模板，再在自己的单次文件生成脚本调用：
+2026-09-09起，只有活动报名表下载当场最新官方模板；单品立减固定复用1788924257335.xlsx母版，不要求用户重下，AI也不重下。CLI无需传单品模板；旧日期命令仅是历史例子，不能据此重跑成功范围。母版路径/指纹见冻结合同；可从仓库assets中的single_item_discount_user_fixed_20260909.xlsx字节相同备份恢复，不复用旧已填表。
+
+01单次文件生成脚本调用：
 
 ```python
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path('D:/AI/畔色ERP系统/ERP程序/scripts')))
 from campaign_official_template import fill_selected_rows, fill_single_discount_rows
+from campaign_discount_template import load_fixed_discount_template
 
 # rows 是本场完整未成功商品的全部启用 SKU；不得只保留普通 SKU。
 # 普通行 activity_price 必须由同一快照 daily 填入，不让淘宝建议价覆盖。
@@ -59,7 +62,7 @@ activity_bytes = fill_selected_rows(
     official_rate='12%',  # 必传本场确认值；支持 '10%'/'15%'/'0.10'，无默认
 )
 discount_bytes = fill_single_discount_rows(
-    current_single_discount_template.read_bytes(),
+    load_fixed_discount_template(),
     discounts,  # [{item: '...', sku: '...', deduct: '1744.46'}, ...]
 )
 # 使用新文件路径，以 xb 保存 bytes；保存两份模板/输出/价格版本指纹和精确窗口。

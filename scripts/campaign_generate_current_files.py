@@ -13,6 +13,7 @@ from pathlib import Path
 from campaign_official_template import discount_rate, fill_selected_rows, fill_single_discount_rows, money, template_rows
 from campaign_price_snapshot import digest
 from campaign_reserve_policy import fixed_basis, inherit_basis
+from campaign_discount_template import FIXED_TEMPLATE, load_fixed_discount_template
 
 SUCCESS = {'活动中','进行中','已生效','已发布设定'}
 
@@ -140,8 +141,11 @@ def generate(args):
         if activity:
             outputs.append(('活动报名.xlsx',fill_selected_rows(raw,activity,official_rate=args.official_rate)))
         if discounts:
-            discount_raw = args.discount_template.read_bytes()
+            discount_path = getattr(args, 'discount_template', None) or FIXED_TEMPLATE
+            discount_raw = load_fixed_discount_template(discount_path)
             result['discount_template_sha256'] = sha(discount_raw)
+            result['discount_template_source'] = str(discount_path)
+            result['discount_template_policy'] = 'fixed_user_master_no_redownload_no_filled_batch_reuse'
             outputs.append(('单品立减.xlsx',fill_single_discount_rows(discount_raw,discounts)))
     args.output_dir.mkdir(parents=True,exist_ok=False)
     for name, content in outputs:
@@ -158,7 +162,7 @@ if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--snapshot',type=Path,required=True)
     parser.add_argument('--activity-template',type=Path,required=True)
-    parser.add_argument('--discount-template',type=Path,required=True)
+    parser.add_argument('--discount-template',type=Path,default=FIXED_TEMPLATE,help='Optional byte-identical local copy of the fixed single-discount master; never download per campaign')
     parser.add_argument('--official-rate',required=True)
     parser.add_argument('--target',choices=['medium','big'],required=True)
     parser.add_argument('--start',required=True)

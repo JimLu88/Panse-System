@@ -14,6 +14,7 @@
     "preserve_non_data_parts": true,
     "preserve_merge_geometry": true
   },
+  "single_discount_template": {"source_policy":"fixed_user_official_master","master_path":"D:/AI/畔色ERP系统/活动准备/固定模板/单品立减-SKU级-固定官方模板.xlsx","sha256":"dae4da7f875398c7cc99226e129d1211cb849a012d4670a66df88459860f117f","download_each_campaign":false,"ask_user_to_redownload":false,"automatic_redownload":false,"preserve_master":true,"reuse_previous_filled_rows":false,"replace_example_rows":true,"activity_template_rule_unchanged":true},
   "first_attempt_scope": "all_current_erp_sellable_items",
   "historical_sales_prefilter": false,
   "steps": [

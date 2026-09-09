@@ -163,7 +163,7 @@ def _set_percent_text(row_xml, row_number, rate_text):
 
 
 def fill_single_discount_rows(raw, selected):
-    """Fill an operator-supplied current 5-column official single-discount template.
+    """Fill a copy of the reusable 5-column official single-discount master.
 
     Rows: item, sku, deduct (>0); price calculation and exact window belong to
     the same-price-version caller. No historical filters, defaults or API calls.

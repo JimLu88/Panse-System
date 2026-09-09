@@ -18,6 +18,7 @@ def verify(contract, receipt):
             errors.append(label)
 
     fixed = {
+        "single_discount_template": {"source_policy":"fixed_user_official_master","master_path":"D:/AI/畔色ERP系统/活动准备/固定模板/单品立减-SKU级-固定官方模板.xlsx","sha256":"dae4da7f875398c7cc99226e129d1211cb849a012d4670a66df88459860f117f","download_each_campaign":False,"ask_user_to_redownload":False,"automatic_redownload":False,"preserve_master":True,"reuse_previous_filled_rows":False,"replace_example_rows":True,"activity_template_rule_unchanged":True},
         "owner": "01｜畔色ERP系统",
         "owner_thread_id": "01a04666-6895-7b40-a07d-c7cfe38d9a02",
         "maintenance_business_execution": False,
