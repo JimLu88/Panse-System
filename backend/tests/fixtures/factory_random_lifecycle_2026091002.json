@@ -1,0 +1,1181 @@
+{
+  "seed": 2026091002,
+  "algorithm": "LCG32 1664525/1013904223; 10 parents, 1-3 children, 4 lifecycle events each; all cases fixed before production calls; no rejection or outcome-based replacement",
+  "cases": [
+    {
+      "id": "RANDOM-0",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "signed",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "withdraw",
+          "states": [
+            "signed",
+            "shipped",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "withdraw",
+          "states": [
+            "signed",
+            "paid",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "paid",
+            "paid"
+          ],
+          "buyer": "新留言0-3",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-1",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "新留言1-1",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "signed",
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言1-1",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言1-3",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-2",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注2-2",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注2-2",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-3",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "TRACK-3",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "hold_change",
+          "states": [
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "TRACK-3",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注3-1",
+          "hold": "month",
+          "tracking": "TRACK-3",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注3-1",
+          "hold": "month",
+          "tracking": "TRACK-3-2",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "hold_change",
+          "states": [
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注3-1",
+          "hold": "none",
+          "tracking": "TRACK-3-2",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-4",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "signed",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "hold_change",
+          "states": [
+            "signed",
+            "signed",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "signed",
+            "signed",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "withdraw",
+          "states": [
+            "signed",
+            "paid",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "signed",
+            "shipped",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-5",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "paid"
+          ],
+          "buyer": "新留言5-0",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "signed",
+            "paid"
+          ],
+          "buyer": "新留言5-0",
+          "seller": "新备注5-1",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "paid"
+          ],
+          "buyer": "新留言5-2",
+          "seller": "新备注5-1",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "withdraw",
+          "states": [
+            "signed",
+            "paid"
+          ],
+          "buyer": "新留言5-2",
+          "seller": "新备注5-1",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-6",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "signed",
+            "signed"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "none",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言6-0",
+          "seller": "初始备注",
+          "hold": "none",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "hold_change",
+          "states": [
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言6-0",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言6-2",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "signed",
+            "signed"
+          ],
+          "buyer": "新留言6-2",
+          "seller": "新备注6-3",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            },
+            {
+              "status": "已签收",
+              "plan": "已签收"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-7",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "paid",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "paid",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "paid",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "paid",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注7-2",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "shipped",
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注7-2",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-8",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "paid",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "advance",
+          "states": [
+            "shipped",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "shipped",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "shipped",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "新备注8-2",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "shipped",
+            "shipped",
+            "shipped"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "month",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            },
+            {
+              "status": "已发货",
+              "plan": "已发货"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "RANDOM-9",
+      "frames": [
+        {
+          "event": "initial",
+          "states": [
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "初始备注",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_clear",
+          "states": [
+            "paid"
+          ],
+          "buyer": "初始留言",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "buyer_change",
+          "states": [
+            "paid"
+          ],
+          "buyer": "新留言9-1",
+          "seller": "",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "seller_change",
+          "states": [
+            "paid"
+          ],
+          "buyer": "新留言9-1",
+          "seller": "新备注9-2",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        },
+        {
+          "event": "hold_change",
+          "states": [
+            "paid"
+          ],
+          "buyer": "新留言9-1",
+          "seller": "新备注9-2",
+          "hold": "tag",
+          "tracking": "",
+          "expected": [
+            {
+              "status": "客户延期",
+              "plan": "做好后等通知发货"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

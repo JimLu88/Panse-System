@@ -257,24 +257,35 @@ def list_records(db: Session, app_token: str, table_id: str,
     """
     out: list[dict] = []
     page_token: Optional[str] = None
+    seen_tokens: set[str] = set()
+    seen_ids: set[str] = set()
     base = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records"
-    while True:
+    for _page in range(1000):
         params: dict[str, Any] = {"page_size": page_size}
         if page_token:
             params["page_token"] = page_token
         data = _req(db, "GET", base, params=params)
+        if not isinstance(data, dict) or not isinstance(data.get('has_more'), bool):
+            raise FeishuError('invalid_pagination_metadata: explicit has_more required')
+        if not isinstance(data.get('items', []), list):
+            raise FeishuError('invalid_pagination_items')
         for item in data.get("items", []) or []:
+            rid = item.get('record_id') if isinstance(item, dict) else None
+            if not rid or rid in seen_ids:
+                raise FeishuError('invalid_pagination_identity: missing or repeated record')
+            seen_ids.add(rid)
             out.append({
                 "record_id": item.get("record_id"),
                 "fields": item.get("fields", {}),
                 "last_modified_time": item.get("last_modified_time"),
             })
-        if not data.get("has_more"):
-            break
+        if not data['has_more']:
+            return out
         page_token = data.get("page_token")
-        if not page_token:
-            break
-    return out
+        if not isinstance(page_token, str) or not page_token.strip() or page_token in seen_tokens:
+            raise FeishuError('invalid_pagination_token: missing or repeated next token')
+        seen_tokens.add(page_token)
+    raise FeishuError('pagination_limit_exceeded: refusing incomplete table')
 
 
 def create_record(db: Session, app_token: str, table_id: str, fields: dict) -> str:

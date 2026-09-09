@@ -125,6 +125,7 @@ class Order(Base, TimestampMixin):
     # remark 保留为 ERP 人工备注, 重导永不碰。
     buyer_message: Mapped[Optional[str]] = mapped_column(Text)   # 买家留言 (平台)
     seller_memo: Mapped[Optional[str]] = mapped_column(Text)     # 商家备注/卖家备注 (平台)
+    platform_field_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # 发货仓库 — 默认江西仓库; 样块 / 补单订单统一杭州 (导入时由 default_warehouse_for 自动判定)
     warehouse: Mapped[Optional[str]] = mapped_column(String(32))

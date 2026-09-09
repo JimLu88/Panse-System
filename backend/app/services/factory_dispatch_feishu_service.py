@@ -630,6 +630,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "客户联系方式": order.customer_phone or "",
                     "客户地址": order.customer_address or "",
                     "物流单号": (order.tracking_no or "") if len(imported_lines) == 1 else None,
+                    "_tracking_clear": _tracking_clear(order) if len(imported_lines) == 1 else None,
                     "系统更新时间": now_ms,
                     "_order_id": order.id,
                     "_line_id": line.id,
@@ -732,6 +733,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "客户联系方式": order.customer_phone or "",
             "客户地址": order.customer_address or "",
             "物流单号": order.tracking_no or "",
+            "_tracking_clear": _tracking_clear(order),
             "系统更新时间": now_ms,
             "_order_id": order.id,
             "_sheet_path": sheet_image["path"] if sheet_image else None,
@@ -1253,6 +1255,11 @@ def _same(remote: dict, expected: dict) -> bool:
     )
 
 
+def _tracking_clear(order):
+    from app.services.platform_field_provenance import tracking_clear
+    return tracking_clear(order)
+
+
 def _business_payload(row: dict) -> dict:
     """Explicit ownership allowlist; missing source is not authority to erase."""
     managed = set(EXPECTED_FIELD_ORDER)
@@ -1262,6 +1269,8 @@ def _business_payload(row: dict) -> dict:
     preserve_when_missing = {"木作成本价", "尺寸", "工厂下单号", "商品名称", "产品编码",
                              "SKU编码", "SKU规格", "客户名称", "客户联系方式", "客户地址",
                              "物流单号", "下单日期"}
+    if row.get('_tracking_clear'):
+        preserve_when_missing.remove('物流单号')
     return {k: v for k, v in payload.items()
             if not (k in preserve_when_missing and v in (None, "", "待编号"))}
 
@@ -1347,6 +1356,7 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
         "retired_in_place": 0,
         "unmatched_preserved": 0,
         "protected_missing_source": {},
+        "clear_intents": [],
     }
     try:
         # Routine sync is not a schema migration: never rename/delete factory
@@ -1460,6 +1470,23 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
                     result["identity_unresolved_count"] = result.get("identity_unresolved_count", 0) + 1
                     continue
             remote_fields = (remote or {}).get("fields") or {}
+            proof = row.get('_tracking_clear')
+            if proof:
+                from app.services.platform_field_provenance import digest
+                result['clear_intents'].append({
+                    'order_no': order_no, 'sub_order_no': row.get('子订单号'),
+                    'field': '物流单号', 'source_sha256': proof['source_sha256'],
+                    'observed_at': proof['observed_at'],
+                    'target_preimage_matches': not remote_fields.get('物流单号') or
+                        digest(_norm(remote_fields['物流单号'])) == proof['previous_sha256'],
+                })
+            if proof and remote_fields.get('物流单号'):
+                from app.services.platform_field_provenance import digest
+                if digest(_norm(remote_fields['物流单号'])) != proof['previous_sha256']:
+                    payload.pop('物流单号', None)
+                    result['warnings'].append('tracking_clear_remote_conflict_preserved')
+                    result['errors'].append('tracking_clear_remote_conflict: explicit clear requires review')
+                    result['protected_clear_conflicts'] = result.get('protected_clear_conflicts', 0) + 1
             # Catalogue text is a fill-only fallback, never a replacement for an
             # existing order/factory specification when the order snapshot is missing.
             for key in row.get("_catalog_fallback_fields", []):

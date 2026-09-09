@@ -1050,6 +1050,27 @@ def _ocr_balance_to_db(db: Session, path: Path, raw: bytes) -> tuple[str, str, d
             {"account": erp_name, "balance": str(val), "note": "OCR自动读数已写库"})
 
 
+def _order_source_time(db: Session, path: Path, raw: bytes):
+    """Only retained agent output is a capture boundary, never upload/parse now.
+
+    A previously archived hash retains its earliest observed time on recovery.
+    Import provenance separately checks freshness and per-field monotonicity.
+    """
+    try:
+        if not path.resolve().is_relative_to(OUTPUT_DIR.resolve()):
+            return None
+        observed = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        prior = _hash_exists(db, hashlib.sha256(raw).hexdigest())
+        if prior and prior.created_at:
+            archived = prior.created_at
+            if archived.tzinfo is None:
+                archived = archived.replace(tzinfo=timezone.utc)
+            observed = min(observed, archived)
+        return observed
+    except (OSError, ValueError):
+        return None
+
+
 def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str, str, dict]:
     """单文件导入。返回 (归档kind, 状态, 摘要)。
     状态: imported / pending_password / pending_read / unsupported"""
@@ -1062,7 +1083,8 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
             if not password:
                 return ("taobao", "pending_password",
                         {"note": "加密发货报表 — 待淘宝发回与当前报表匹配的新口令，收到后自动解密"})
-        rep = taobao_order_import.import_taobao_orders(db, path.name, raw, password=password)
+        rep = taobao_order_import.import_taobao_orders(db, path.name, raw, password=password,
+            source_observed_at=_order_source_time(db, path, raw), source_kind='agent_download')
         errs = getattr(rep, "errors", None)
         if errs:
             # 口令不匹配/文件异常 → 仍标待口令 (不算系统错误, 等用户提供对应口令)
@@ -1339,7 +1361,8 @@ def reingest_pending_shipping(db: Session) -> dict:
         out["tried"] += 1
         try:
             rep = taobao_order_import.import_taobao_orders(
-                db, path.name, raw, password=pwd)
+                db, path.name, raw, password=pwd,
+                source_observed_at=_order_source_time(db, path, raw), source_kind='agent_download')
             errs = getattr(rep, "errors", None)
             if errs:
                 out["failed"] += 1
