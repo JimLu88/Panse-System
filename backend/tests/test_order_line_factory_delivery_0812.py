@@ -403,13 +403,19 @@ def test_dispatch_sync_upgrades_legacy_main_order_row(monkeypatch, db_session):
         {"view_id": vid, "view_name": name, "view_type": kind}
         for vid, (name, kind) in dispatch.EXPECTED_VIEWS.items()
     ])
-    monkeypatch.setattr("app.services.feishu_client.list_records", lambda *a, **k: [{
+    remote_records = [{
         "record_id": "legacy-row",
         "fields": {"工厂下单号": "畔色710单", "订单号": order.order_no},
-    }])
+    }]
+    monkeypatch.setattr("app.services.feishu_client.list_records", lambda *a, **k: remote_records)
     created, updated = [], []
+    def update(db, app, table, rows):
+        updated.extend(rows)
+        for row in rows:
+            remote_records[0]["fields"].update(row["fields"])
+        return []
     monkeypatch.setattr("app.services.feishu_client.batch_create_records", lambda db, app, table, rows: created.extend(rows) or [])
-    monkeypatch.setattr("app.services.feishu_client.batch_update_records", lambda db, app, table, rows: updated.extend(rows) or [])
+    monkeypatch.setattr("app.services.feishu_client.batch_update_records", update)
     monkeypatch.setattr("app.services.feishu_client.batch_delete_records", lambda *a, **k: 0)
     monkeypatch.setattr(dispatch, "_ensure_urgency_option_styles", lambda *a, **k: False)
     monkeypatch.setattr(dispatch, "_load_image_cache", lambda db: {})

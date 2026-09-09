@@ -2650,6 +2650,11 @@ def start(timezone_name: Optional[str] = None) -> None:
     for job_id in _REGISTRY:
         _add_to_scheduler(job_id, overrides)
     _SCHEDULER.start()
+    factory_job = _SCHEDULER.get_job("feishu_sync_30min")
+    _logger.info("factory_dispatch_schedule: enabled=%s next_run_at=%s trigger=%s",
+                 bool(factory_job),
+                 factory_job.next_run_time.isoformat() if factory_job and factory_job.next_run_time else None,
+                 str(factory_job.trigger) if factory_job else None)
     # 启动补跑 (用户 2026-07-13 "现在补上"): 60s 后查一遍错过的关键班次(部署/重启撞触发点该班即丢),
     # 在名单宽限内且无运行记录 → 依序补跑。60s 让应用先热身, 也避开与 lifespan 其余初始化抢资源。
     from datetime import timedelta as _td

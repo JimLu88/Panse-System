@@ -14,15 +14,17 @@ import json
 import logging
 import re
 import time
+import threading
 from collections import Counter
 from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from PIL import Image
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text, func
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
@@ -59,6 +61,8 @@ IMAGE_BINDINGS_KEY = "factory_dispatch_feishu_image_bindings"
 AUTO_ENABLED_KEY = "factory_dispatch_feishu_auto_enabled"
 INCLUDE_IMAGES_KEY = "factory_dispatch_feishu_include_images"
 _CN_TZ = ZoneInfo("Asia/Shanghai")
+_SYNC_LOCK = threading.Lock()
+_SYNC_ADVISORY_KEY = 726092609
 
 # 飞书单选字段内置 55 套颜色。10 是低干扰的灰白底/浅色字方案，
 # 用于已经退出生产排程的终态，和仍需工厂关注的彩色交期标签明确区分。
@@ -282,6 +286,10 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
         return "已签收"
     if normalized == "shipped":
         return "已发货"
+    if normalized == "aftersales":
+        return "售后中"
+    if normalized not in {"paid", "production"}:
+        return "待核实"
     if remote:
         return "等客户通知"
     if order.is_customer_delayed:
@@ -310,6 +318,13 @@ def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) ->
 
 
 def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> str:
+    normalized = order_service.normalize_status(order.status)
+    if normalized in {"shipped", "signed"}:
+        return "已签收" if normalized == "signed" else "已发货"
+    if normalized in {"cancelled", "aftersales"}:
+        return "售后核实（暂勿发货）"
+    if normalized not in {"paid", "production"}:
+        return "待核实（暂勿发货）"
     if photo_requested:
         return "需拍照后通知爱群"
     if remote:
@@ -319,6 +334,40 @@ def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> 
     if order.is_customer_delayed:
         return "客户延期（继续生产）"
     return "做好直接发货"
+
+
+def _line_void(line: OrderDetail) -> bool:
+    """Only evidenced cancellation/full refund is void; small refunds are not."""
+    if order_service.normalize_status(line.line_status) == "cancelled":
+        return True
+    amount = Decimal(str(line.amount or 0))
+    refunded = Decimal(str(line.refund_amount or 0))
+    return amount > 0 and refunded >= amount
+
+
+def _line_projection(order: Order, line: OrderDetail, *, single: bool):
+    """Detached read model: never mutate parent ORM data or borrow sibling status/cost."""
+    values = {column.key: getattr(order, column.key) for column in Order.__table__.columns}
+    values.update(status=order_service.normalize_status(line.line_status) if line.line_status else "unknown",
+                  factory_no=line.factory_no, product_code=line.product_code,
+                  product_name=line.product_name, sku_code=line.sku_code, sku=line.sku_name,
+                  qty=line.qty, is_custom=bool(order.is_custom) if single else False)
+    # Shared parent notes are retained as notes, not evidence of shipment or a
+    # price allocation. A multi-item parent's monetary fields are not line costs.
+    if not single:
+        for key in ("wood_cost_est", "actual_cost", "custom_surcharge", "theoretical_cost",
+                    "est_parts", "est_packing", "est_logistics", "est_install"):
+            values[key] = None
+    rs = str(line.refund_status or "")
+    inactive_refund = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
+    if rs and ("退款" in rs or "退货" in rs) and not any(x in rs for x in inactive_refund):
+        # A known small completed refund does not revoke a delivered product.
+        partial_completed = ("成功" in rs or "完成" in rs) and Decimal(str(line.refund_amount or 0)) > 0 and not _line_void(line)
+        if not partial_completed:
+            values["status"] = "aftersales"
+    if _line_void(line):
+        values["status"] = "cancelled"
+    return SimpleNamespace(**values)
 
 
 def _wood_unit_price(order: Order, pricing: Optional[PricingSku]) -> Optional[Decimal]:
@@ -472,6 +521,14 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
     now_ms = _now_ms()
     out: list[dict[str, Any]] = []
     for order in orders:
+        imported_lines = db.execute(select(OrderDetail).where(
+            OrderDetail.order_no == order.order_no, OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None)).order_by(OrderDetail.id.asc())).scalars().all()
+        line_rows = [line for line in imported_lines if line.factory_delivery_required]
+        legacy_shared_key = (len(imported_lines) == 1 and order.factory_no is not None
+                             and imported_lines[0].sub_order_no == order.order_no)
+        if imported_lines and not line_rows and not legacy_shared_key:
+            continue  # Never replace filtered authoritative lines with parent product.
         paid = order_sheet_archive_service._is_paid(order)
         refunded = order_sheet_archive_service._is_refunded(order)
         normalized = order_service.normalize_status(order.status)
@@ -480,30 +537,21 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         if (
             not paid
             or normalized in {"cancelled", "pending_payment"}
-            or refunded
+            or (refunded and not line_rows)
         ):
             continue
-        if order_sheet_archive_service._is_sample_order(order):
+        if not line_rows and order_sheet_archive_service._is_sample_order(order):
             continue
         topup, _reason = order_sheet_archive_service._is_parts_topup(db, order)
-        if topup or _is_non_factory_order(order):
+        if not line_rows and (topup or _is_non_factory_order(order)):
             continue
-        if not (order.sku_code or order.sku):
+        if not line_rows and not (order.sku_code or order.sku):
             continue
-        line_rows = db.execute(
-            select(OrderDetail).where(
-                OrderDetail.order_no == order.order_no,
-                OrderDetail.source == "import",
-                OrderDetail.factory_delivery_required.is_(True),
-                OrderDetail.sub_order_no.isnot(None),
-            ).order_by(OrderDetail.id.asc())
-        ).scalars().all()
         # 子订单链路一行一件；退款子商品无论历史上是否送达，都退出当前工厂表。
         if line_rows:
-            from app.services import order_line_delivery_service
             for line in line_rows:
                 sub_order_no = str(line.sub_order_no or "")
-                line_refunded = order_line_delivery_service.line_is_refunded(line)
+                line_refunded = _line_void(line)
                 if line_refunded:
                     continue
                 ps_line = db.execute(
@@ -521,17 +569,27 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     or int(sheet_image.get("render_width") or 0) != 1684
                 ):
                     sheet_image = None
-                schedule = order_flags.factory_schedule(order)
-                is_custom, custom_reason = _custom_order_info(order, ps_line)
-                production_qty = max(int(line.qty or 1), 1)
+                projected = _line_projection(order, line, single=len(imported_lines) == 1)
+                remote = order_flags.is_remote(projected)
+                schedule = order_flags.factory_schedule(projected)
+                is_custom, custom_reason = _custom_order_info(projected, ps_line)
+                production_qty = _production_qty(projected, is_custom=is_custom)
                 unit_wood = (
                     Decimal(str(ps_line.wood_cost)).quantize(Decimal("0.01"))
                     if ps_line is not None and ps_line.wood_cost is not None else None
                 )
-                if unit_wood is None and len(line_rows) == 1:
+                if unit_wood is None and len(imported_lines) == 1:
                     unit_wood = _wood_unit_price(order, None)
-                photo_requested = _photo_requested(order)
-                alerts = ["📷 通知拍照"] if photo_requested else []
+                cost_method = ""
+                if is_custom and len(imported_lines) == 1:
+                    unit_wood, cost_method = _custom_wood_unit_price(
+                        db, projected, ps_line, production_qty=production_qty)
+                photo_requested = _photo_requested(projected)
+                alerts = []
+                if projected.is_customer_delayed:
+                    alerts.append("⏳ 远期等通知" if remote else "⏳ 客户延期（已开始制作）")
+                if photo_requested:
+                    alerts.append("📷 通知拍照")
                 out.append({
                     "订单号": order.order_no,
                     "子订单号": sub_order_no,
@@ -540,22 +598,22 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "系统排序键": (
                         f"1-{factory_no:06d}" if factory_no else f"3-{order.id:010d}-{line.id:010d}"
                     ),
-                    "商品名称": line.product_name or product_names.get(line.product_code or "") or "",
-                    "产品编码": line.product_code or "",
+                    "商品名称": line.product_name or (ps_line.product_name if ps_line else None) or product_names.get(line.product_code or "") or "",
+                    "产品编码": line.product_code or (ps_line.product_code if ps_line else None) or "",
                     "SKU编码": line.sku_code or "",
-                    "SKU规格": line.sku_name or "",
+                    "SKU规格": line.sku_name or (ps_line.sku if ps_line else None) or "",
                     "尺寸": (ps_line.size_info if ps_line else None) or "",
                     "订购数量": production_qty,
                     "木作成本价": float(unit_wood) if unit_wood is not None else None,
                     "定制标识": "定制单" if is_custom else "常规单",
                     "木作成本说明": (
-                        f"定制成本需人工核验｜{custom_reason}" if is_custom else ""
+                        f"定制成本需人工核验｜{cost_method}｜{custom_reason}" if is_custom else ""
                     ),
                     "下单日期": _date_ms(order.order_date),
                     "预计发货日期": _date_ms(schedule["effective_deadline"]),
-                    "订单状态": "生产中" if factory_no else "待制单",
-                    "交期紧急度": _urgency_label(order, refunded=False, schedule=schedule),
-                    "发货安排": _ship_plan(order, remote=False, photo_requested=photo_requested),
+                    "订单状态": _status(projected, remote=remote, refunded=False),
+                    "交期紧急度": _urgency_label(projected, refunded=False, schedule=schedule),
+                    "发货安排": _ship_plan(projected, remote=remote, photo_requested=photo_requested),
                     "客户延期单": bool(order.is_customer_delayed),
                     "客户通知拍照": photo_requested,
                     "订单提醒": " · ".join(alerts),
@@ -563,7 +621,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "客户名称": order.customer_name or "",
                     "客户联系方式": order.customer_phone or "",
                     "客户地址": order.customer_address or "",
-                    "物流单号": order.tracking_no or "",
+                    "物流单号": (order.tracking_no or "") if len(imported_lines) == 1 else None,
                     "系统更新时间": now_ms,
                     "_order_id": order.id,
                     "_line_id": line.id,
@@ -720,7 +778,7 @@ def _ineligible_factory_entity_keys(
             continue
         if (
             str(line.order_no or "") in invalid_order_nos
-            or order_line_delivery_service.line_is_refunded(line)
+            or _line_void(line)
         ):
             keys.add(sub_order_no)
     # 淘宝单商品明细的子订单号可能与主订单号相同：非生产明细已退款，但主订单
@@ -1152,6 +1210,8 @@ def _norm(value: Any) -> Any:
     if isinstance(value, list):
         if all(isinstance(x, dict) and x.get("file_token") for x in value):
             return sorted(x.get("file_token") for x in value)
+        if all(isinstance(x, dict) and "text" in x for x in value):
+            return "".join(str(x["text"]) for x in value)
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     if isinstance(value, bool):
         return value
@@ -1180,6 +1240,27 @@ def _same(remote: dict, expected: dict) -> bool:
     )
 
 
+def _business_payload(row: dict) -> dict:
+    """Explicit ownership allowlist; missing source is not authority to erase."""
+    managed = set(EXPECTED_FIELD_ORDER)
+    payload = {k: v for k, v in row.items() if k in managed}
+    # A deliberate removal of ERP notes/flags is reflected. Unknown costs,
+    # identifiers, contact data or unallocated multi-line logistics are preserved.
+    preserve_when_missing = {"木作成本价", "尺寸", "工厂下单号", "商品名称", "产品编码",
+                             "SKU编码", "SKU规格", "客户名称", "客户联系方式", "客户地址",
+                             "物流单号", "下单日期"}
+    return {k: v for k, v in payload.items()
+            if not (k in preserve_when_missing and v in (None, "", "待编号"))}
+
+
+def _delta(remote: dict, expected: dict) -> dict:
+    changes = {k: v for k, v in expected.items()
+               if k != "系统更新时间" and not _equivalent(remote.get(k), v)}
+    if changes:
+        changes["系统更新时间"] = expected.get("系统更新时间", _now_ms())
+    return changes
+
+
 def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
     fields = record.get("fields") or {}
     order_no = str(fields.get("订单号") or "")
@@ -1191,7 +1272,8 @@ def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
     return isinstance(raw_date, (int, float)) and raw_date < 1704067200000  # 2024-01-01
 
 
-def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
+def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
+                   dry_run: bool = False) -> dict:
     """单向增量同步系统下单表（只写飞书，绝不把飞书内容回写 ERP）。
 
     成功不发消息；错误由调用方纳入订单自动化告警与重试。
@@ -1199,6 +1281,8 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
     if include_images is None:
         include_images = _setting_bool(db, INCLUDE_IMAGES_KEY, True)
     app_token, table_id = _target(db)
+    if (app_token, table_id) != (DEFAULT_APP_TOKEN, DEFAULT_TABLE_ID):
+        return {"ok": False, "errors": ["factory_target_identity_mismatch"], "dry_run": dry_run}
     result: dict[str, Any] = {
         "table_id": table_id,
         "direction": "out",
@@ -1216,9 +1300,15 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         "errors": [],
         "views": {},
         "view_layout": MAIN_VIEW_LAYOUT,
+        "dry_run": dry_run,
+        "field_changes": {},
+        "retired_in_place": 0,
+        "unmatched_preserved": 0,
+        "protected_missing_source": {},
     }
     try:
-        _ensure_schema(db, app_token, table_id)
+        # Routine sync is not a schema migration: never rename/delete factory
+        # columns, change types, reorder views or rebuild the table here.
         fields = feishu_client.list_table_fields(db, app_token, table_id)
         layout_errors = _schema_layout_errors(fields)
         if layout_errors:
@@ -1246,6 +1336,8 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             return result
 
         rows = build_rows(db)
+        result["source_latest_order_updated_at"] = str(db.scalar(select(func.max(Order.updated_at))) or "")
+        result["source_latest_line_updated_at"] = str(db.scalar(select(func.max(OrderDetail.updated_at)).where(OrderDetail.source == "import")) or "")
         result["rows"] = len(rows)
         result["missing_wood_cost"] = [
             str(row["订单号"]) for row in rows if row.get("木作成本价") is None
@@ -1275,13 +1367,22 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
             fields = rec.get("fields") or {}
-            order_no = str(fields.get("订单号") or "").strip()
-            sub_order_no = str(fields.get("子订单号") or "").strip()
+            order_no = str(_norm(fields.get("订单号")) or "").strip()
+            sub_order_no = str(_norm(fields.get("子订单号")) or "").strip()
             entity_key = sub_order_no or order_no
+            if entity_key and entity_key in remote_by_no:
+                result["errors"].append("duplicate_remote_entity: exact identity needs review")
             if entity_key and entity_key not in remote_by_no:
                 remote_by_no[entity_key] = rec
             if order_no and not sub_order_no:
                 legacy_remote_by_order.setdefault(order_no, []).append(rec)
+        if result["errors"]:
+            result["ok"] = False
+            return result
+        if len(projected_entity_keys) != len(rows):
+            result["errors"].append("duplicate_source_entity: no writes performed")
+            result["ok"] = False
+            return result
 
         creates: list[dict] = []
         create_image_bindings: list[tuple[str, str]] = []
@@ -1292,7 +1393,10 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         for row in rows:
             order_no = str(row["订单号"])
             entity_key = str(row.get("子订单号") or order_no)
-            payload = {k: v for k, v in row.items() if not k.startswith("_")}
+            payload = _business_payload(row)
+            for key in EXPECTED_FIELD_ORDER:
+                if key in row and key not in payload:
+                    result["protected_missing_source"][key] = result["protected_missing_source"].get(key, 0) + 1
             sheet_path = row.get("_sheet_path")
             sheet_signature = row.get("_sheet_signature")
             sheet_name = str(row.get("_sheet_name") or "工厂下单图.jpg")
@@ -1312,12 +1416,17 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                 ]
                 if len(matches) == 1:
                     remote = matches[0]
+                elif legacy_remote_by_order.get(order_no):
+                    result["warnings"].append("legacy_identity_unresolved: preserved without duplicate create")
+                    result["identity_unresolved_count"] = result.get("identity_unresolved_count", 0) + 1
+                    continue
             remote_fields = (remote or {}).get("fields") or {}
+            if remote is not None:
+                claimed_remote_ids.add(str(remote.get("record_id") or ""))
             if include_images:
                 if not sheet_path:
-                    # 字段由「产品图」原位改名而来。没有真正下单图的远期/待编号单
-                    # 必须清空旧产品图，不能让工厂误以为那张缩略图就是生产下单图。
-                    payload["工厂下单图"] = []
+                    # Missing/stale source is not authority to clear a factory attachment.
+                    payload.pop("工厂下单图", None)
                 elif remote is not None and _remote_attachment_matches(
                     remote_fields,
                     signature=str(sheet_signature or ""),
@@ -1329,7 +1438,11 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                     attachment_confirmed = True
                 else:
                     try:
-                        payload["工厂下单图"] = _attachment_value(
+                        if dry_run:
+                            result["deferred_image_uploads"].append({"reason": "preview_no_upload"})
+                            continue_image = []
+                        else:
+                            continue_image = _attachment_value(
                             db,
                             app_token,
                             str(sheet_path),
@@ -1337,7 +1450,13 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                             sheet_name,
                             cache,
                         )
-                        attachment_confirmed = True
+                        existing = _remote_attachment_value(remote_fields)
+                        # Preserve every existing factory attachment, append the verified
+                        # new sheet only. No inferred deletion of manually uploaded images.
+                        merged = {x["file_token"]: x for x in existing + continue_image}
+                        if merged:
+                            payload["工厂下单图"] = list(merged.values())
+                        attachment_confirmed = bool(continue_image)
                     except Exception as e:  # noqa: BLE001 - 附件局部待重试，不否定订单送达
                         # 已有旧附件时原样保留；没有附件时只跳过附件字段，绝不能写 []
                         # 清掉工厂仍在使用的图片。其余业务字段继续增量同步。
@@ -1355,6 +1474,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                 # 关闭图片同步时只更新业务字段，不改变附件签名绑定。
                 pass
             if remote is None:
+                payload["工厂下单号"] = row.get("工厂下单号") or "待编号"
                 creates.append(payload)
                 create_image_bindings.append(
                     (entity_key, str(sheet_signature or ""))
@@ -1363,12 +1483,33 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             elif not _same(remote.get("fields") or {}, payload):
                 record_id = str(remote.get("record_id") or "")
                 claimed_remote_ids.add(record_id)
-                updates.append({"record_id": remote["record_id"], "fields": payload})
+                updates.append({"record_id": remote["record_id"], "fields": _delta(remote_fields, payload)})
                 if attachment_confirmed and sheet_signature:
                     update_image_bindings[record_id] = (
                         entity_key, str(sheet_signature)
                     )
 
+        # Retain cancelled/refunded rows and factory-owned fields/attachments.
+        # Only exact ERP-confirmed void identities are marked inactive in place.
+        for rec in remote_rows:
+            rf = rec.get("fields") or {}
+            key = str(_norm(rf.get("子订单号")) or _norm(rf.get("订单号")) or "").strip()
+            if key in ineligible_entity_keys:
+                fields = _delta(rf, {"订单状态": "已作废", "交期紧急度": "取消",
+                                    "发货安排": "售后核实（暂勿发货）", "系统更新时间": _now_ms()})
+                if fields:
+                    updates.append({"record_id": rec["record_id"], "fields": fields})
+                    result["retired_in_place"] += 1
+            elif rec.get("record_id") not in claimed_remote_ids:
+                result["unmatched_preserved"] += 1
+        for change in updates:
+            for key in change["fields"]:
+                result["field_changes"][key] = result["field_changes"].get(key, 0) + 1
+        result["planned_creates"] = len(creates)
+        result["planned_updates"] = len(updates)
+        if dry_run:
+            result["ok"] = not result["errors"]
+            return result
         if creates:
             ids = feishu_client.batch_create_records(db, app_token, table_id, creates)
             result["created"] = sum(bool(x) for x in ids)
@@ -1389,52 +1530,29 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             if failed:
                 result["errors"].append(f"飞书下单表更新失败 {len(failed)}/{len(updates)} 条")
 
-        # 退款/取消记录不属于当前工厂执行表。只删除 ERP 已精确确认失效的实体，
-        # 不清理其它来源不明的飞书行；任何创建/更新失败时也不做删除。
-        ineligible_remote = []
-        if not result["errors"]:
-            for rec in remote_rows:
-                remote_fields = rec.get("fields") or {}
-                entity_key = str(
-                    remote_fields.get("子订单号")
-                    or remote_fields.get("订单号")
-                    or ""
-                ).strip()
-                record_id = str(rec.get("record_id") or "").strip()
-                if record_id and entity_key in ineligible_entity_keys:
-                    ineligible_remote.append((record_id, entity_key))
-        if ineligible_remote:
-            deleted = feishu_client.batch_delete_records(
-                db,
-                app_token,
-                table_id,
-                [record_id for record_id, _entity_key in ineligible_remote],
-            )
-            result["deleted_ineligible"] = int(deleted or 0)
-            # batch_delete 对并发已删除的记录按幂等成功处理，但返回值只统计本轮
-            # 实际删除数；无异常即代表目标状态已达成。
-            for _record_id, entity_key in ineligible_remote:
-                image_bindings.pop(entity_key, None)
-
-        # 首次写入新的终态文本时，飞书会自动生成单选项。记录写完后再统一修成
-        # 灰白浅色；之后每次同步也会校正，避免运营误改或模板重建后颜色漂移。
-        style_fields = feishu_client.list_table_fields(db, app_token, table_id)
-        result["urgency_style_updated"] = _ensure_urgency_option_styles(
-            db,
-            app_token,
-            table_id,
-            fields=style_fields,
-        )
-
-        # 只清飞书模板自带的 2022 年示例行；不删除任何无法确认来源的人工行。
-        demo_ids = [
-            rec["record_id"] for rec in remote_rows
-            if _is_template_demo(rec, expected_order_nos)
-        ]
-        if rows and not result["errors"] and demo_ids:
-            result["deleted_demo"] = feishu_client.batch_delete_records(
-                db, app_token, table_id, demo_ids
-            )
+        # Verify the actual changed system fields, not just HTTP/batch success.
+        # No deletion/schema/style changes in the routine updater.
+        if creates or updates:
+            readback = {r.get("record_id"): r.get("fields") or {}
+                        for r in feishu_client.list_records(db, app_token, table_id)}
+            remaining = Counter()
+            verified = Counter()
+            for change in updates:
+                actual = readback.get(change["record_id"], {})
+                for key, value in change["fields"].items():
+                    if key != "系统更新时间" and not _equivalent(actual.get(key), value):
+                        remaining[key] += 1
+                    elif key != "系统更新时间":
+                        verified[key] += 1
+            for record_id, payload in zip(ids if creates else [], creates):
+                actual = readback.get(record_id, {})
+                for key, value in payload.items():
+                    if key != "系统更新时间" and not _equivalent(actual.get(key), value):
+                        remaining[key] += 1
+            result["remaining_field_differences"] = dict(remaining)
+            result["verified_field_changes"] = dict(verified)
+            if remaining:
+                result["errors"].append("readback_mismatch: system fields remain different")
 
         if cache != cache_before:
             # 防缓存无限增长：保留最近使用和最新插入的至多 500 个 token。
@@ -1450,15 +1568,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                 description="工厂系统下单表下单图飞书素材 token 缓存",
             )
         if image_bindings != image_bindings_before:
-            # 只保留当前系统投影仍存在的实体，防历史记录无限增长。
-            current_entities = {
-                str(row.get("子订单号") or row.get("订单号") or "")
-                for row in rows
-            }
-            image_bindings = {
-                key: value for key, value in image_bindings.items()
-                if key in current_entities
-            }
+            # Preserve bindings for retained historical/void rows as well.
             settings_service.set_value(
                 db,
                 IMAGE_BINDINGS_KEY,
@@ -1478,6 +1588,27 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         _logger.exception("工厂系统下单表同步失败")
     result["ok"] = not result["errors"]
     return result
+
+
+def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
+    """One writer across timer/order closeout/manual sync; no concurrent replay."""
+    if not _SYNC_LOCK.acquire(blocking=False):
+        return {"ok": False, "errors": ["factory_sync_busy"], "rows": 0}
+    try:
+        if db.get_bind().dialect.name == "postgresql":
+            locked = db.execute(text("SELECT pg_try_advisory_xact_lock(:key)"),
+                                {"key": _SYNC_ADVISORY_KEY}).scalar()
+            if not locked:
+                return {"ok": False, "errors": ["factory_sync_busy"], "rows": 0}
+        return _sync_unlocked(db, include_images=include_images)
+    finally:
+        _SYNC_LOCK.release()
+
+
+def preview_diff(db: Session) -> dict:
+    """GET-only field diff. No schema changes, uploads, commits or source mutation."""
+    with db.no_autoflush:
+        return _sync_unlocked(db, dry_run=True)
 
 
 def sync_if_enabled(db: Session) -> dict:
