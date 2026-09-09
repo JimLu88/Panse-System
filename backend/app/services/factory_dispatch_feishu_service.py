@@ -625,6 +625,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "系统更新时间": now_ms,
                     "_order_id": order.id,
                     "_line_id": line.id,
+                    "_catalog_fallback_fields": ["SKU规格"] if not line.sku_name else [],
                     "_sheet_path": sheet_image["path"] if sheet_image else None,
                     "_sheet_signature": sheet_image["signature"] if sheet_image else None,
                     "_sheet_name": sheet_image["name"] if sheet_image else None,
@@ -1261,6 +1262,35 @@ def _delta(remote: dict, expected: dict) -> dict:
     return changes
 
 
+def _confirmed_void_record_ids(db: Session, records: list[dict], projected: set[str]) -> set[str]:
+    """A child key cannot invalidate a different legacy parent record with same text."""
+    parents = {o.order_no: o for o in db.scalars(select(Order))}
+    lines = {o.sub_order_no: o for o in db.scalars(select(OrderDetail).where(
+        OrderDetail.source == "import", OrderDetail.sub_order_no.isnot(None)))}
+    confirmed = set()
+    for record in records:
+        fields = record.get("fields") or {}
+        order_no = str(_norm(fields.get("订单号")) or "")
+        sub_no = str(_norm(fields.get("子订单号")) or "")
+        if (sub_no or order_no) in projected:
+            continue
+        parent = parents.get(order_no)
+        if parent is None:
+            continue
+        parent_void = (order_service.normalize_status(parent.status) == "cancelled"
+                       or order_sheet_archive_service._is_refunded(parent))
+        if sub_no:
+            line = lines.get(sub_no)
+            if line is None or line.order_no != order_no:
+                continue
+            invalid = parent_void or _line_void(line)
+        else:
+            invalid = parent_void
+        if invalid:
+            confirmed.add(record["record_id"])
+    return confirmed
+
+
 def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
     fields = record.get("fields") or {}
     order_no = str(fields.get("订单号") or "")
@@ -1359,10 +1389,7 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             str(row.get("子订单号") or row.get("订单号") or "").strip()
             for row in rows
         }
-        ineligible_entity_keys = _ineligible_factory_entity_keys(
-            db,
-            projected_entity_keys=projected_entity_keys,
-        )
+        void_record_ids = _confirmed_void_record_ids(db, remote_rows, projected_entity_keys)
         remote_by_no: dict[str, dict] = {}
         legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
@@ -1421,6 +1448,12 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
                     result["identity_unresolved_count"] = result.get("identity_unresolved_count", 0) + 1
                     continue
             remote_fields = (remote or {}).get("fields") or {}
+            # Catalogue text is a fill-only fallback, never a replacement for an
+            # existing order/factory specification when the order snapshot is missing.
+            for key in row.get("_catalog_fallback_fields", []):
+                if _norm(remote_fields.get(key)) is not None:
+                    payload.pop(key, None)
+                    result["protected_existing_snapshot_count"] = result.get("protected_existing_snapshot_count", 0) + 1
             if remote is not None:
                 claimed_remote_ids.add(str(remote.get("record_id") or ""))
             if include_images:
@@ -1494,7 +1527,7 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
         for rec in remote_rows:
             rf = rec.get("fields") or {}
             key = str(_norm(rf.get("子订单号")) or _norm(rf.get("订单号")) or "").strip()
-            if key in ineligible_entity_keys:
+            if rec.get("record_id") in void_record_ids:
                 fields = _delta(rf, {"订单状态": "已作废", "交期紧急度": "取消",
                                     "发货安排": "售后核实（暂勿发货）", "系统更新时间": _now_ms()})
                 if fields:

@@ -188,6 +188,18 @@ def test_exact_pricing_sku_fills_missing_spec_without_sibling_guess(db_session):
     assert row['木作成本价'] == 321
 
 
+def test_catalogue_fallback_never_overwrites_existing_order_spec(db_session, monkeypatch):
+    from app.models.pricing import PricingSku
+    seed(db_session)
+    db_session.query(OrderDetail).one().sku_name = None
+    db_session.add(PricingSku(sku_code='SKU-0', product_code='P0', sku='当前目录规格'))
+    db_session.commit()
+    records = [{'record_id':'r1','fields':{'订单号':'TEST-PARENT','子订单号':'TEST-LINE-0','SKU规格':'订单实际规格'}}]
+    mock_remote(monkeypatch, records)
+    result = d.sync(db_session, include_images=False)
+    assert result['ok'] and records[0]['fields']['SKU规格'] == '订单实际规格'
+
+
 def test_permissions_failure_stops_before_write(db_session, monkeypatch):
     seed(db_session)
     calls = mock_remote(monkeypatch, [])
@@ -202,3 +214,21 @@ def test_ambiguous_legacy_row_preserved_without_duplicate_create(db_session, mon
     calls = mock_remote(monkeypatch, records)
     result = d.sync(db_session)
     assert result['identity_unresolved_count'] == 1 and not calls and result['created'] == 0
+
+
+def test_refunded_child_key_does_not_void_active_legacy_parent(db_session):
+    seed(db_session)
+    line = db_session.query(OrderDetail).one()
+    line.sub_order_no = 'TEST-PARENT'
+    line.line_status = 'cancelled'
+    db_session.commit()
+    records = [{'record_id':'legacy','fields':{'订单号':'TEST-PARENT'}}]
+    assert d._confirmed_void_record_ids(db_session, records, set()) == set()
+    records[0]['fields']['子订单号'] = 'TEST-PARENT'
+    assert d._confirmed_void_record_ids(db_session, records, set()) == {'legacy'}
+
+
+def test_void_requires_matching_parent_and_child_identity(db_session):
+    seed(db_session, ('cancelled',))
+    records = [{'record_id':'unknown','fields':{'订单号':'OTHER','子订单号':'TEST-LINE-0'}}]
+    assert d._confirmed_void_record_ids(db_session, records, set()) == set()
