@@ -1,5 +1,7 @@
 # 01 本场文件工具：显式力度与只读价格
 
+2026-09-10接入说明优先：[本地统一入口与实际优惠校验](campaign-entry-guards.md)。正式生成命令新增必填 `--campaign-key campaignId/unitedActivityId/signRecordId`，自动读取持久登记来源，复用优惠按实际上传金额复算。下文直接底层填表示例仅是字节工具，不是完整受控业务入口；提交需使用新的claim/record或run_once，原始浏览器与NAS旧接口未被本次拦截。历史例子不得据此重传。
+
 只做本地取数/填表，不操作浏览器，不上传、不报名、不改数据库，不启动旧 prepare 链。
 本页不改变 `campaign-signup-frozen-steps.md` 的固定短流程。
 

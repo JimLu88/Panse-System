@@ -1,0 +1,9 @@
+{
+  "schema": "campaign_discount_evidence_v1",
+  "scope": "Historical successful import. Not a fresh current-platform readback or modification authority.",
+  "execution_path": "D:/AI/畔色ERP系统/outputs/01a04666-6895-7b40-a07d-c7cfe38d9a02/next-campaigns-20260906/platform-execution.json",
+  "execution_sha256": "5213e0d419ed0afa806c64748cf35998f40294baf2a958e18c2d26fd6e985565",
+  "section": "autumn_discount",
+  "rows_path": "D:/AI/畔色ERP系统/outputs/01a04666-6895-7b40-a07d-c7cfe38d9a02/next-campaigns-20260906/autumn/receipt.json",
+  "rows_sha256": "db6f338e6d3390adc4879f942d913e1148f9c51828c32424be1b6183ece05752"
+}

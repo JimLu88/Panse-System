@@ -13,6 +13,15 @@ a mandatory signup gate or a browser runtime replacement.
 
 ## Campaign signup authority
 
+Local campaign files/submission use `docs/campaign-entry-guards.md`:
+`campaign_generate_current_files.py` with exact `--campaign-key`, followed by
+`campaign_submission_gate.py claim/record` (or `run_once` in the existing owner
+transport). Keep the same persistent authority SQLite across conversations.
+Pure `build_rows`/byte writers and raw browser/API calls are not fully guarded
+business entry points. Do not claim this change intercepts those bypasses.
+Reused discounts must be checked using actual successfully uploaded amounts,
+not the newly calculated but unsubmitted ideal deductions. No tolerance expansion.
+
 Single-discount template is the user's fixed 2026-09-09 master:
 `D:/AI/畔色ERP系统/活动准备/固定模板/单品立减-SKU级-固定官方模板.xlsx`.
 Never download it again or ask the user to do so. Fill a new copy using current

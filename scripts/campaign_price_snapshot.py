@@ -51,7 +51,9 @@ def apply_rotation_receipt(rows, receipt):
         if len(candidates) != 1 or candidates[0]['item'] not in receipt['item_ids']:
             raise ValueError('rotation_identity_not_unique:' + old)
         row = candidates[0]
-        row.setdefault('rotation_source_ids', []).append({'old': old, 'new': new, 'batch': receipt['batch_id']})
+        evidence={'old': old, 'new': new, 'batch': receipt['batch_id']}
+        if evidence not in row.setdefault('rotation_source_ids', []):
+            row['rotation_source_ids'].append(evidence)
         if str(row.get('sku')) == old:
             row['sku'] = new
         row['alt'] = list(dict.fromkeys(new if str(x) == old else str(x) for x in row.get('alt') or []))
@@ -89,6 +91,14 @@ def main():
         raise ValueError('snapshot_output_already_exists_no_overwrite')
     receipt = json.loads(args.rotation_receipt.read_text(encoding='utf-8-sig')) if args.rotation_receipt else None
     snapshot = build_snapshot(load_rows(), receipt)
+    from campaign_entry_authority import Authority, file_sha
+    authority=Authority()
+    try:
+        if args.rotation_receipt:
+            authority.register_source(args.rotation_receipt,'rotation',file_sha(args.rotation_receipt))
+        snapshot=authority.resolve_snapshot(snapshot)
+    finally:
+        authority.close()
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:
         json.dump(snapshot, stream, ensure_ascii=False, indent=2)

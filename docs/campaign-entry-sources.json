@@ -1,0 +1,14 @@
+{
+  "schema": "campaign_entry_sources_v1",
+  "scope": "Local authoritative receipts only; not a claim of complete historical evidence",
+  "sources": [
+    {"kind":"outcome","path":"D:/AI/畔色ERP系统/outputs/01a04666-6895-7b40-a07d-c7cfe38d9a02/next-campaigns-20260906/platform-execution.json","sha256":"5213e0d419ed0afa806c64748cf35998f40294baf2a958e18c2d26fd6e985565"},
+    {"kind":"discount","path":"docs/receipts/campaign-autumn-discount-evidence-20260910.json","sha256":"f9a13eb2fccf928eca47c66d02da8659d444f365075c3c8c893e059abbdd7bc0"},
+    {"kind":"mapping","path":"D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-verified-mapping-recovery-20260906.json","sha256":"fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"},
+    {"kind":"rotation","path":"D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-four38-single-upload-20260906.json","sha256":"c6133aa9d5a8b7cd39dba033bd65cc35c1dc72d8089c93c7d319b48957c8e2b2"},
+    {"kind":"fixed","path":"D:/AI/畔色ERP系统/outputs/01a03341-b2cd-7810-92f3-66fad189521d/two-beds32-20260906/receipt.json","sha256":"5693a3d04a28360350c870df4901dba00032e856e64576b2f107fc03c602988d"},
+    {"kind":"fixed","path":"D:/AI/畔色ERP系统/outputs/01a03341-b2cd-7810-92f3-66fad189521d/four38-20260906/receipt.json","sha256":"0ba2fbd34eb4178ab22b878c96328288457efbb189304364a33818d71aed2df1"},
+    {"kind":"fixed","path":"D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-four-items-seven-custom-repair-options-20260906.json","sha256":"65e38c869303a2f6535c69260eb74dbc59f2efd012d713a9d0b5cff928279465"},
+    {"kind":"outcome","path":"D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-autumn-five-official-success-20260906.json","sha256":"0c2ff3642e1691e2bcaf1761345872d5dbef5070d6c41e5a471a670411ffe306"}
+  ]
+}
