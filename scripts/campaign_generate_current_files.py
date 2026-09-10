@@ -178,13 +178,18 @@ def _generate(args,authority):
             row.update(activity_price=candidate['activity_price'],price_action='authorized_failed_custom_lowering',lowering_evidence=correction)
         except ValueError as exc:issues.append(dict(item=pair[0],sku=pair[1],error=str(exc)))
     from campaign_discount_reuse import reconcile
+    from campaign_scoped_tolerance import policy_for
+    tolerance = policy_for(campaign,args.start,args.end,rate,args.target)
     planned_discounts=discounts
-    discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate)
+    discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target)
     issues.extend(reuse_issues)
     result = dict(status='local_input_issues' if issues else 'local_files_ready_not_uploaded',platform_write=False,database_write=False,automatic_retry=False,price_version=snapshot['resolved_price_version_sha256'],official_rate=str(rate),target=args.target,window={'start':args.start,'end':args.end,'timezone':'Asia/Shanghai'},activity_rows=activity,discount_rows=discounts,discount_reuse=reused,issues=issues,activity_template_sha256=sha(raw),files=[],note='Registered local evidence only, not a platform preflight or fresh readback. Actual reused amounts must meet frozen targets; no inherited tolerance. No upload files on issues. Business database untouched; local authority persisted.')
     result['explicit_signup_items'] = sorted(signup_items) if signup_items is not None else None
     result['explicit_discount_items'] = sorted(discount_items) if discount_items is not None else None
     result['campaign']=campaign
+    result['final_price_tolerance']=tolerance
+    if tolerance:
+        result['note']='Current pinned campaign-only user tolerance applied to actual reused discounts; not a daily-price change or automatic minus-two adjustment. No upload files on other issues; no platform preflight.'
     result['protected_scope']={'signup':blocked_signup,'discount':blocked_discount}
     outputs = []
     if not issues:
@@ -204,7 +209,7 @@ def _generate(args,authority):
             stream.write(content)
         result['files'].append(dict(path=str(path.resolve()),sha256=sha(content)))
     if not issues:
-        body=dict(campaign=campaign,start=args.start,end=args.end,rule_sha256=authority.rule_sha,
+        body=dict(campaign=campaign,start=args.start,end=args.end,rule_sha256=authority.rule_sha,final_price_tolerance=tolerance,
                   snapshot_path=str(args.snapshot.resolve()),snapshot_sha256=sha(args.snapshot.read_bytes()),
                   price_version=snapshot['resolved_price_version_sha256'],entry_source_sha256=snapshot['entry_source_sha256'],
                   template_path=str(args.activity_template.resolve()),template_sha256=sha(raw),

@@ -13,6 +13,12 @@ a mandatory signup gate or a browser runtime replacement.
 
 ## Campaign signup authority
 
+Current 2026-09-11 user authorization: see `docs/campaign-autumn-two-yuan-20260911.md`.
+Only that exact autumn campaign/window/12%/big target accepts actual reused final
+price absolute delta <= 2 CNY. Generation and claim must share the pinned receipt.
+This is not a global tolerance or instruction to subtract two; custom floors,
+ordinary daily signup and success/unknown replay protection remain unchanged.
+
 Local campaign files/submission use `docs/campaign-entry-guards.md`:
 `campaign_generate_current_files.py` with exact `--campaign-key`, followed by
 `campaign_submission_gate.py claim/record` (or `run_once` in the existing owner

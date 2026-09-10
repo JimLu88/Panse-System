@@ -13,6 +13,8 @@ from campaign_discount_template import load_fixed_discount_template
 
 def validated_body(authority, identity, phase):
     body=authority.get_bundle(identity)
+    from campaign_scoped_tolerance import validate_bundle_policy
+    validate_bundle_policy(body)
     if body['rule_sha256']!=authority.rule_sha:raise ValueError('rule_version_changed')
     if file_sha(body['snapshot_path'])!=body['snapshot_sha256']:raise ValueError('snapshot_file_changed')
     if file_sha(body['template_path'])!=body['template_sha256']:raise ValueError('official_template_changed')
@@ -43,7 +45,7 @@ def validated_body(authority, identity, phase):
     from campaign_discount_reuse import reconcile
     if discounts!=body['planned_discount_rows']:raise ValueError('planned_discount_rows_changed')
     discounts,reuse,issues=reconcile(body['signup_rows'],discounts,authority.discount_offers(),body['start'],body['end'],
-                                    discount_rate(body['official_rate']),excluding_offer='bundle:'+identity)
+                                    discount_rate(body['official_rate']),excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'])
     if issues:raise ValueError('actual_discount_reuse_invalid:'+issues[0]['error'])
     if reuse!=body.get('discount_reuse',[]):raise ValueError('discount_reuse_evidence_changed')
     if discounts!=body['discount_rows']:raise ValueError('discount_formula_changed')

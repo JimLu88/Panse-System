@@ -243,6 +243,8 @@ class Authority:
 
     def claim(self, identity, phase):
         body=self.get_bundle(identity)
+        from campaign_scoped_tolerance import validate_bundle_policy
+        validate_bundle_policy(body)
         if phase not in ('signup','discount'):raise ValueError('invalid_phase')
         items=sorted({r['item'] for r in body[phase+'_rows']})
         if not items:raise ValueError('empty_phase')
@@ -258,7 +260,7 @@ class Authority:
                 from campaign_official_template import discount_rate
                 _,reuse,issues=reconcile(body['signup_rows'],body['planned_discount_rows'],self.discount_offers(),
                                          body['start'],body['end'],discount_rate(body['official_rate']),
-                                         excluding_offer='bundle:'+identity)
+                                         excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'])
                 if issues:raise ValueError('actual_discount_reuse_invalid:'+issues[0]['error'])
                 if reuse!=body.get('discount_reuse',[]):raise ValueError('discount_reuse_evidence_changed')
             claim=uuid.uuid4().hex

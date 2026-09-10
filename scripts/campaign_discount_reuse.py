@@ -1,6 +1,7 @@
 """Actual registered discount amounts, not unuploaded ideal deductions.
 
-Saved evidence only; no remote refresh, price change or tolerance grant.
+Saved evidence only; no remote refresh or price change. A byte-pinned current
+user exception may allow a scoped final delta; no automatic tolerance grant.
 Historical receipts prove that import, not a fresh current platform readback.
 """
 from decimal import Decimal
@@ -31,9 +32,11 @@ def historical_offer(document):
                 evidence_kind='historical_official_import_receipt_not_fresh_readback')
 
 
-def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=None):
+def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=None, campaign=None, target=None):
     """Partition new/reused rows; report unknown, overlap and actual final errors."""
     from campaign_generate_current_files import official_cut
+    from campaign_scoped_tolerance import policy_for
+    policy = policy_for(campaign, start, end, rate, target)
     index = {}
     for offer in offers:
         if not (offer['start'] <= end and start <= offer['end']) or offer['offer_id'] == excluding_offer:
@@ -72,13 +75,21 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
         deduct = Decimal(str(actual[0]['deduct']))
         if not deduct.is_finite() or deduct <= 0 or deduct != deduct.quantize(Decimal('.01')):
             issues.append(dict(base,error='existing_discount_amount_invalid'));continue
-        daily = Decimal(row['activity_price']);cut = official_cut(daily,rate)
+        daily = Decimal(row['activity_price'])
+        target_price,big = Decimal(row['target']),Decimal(row['big_target'])
+        if any(not x.is_finite() or x <= 0 or x != x.quantize(Decimal('.01')) for x in (daily,target_price,big)) or target_price < big:
+            issues.append(dict(base,error='existing_discount_price_input_invalid'));continue
+        cut = official_cut(daily,rate)
         final = daily-cut-deduct
-        target,big = Decimal(row['target']),Decimal(row['big_target'])
-        detail = dict(base,actual_deduct=str(deduct),ideal_deduct=str(daily-cut-target),official_cut=str(cut),
-                      final=str(final),target=str(target),big_target=str(big),delta=str(final-target))
-        if final < big:issues.append(dict(detail,error='actual_reused_discount_final_below_big_floor'))
-        elif final != target:issues.append(dict(detail,error='actual_reused_discount_final_not_frozen_target'))
+        delta = final-target_price
+        detail = dict(base,actual_deduct=str(deduct),ideal_deduct=str(daily-cut-target_price),official_cut=str(cut),
+                      final=str(final),target=str(target_price),big_target=str(big),delta=str(delta))
+        if policy:detail['final_price_tolerance'] = policy
+        if final <= 0:issues.append(dict(detail,error='actual_reused_discount_final_nonpositive'))
+        elif policy and abs(delta) > Decimal(policy['max_absolute_delta_cny']):
+            issues.append(dict(detail,error='actual_reused_discount_outside_scoped_tolerance'))
+        elif not policy and final < big:issues.append(dict(detail,error='actual_reused_discount_final_below_big_floor'))
+        elif not policy and final != target_price:issues.append(dict(detail,error='actual_reused_discount_final_not_frozen_target'))
         else:
             reuse.append(detail);reused_pairs.add(pair)
     return [r for r in planned if (r['item'],r['sku']) not in reused_pairs], reuse, issues

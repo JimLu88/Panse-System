@@ -1,0 +1,19 @@
+{
+  "schema": "campaign_scoped_final_tolerance_v1",
+  "source_thread_id": "01a067c6-7e83-7483-9a21-84b44ed7299b",
+  "received_by": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "authorized_on": "2026-09-11",
+  "user_verbatim": "你再查看一下程序，两元以内的全部都是可以放行的",
+  "provenance": "Current user instruction relayed by the sole campaign execution owner to maintenance; not inferred from historic 52-row positive tolerance.",
+  "campaign": "49557/49560/3538210379",
+  "start": "2026-09-16 20:00:00",
+  "end": "2026-09-27 23:59:59",
+  "timezone": "Asia/Shanghai",
+  "official_rate": "0.12",
+  "target": "big",
+  "max_absolute_delta_cny": "2.00",
+  "inclusive": true,
+  "scope": "Ordinary SKU final prices using actual successful same-window single-discount amounts; compare absolute final minus ERP big target. Negative delta explicitly allowed within this one campaign.",
+  "unchanged": ["ordinary signup equals ERP daily", "custom fixed 20 percent floor", "actual successful discount evidence", "exact window", "no overlapping discount", "no success or unknown replay", "no proactive subtract-two adjustment", "no ERP daily or existing discount writes"],
+  "global_future_rule_changed": false
+}
