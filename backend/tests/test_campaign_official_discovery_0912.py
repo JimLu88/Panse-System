@@ -57,3 +57,16 @@ def test_offline_does_not_fallback_or_retry(monkeypatch):
     monkeypatch.setattr(wa, 'ensure_online', lambda *a, **k: {'online': False})
     monkeypatch.setattr(wa, '_post_raw', lambda *a, **k: pytest.fail('must stop before browser'))
     assert wa.campaign_discover(None)['legacy_fallback'] is False
+
+
+def test_calendar_hands_off_same_official_snapshot_without_legacy_plan_scan(db_session,monkeypatch):
+    from app.services import campaign_discovery_service as service, campaign_automation_service as auto
+    value=observation();value['daily_task_handoff']={'inbox_id':'a'*64,'state':'awaiting_daily_ai_identity'}
+    observed=d.calendar(value)
+    monkeypatch.setattr(wa,'campaign_discover',lambda db:observed)
+    monkeypatch.setattr(service,'due_reminders',lambda *a:[])
+    monkeypatch.setattr(auto,'sync_upcoming_plans',lambda *a:pytest.fail('old detail scan forbidden'))
+    result=service.run_daily_discovery(db_session)
+    assert result['auto_plans']['handoff']==value['daily_task_handoff']
+    assert result['auto_plans']['state']=='awaiting_daily_ai_identity'
+    assert result['auto_plans']['created']==0

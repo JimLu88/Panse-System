@@ -69,6 +69,7 @@ def calendar(result):
     if len(cards) != int(counts[0]) or len({c['title'] for c in cards}) != len(cards):
         raise ValueError('official_calendar_coverage_mismatch')
     return {'ok': True, 'campaigns': cards, 'count': len(cards), 'calendar_opened': True,
+            'daily_task_handoff':result.get('daily_task_handoff'),
             'page_evidence': evidence, 'observed_links': snapshot.get('observed_links', []),
             'legacy_fallback': False, 'platform_write': False,
             'exact_activity_identity_verified': False}

@@ -62,7 +62,7 @@ def test_discovery_upsert_window_and_daily_dedupe(db_session, monkeypatch):
     assert r1["reminded"] == 3                                  # 3天后 + 2天后 + 今天开抢
     assert len(calls) == 1 and calls[0]["title"] == "活动报名提醒"
     assert "88VIP大促第二场" in calls[0]["text"] and "今天开抢" in calls[0]["text"]
-    assert "请去报名" in calls[0]["text"]
+    assert "连续Web-Agent执行" in calls[0]["text"]
     assert "三天后活动" in calls[0]["text"]
     assert "远期活动" not in calls[0]["text"] and "已开始活动" not in calls[0]["text"]
 
@@ -195,7 +195,7 @@ def test_discovery_single_refresh_failure_after_today_success_is_silent(
 
     assert result["ok"] is False
     assert result["notified_error"] is False
-    assert result["retrying_next_hour"] is True
+    assert result["retrying_next_hour"] is False
     assert calls == []
 
 

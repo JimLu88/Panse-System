@@ -242,7 +242,7 @@ def run_daily_discovery(db: Session) -> dict:
                 "reason": reason,
                 "notified_error": False,
                 "notification_suppressed": "same_day_success_single_refresh_failure",
-                "retrying_next_hour": True,
+                "retrying_next_hour": False,
             }
         notify_service.broadcast_text(
             db,
@@ -257,13 +257,13 @@ def run_daily_discovery(db: Session) -> dict:
     due = due_reminders(db, today)
     reminded = 0
     if due:
-        lines = [f"📅 千牛活动开抢在即（{len(due)} 场）, 请去报名:"]
+        lines = [f"📅 千牛近期活动（{len(due)} 场），已进入活动发现流程:"]
         for c in due:
             days_left = (c.start_at.date() - today).days
             when = "今天就开始" if days_left == 0 else f"还有 {days_left} 天开始"
             lines.append(f"- 「{c.title}」{when}; 档期 {_fmt(c.start_at)} ~ {_fmt(c.end_at)}"
                          + (f"; 千牛状态: {c.status}" if c.status else ""))
-        lines.append("报名走系统「定价→活动自动填写→生命周期向导」: 报名价=日常价, 每场只变单品立减。")
+        lines.append("日常报名任务确认官方活动身份后交给连续Web-Agent执行；这里是发现提醒，不是报名成功回执。")
         notify_service.broadcast_text(db, "\n".join(lines),
                                       title="活动报名提醒", level="warn")
         for c in due:
@@ -305,30 +305,12 @@ def run_daily_discovery(db: Session) -> dict:
                 row.last_notified_on = today
             db.commit()
             unresolved_warning = 1
-    # 近期可报名阶段进一步只读详情：只有父活动、子阶段、秒级档期、力度和活动 ID
-    # 全部能锁定，才创建自动执行计划。安全门失败会飞书说明，并且不会猜值。
-    from app.models.campaign import CampaignCalendar
-    from app.services import campaign_automation_service
-    discovered_by_key = {}
-    for c in discovered:
-        title = str(c.get("title") or "").strip()
-        start = _parse_dt(c.get("start"))
-        if title:
-            discovered_by_key[(title, start.date() if start else None)] = c
-    calendar_rows = db.execute(select(CampaignCalendar)).scalars().all()
-    candidates = []
-    for row in calendar_rows:
-        c = discovered_by_key.get(
-            (row.title, row.start_at.date() if row.start_at else None))
-        if c is None:
-            continue
-        setattr(row, "_raw", str(c.get("raw") or ""))
-        candidates.append(row)
-    auto_plans = (
-        campaign_automation_service.sync_upcoming_plans(db, candidates)
-        if campaign_automation_service.enabled(db)
-        else {"skipped": "campaign_auto_disabled"}
-    )
+    # Do not construct legacy plans by title/14-day heuristics or scan each
+    # detail again. The permitted daily AI identity stage consumes the same
+    # retained official snapshot and registers one continuous request.
+    handoff=r.get('daily_task_handoff')
+    auto_plans = {'created':0,'legacy_fallback':False,'platform_write':False,
+                  'handoff':handoff,'state':'awaiting_daily_ai_identity' if handoff else 'discovery_handoff_missing'}
     return {"ok": True, **stats, "reminded": reminded,
             "unresolved_warning": unresolved_warning, "auto_plans": auto_plans,
             "discovery_diagnostics": {
