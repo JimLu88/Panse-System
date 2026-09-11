@@ -85,6 +85,32 @@ def super_fixture(state='异常'):
 
 
 class SuperReduce25Test(unittest.TestCase):
+    def test_current_super_reduce_media_before_discount_layout(self):
+        # Real 2026-09-11 schema: X/Y discount fields, Q is the short title.
+        raw=super_fixture();out=BytesIO()
+        with ZipFile(BytesIO(raw)) as source,ZipFile(out,'w') as dest:
+            for part in source.infolist():
+                data=source.read(part.filename)
+                if part.filename=='xl/worksheets/sheet1.xml':
+                    text=data.decode()
+                    columns={'Q':'X','R':'Y','S':'Q','T':'R','Y':'W','W':'S','X':'T'}
+                    text=re.sub(r'\b([A-Z]+)(\d+)',lambda m:columns.get(m[1],m[1])+m[2],text)
+                    text=text.replace('<t></t></is></c><c r="K2"','<t>超级立减建议金额</t></is></c><c r="K2"')
+                    data=text.encode()
+                dest.writestr(part,data)
+        raw=out.getvalue()
+        rows=tpl.template_rows(raw)
+        selected=[dict(item=r['item'],sku=r['sku'],activity_price='100.00') for r in rows]
+        filled=tpl.fill_selected_rows(raw,selected,official_rate='10%')
+        values=tpl.read_rows(filled,'商品SKU导入列表')
+        self.assertEqual(values[4]['N'],'100.00')
+        self.assertEqual(values[4]['X'],'10')
+        self.assertEqual(values[4]['Y'],'')
+        self.assertEqual(values[4]['Q'],'保持短标题')
+        with ZipFile(BytesIO(raw)) as a,ZipFile(BytesIO(filled)) as b:
+            for name in a.namelist():
+                if name!='xl/worksheets/sheet1.xml':self.assertEqual(a.read(name),b.read(name))
+
     def test_correct_columns_numeric_rate_and_preserved_materials(self):
         raw=super_fixture()
         selected=[dict(item=r['item'],sku=r['sku'],activity_price='100.00') for r in tpl.template_rows(raw)]

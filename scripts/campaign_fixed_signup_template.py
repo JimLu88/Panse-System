@@ -18,4 +18,7 @@ def resolve_master(manifest, *, identity, roots):
     # Read the physical package, including its real row range. No synthetic
     # replacement and no change to the separate single-discount master.
     if not template_rows(source.read_bytes()):raise ValueError('fixed_signup_template_has_no_sku_rows')
-    return dict(doc,path=str(source),fixed_master=True)
+    # A separately received user download has its own receipt kind rather
+    # than rewriting the old interrupted browser job. This state describes
+    # the validated local file's availability, never platform enrollment.
+    return dict(doc,path=str(source),fixed_master=True,state='downloaded')

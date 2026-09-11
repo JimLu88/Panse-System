@@ -20,6 +20,23 @@ CELL = re.compile(r'<c\b[^>]*?\br="([A-Z]+)(\d+)"[^>]*?(?:/>|>.*?</c>)', re.S)
 REF = re.compile(r'^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$')
 
 
+class MergeRanges(list):
+    """Index the same merge geometry once, without rewriting source cells."""
+    def __init__(self, values):
+        super().__init__(values)
+        self.columns={};self.cache={}
+        for ref in values:
+            m=REF.fullmatch(ref)
+            if m and (m[3] or m[1])==m[1]:
+                self.columns.setdefault(m[1],[]).append((int(m[2]),int(m[4] or m[2])))
+
+    def owners(self,n,column):
+        key=(n,column)
+        if key not in self.cache:
+            self.cache[key]=[begin for begin,end in self.columns.get(column,[]) if begin<=n<=end]
+        return self.cache[key]
+
+
 def money(value):
     try:
         result = Decimal(str(value))
@@ -79,7 +96,7 @@ def _read(archive, path):
                     value = shared[int(value)]
             cells[match[1]] = value
         rows[n] = cells
-    merges = [m.get('ref') for m in root.findall('s:mergeCells/s:mergeCell', NS)]
+    merges = MergeRanges([m.get('ref') for m in root.findall('s:mergeCells/s:mergeCell', NS)])
     return xml, root, rows, merges
 
 
@@ -93,6 +110,10 @@ def _effective(rows, merges, n, column):
     if rows.get(n, {}).get(column, '') != '':
         return rows[n][column]
     owners = []
+    if isinstance(merges,MergeRanges):
+        anchors=merges.owners(n,column)
+        if len(anchors)>1:raise ValueError('overlapping_merge')
+        return rows.get(anchors[0],{}).get(column,'') if anchors else ''
     for ref in merges:
         m = REF.fullmatch(ref)
         if m and m[1] == column and (m[3] or m[1]) == column and int(m[2]) <= n <= int(m[4] or m[2]):
@@ -107,6 +128,9 @@ def _layout(headers):
     layouts = [
         ({'L':'官方立减默认折扣','P':'活动价','S':'官方立减报名折扣','T':'官方立减金额'}, dict(price='P',percent='S',amount='T',reference='L',last='T',numeric_percent=False)),
         ({'N':'活动价','O':'库存','P':'包邮','Q':'让利比例','R':'补贴金额','S':'商品短标题','Y':'短视频链接 1:1'}, dict(price='N',percent='Q',amount='R',reference=None,last='Y',numeric_percent=True)),
+        # Official legacy super-reduce SKU/reference/no-fill download observed
+        # 2026-09-11: the optional media fields precede the discount fields.
+        ({'J':'超级立减建议金额','N':'活动价','O':'库存','P':'包邮','Q':'商品短标题','W':'短视频链接 1:1','X':'让利比例','Y':'补贴金额'}, dict(price='N',percent='X',amount='Y',reference=None,last='Y',numeric_percent=True)),
     ]
     for expected, layout in layouts:
         if all(headers.get(c) == label for c,label in {**common,**expected}.items()):

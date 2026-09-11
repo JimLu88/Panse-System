@@ -41,6 +41,9 @@ class EdgeClient:
     def status(self, job_id):
         return self._action('program_job_status', {'job_id': job_id})
 
+    def inspect_generated_template(self, job_id):
+        return self._action('program_inspect_generated_template', {'job_id': job_id})
+
     def wait(self, job_id, *, timeout=300, progress=None):
         # Full export can contain several independently bounded 180-second
         # pages. A 300-second aggregate cap used to strand page 2/3 mid-job.
