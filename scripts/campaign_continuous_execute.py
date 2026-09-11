@@ -92,14 +92,17 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
         result={'status':'complete' if len(results)==len(plan['segments']) and all(r['status']=='complete' for r in results) else 'blocked',
                 'all_signed_up':len(results)==len(plan['segments']) and all(r.get('all_signed_up') for r in results),
                 'segments':results,'plan_id':plan['plan_id'],'legacy_fallback':False}
-        recordings=[]
-        for p in root.rglob('*-observation.json'):
-            job=load(p);recording=(job.get('result') or {}).get('recording')
-            if recording:recordings.append({'job_id':job['job_id'],'operation':job['operation'],'recording':recording})
+        from campaign_recording_evidence import collect
+        recordings=[];recording_errors=[]
+        for p in [*root.rglob('*-observation.json'),*root.rglob('reused-product-export.json')]:
+            job=load(p)
+            if not job.get('operation'):continue
+            try:recordings.extend(collect(job,artifact_roots))
+            except (OSError,ValueError,KeyError) as exc:
+                recording_errors.append({'job_id':job.get('job_id'),'error_type':type(exc).__name__})
         result['recordings']=recordings
-        result['full_recording_verified']=bool(recordings) and all(
-            r['recording'].get('video') and not r['recording'].get('video_error')
-            and not r['recording'].get('error') and not r['recording'].get('capture_errors') for r in recordings)
+        result['recording_errors']=recording_errors
+        result['full_recording_verified']=bool(recordings) and not recording_errors
         persist(root/'result.json',result)
         return result
     finally:store.db.close()
