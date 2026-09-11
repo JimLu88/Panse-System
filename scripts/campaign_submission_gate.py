@@ -101,7 +101,9 @@ def verify_claim(authority, claim_id):
     items = sorted({r['item'] for r in body[first['phase']+'_rows']})
     if sorted(r['item'] for r in rows) != items:
         raise ValueError('claim_item_scope_incomplete')
-    return dict(verified_claim=True, claim_id=claim_id, file=file, items=items,
+    details=({'sku_rows':[{k:r[k] for k in ('item','sku','deduct')} for r in body['discount_rows']]}
+             if first['phase']=='discount' else {})
+    return dict(verified_claim=True, claim_id=claim_id, file=file, items=items, **details,
                 campaign=body['campaign'], phase=first['phase'], **timing,
                 bundle_id=first['bundle_id'], platform_write=False, automatic_retry=False)
 
