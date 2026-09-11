@@ -77,6 +77,10 @@ class Authority:
                 item TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT,
                 UNIQUE(bundle_id,phase,item));
               CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS discount_amendment_batches(id TEXT PRIMARY KEY, body TEXT NOT NULL, claimed_at TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS discount_amendment_rows(claim_id TEXT NOT NULL, item TEXT NOT NULL, sku TEXT NOT NULL,
+                failed_claim TEXT NOT NULL, offer_id TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT,
+                PRIMARY KEY(claim_id,item,sku), UNIQUE(failed_claim,offer_id,item,sku));
             ''')
         except BaseException:
             self.db.close();raise
@@ -191,7 +195,8 @@ class Authority:
                 body=self.get_bundle(row['bundle_id'])
                 offers[key]=dict(offer_id=key,start=row['start'],end=row['end'],rows=body['discount_rows'],items=[])
             offers[key]['items'].append(dict(item=row['item'],status=row['status']))
-        return list(offers.values())
+        from campaign_discount_amend import apply_confirmed
+        return apply_confirmed(self,list(offers.values()))
 
     def blocked(self, campaign, phase, start, end):
         exact_campaign(campaign);result={}

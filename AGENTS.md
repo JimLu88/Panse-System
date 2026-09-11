@@ -13,6 +13,11 @@ a mandatory signup gate or a browser runtime replacement.
 
 ## Campaign signup authority
 
+For the current failed ordinary-SKU existing-discount amendment only, use
+`docs/campaign-discount-amend-20260911.md`. The local claim/record guard produces
+an exact in-place-edit payload, not a new offer or bulk replay. The browser owner
+must supply real old-value and post-save readbacks; unknown remains blocked.
+
 Current 2026-09-11 user authorization: see `docs/campaign-autumn-two-yuan-20260911.md`.
 Only that exact autumn campaign/window/12%/big target accepts actual reused final
 price absolute delta <= 2 CNY. Generation and claim must share the pinned receipt.

@@ -1,0 +1,19 @@
+{
+  "schema": "campaign_discount_amend_authority_v1",
+  "source_thread_id": "01a067c6-7e83-7483-9a21-84b44ed7299b",
+  "received_by": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "date": "2026-09-11",
+  "user_verbatim": "好的，你继续",
+  "context": "03 relays current user continuation of correcting this 31-item official failure report, including small ordinary SKU existing-discount amendments. Not an authorization inferred from the final-price tolerance alone.",
+  "campaign": "49557/49560/3538210379",
+  "start": "2026-09-16 20:00:00",
+  "end": "2026-09-27 23:59:59",
+  "offer_id": "144956016253",
+  "failed_signup_claim": "f0b16a1280f64514ba8d64dd64cc53db",
+  "failure_report_sha256": "19537ad5d0bf46dcfc13bf326717be37162c999b5e0dd5f8b2071b971dbd54e8",
+  "maximum_amount_adjustment_cny": "2.00",
+  "operation": "edit_existing_sku_deduct_only",
+  "ordinary_only": true,
+  "prohibited": ["new offer", "whole success batch reupload", "cancel", "withdraw", "change ERP daily", "custom SKU amendment", "unrelated successful items", "unknown-outcome retry"],
+  "required": ["exact failed SKU report normalization", "old amount CAS", "current authorization bound to request", "post-write official terminal and actual amount readback", "same campaign final tolerance and window"]
+}

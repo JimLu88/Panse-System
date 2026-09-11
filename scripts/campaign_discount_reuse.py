@@ -85,6 +85,7 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
         detail = dict(base,actual_deduct=str(deduct),ideal_deduct=str(daily-cut-target_price),official_cut=str(cut),
                       final=str(final),target=str(target_price),big_target=str(big),delta=str(delta))
         if policy:detail['final_price_tolerance'] = policy
+        if actual[0].get('amendment_receipt'):detail['amendment_receipt']=actual[0]['amendment_receipt']
         if final <= 0:issues.append(dict(detail,error='actual_reused_discount_final_nonpositive'))
         elif policy and abs(delta) > Decimal(policy['max_absolute_delta_cny']):
             issues.append(dict(detail,error='actual_reused_discount_outside_scoped_tolerance'))
