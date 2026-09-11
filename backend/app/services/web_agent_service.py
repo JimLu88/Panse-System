@@ -1289,58 +1289,15 @@ def campaign_feedback(db: Session, campaign_title: str, *, campaign_id: str,
 
 def campaign_inspect_detail(db: Session, campaign_title: str, *,
                             timeout_s: int = 200) -> dict:
-    """只读进入指定活动，返回可见详情和 URL，供自动计划锁定档期/力度/活动 ID。"""
-    j = _post(db, "/api/campaign/inspect-detail",
-              {"campaign_title": campaign_title}, timeout=30)
-    if not j.get("ok") or not j.get("job"):
-        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
-    final = wait_job(db, j["job"], timeout_s=timeout_s)
-    res = final.get("result") or {}
-    if res.get("need_scan"):
-        return {"ok": False, "need_scan": True, "error": "淘宝登录态已失效"}
-    if not res.get("ok"):
-        return {"ok": False, "step": res.get("step"),
-                "error": res.get("error") or res.get("message") or "活动详情读取失败",
-                "screenshot_base64": res.get("screenshot_base64")}
-    return {"ok": True, "campaign_title": res.get("campaign_title"),
-            "url": res.get("url"), "body_text": res.get("body_text") or "",
-            "actual_titles": res.get("actual_titles") or [],
-            "screenshot_base64": res.get("screenshot_base64")}
+    """Exact observed title -> dedicated Edge; no legacy profile fallback."""
+    from app.services.campaign_official_discovery import observe
+    return observe(db, title=campaign_title)
 
 
 def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
-    """活动生命周期 P4: WA 抓千牛营销活动列表 (POST /api/campaign/discover → wait_job)。
-    返回 {ok, campaigns: [{title, start, end, status, raw}, ...]} 或 {ok:False, error}。"""
-    # The full Windows Agent is intentionally off while idle.  Wake it before
-    # opening the discovery endpoint instead of first spending 30 seconds on a
-    # guaranteed connection timeout.  Browser imports plus the 20-second wake
-    # bridge poll can take about a minute on this workstation, so keep a real
-    # startup margin here.
-    online = ensure_online(db, reason="campaign_discovery", wait_s=420)
-    if not online.get("online"):
-        return {
-            "ok": False,
-            "error": online.get("error") or "活动发现前未能按需启动 Web-Agent",
-            "wake": online,
-        }
-    j = _post(db, "/api/campaign/discover", {}, timeout=30, auto_wake=False)
-    if not j.get("ok") or not j.get("job"):
-        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
-    final = wait_job(db, j["job"], timeout_s=timeout_s)
-    res = final.get("result") or {}
-    if res.get("need_scan"):
-        return {"ok": False, "need_scan": True, "message": res.get("message")}
-    if not res.get("ok"):
-        return {"ok": False,
-                "error": res.get("error") or res.get("message") or "活动发现抓取失败",
-                "tabs": res.get("tabs"),
-                "calendar_opened": res.get("calendar_opened"),
-                "calendar_error": res.get("calendar_error"),
-                "screenshot_base64": res.get("screenshot_base64")}
-    return {"ok": True, "campaigns": res.get("campaigns") or [],
-            "count": res.get("count"), "tabs": res.get("tabs"),
-            "calendar_opened": res.get("calendar_opened"),
-            "calendar_error": res.get("calendar_error")}
+    """Official fixed home -> complete calendar, using only retained Edge."""
+    from app.services.campaign_official_discovery import observe
+    return observe(db)
 
 
 def alipay_accounts(db: Session) -> list:

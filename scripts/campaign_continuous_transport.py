@@ -131,20 +131,26 @@ class CampaignTransport:
 
     def step_generate(self,action_id,payload,folder):
         from campaign_generate_current_files import _generate
+        activity_template=Path(payload['template']['path'])
         if payload['template'].get('fixed_master'):
-            from campaign_product_scope import template_scope_issues
-            from campaign_official_template import template_rows
-            source=Path(payload['template']['path'])
+            from campaign_fixed_template_projection import project
+            source=activity_template
             if file_sha(source)!=payload['template']['sha256']:
                 raise ValueError('fixed_template_changed_before_generation')
             scope=load(self.root/'product-scope.json')
-            issues=template_scope_issues(scope,template_rows(source.read_bytes()),payload['items'])
-            if issues:
-                proof=persist(folder/'sku-scope-issues.json',{
-                    'issues':issues,'product_export_evidence':scope['page_evidence'],
-                    'template_sha256':payload['template']['sha256'],
-                    'platform_write':False,'stock_used_as_enabled_state':False})
-                return {'input_issues':issues,'items':payload['items'],'source_evidence':proof}
+            projected=project(source.read_bytes(),scope,payload['items'])
+            activity_template=folder/'fixed-master-current-skus.xlsx'
+            if activity_template.exists():
+                if activity_template.read_bytes()!=projected:
+                    raise ValueError('fixed_projection_changed')
+            else:
+                with activity_template.open('xb') as stream:stream.write(projected)
+            persist(folder/'fixed-projection.json',{
+                'master_path':str(source),'master_sha256':payload['template']['sha256'],
+                'projection_path':str(activity_template),'projection_sha256':file_sha(activity_template),
+                'product_export_evidence':scope['page_evidence'],
+                'sku_scope':'all_current_export_skus_no_stock_filter',
+                'platform_write':False,'stock_or_listing_switch_changed':False})
         p=payload['identity'];timing=payload.get('time_binding')
         segment=timing['segment'] if timing else None
         window=segment['price_window'] if segment else {k:p[k] for k in ('start','end')}
@@ -158,7 +164,7 @@ class CampaignTransport:
         if set(custom)!=set(wanted):raise ValueError('custom_correction_authority_missing')
         corrections=folder/'custom-corrections.json'
         if custom:persist(corrections,{'rows':list(custom.values())})
-        args=SimpleNamespace(snapshot=self.root/'resolved-snapshot.json',activity_template=Path(payload['template']['path']),
+        args=SimpleNamespace(snapshot=self.root/'resolved-snapshot.json',activity_template=activity_template,
             campaign_key='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id')),
             official_rate=str(p['official_rate']),target=segment['target'] if segment else self.request['target'],
             start=window['start'],end=window['end'],custom_basis_receipt=[],signup_items=','.join(payload['items']),

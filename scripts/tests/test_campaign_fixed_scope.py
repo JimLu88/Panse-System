@@ -56,15 +56,14 @@ def test_incomplete_and_duplicate_facts_rejected():
     with pytest.raises(ValueError,match='duplicate'):template_scope_issues(scope(),rows()+rows()[:1],['1'])
 
 
-def test_transport_does_not_generate_files_or_contact_browser_on_scope_issue(tmp_path):
+def test_transport_does_not_generate_files_or_contact_browser_on_unproven_scope(tmp_path):
     source=tmp_path/'master.xlsx';source.write_bytes(b'local-fixture-only')
     persist(tmp_path/'product-scope.json',scope())
     edge=Mock();authority=Mock()
     transport=CampaignTransport(edge,authority,root=tmp_path,request={},artifact_roots=[tmp_path])
     payload={'items':['1','2'],'template':{'fixed_master':True,'path':str(source),'sha256':file_sha(source)}}
-    with patch('campaign_official_template.template_rows',return_value=rows()[:1]+rows()[2:]),patch(
-            'campaign_generate_current_files._generate') as generate:
-        result=transport.step_generate('one',payload,tmp_path/'action')
-    assert result['input_issues'][0]['sku']=='12'
+    with patch('campaign_generate_current_files._generate') as generate:
+        with pytest.raises(ValueError,match='provenance_invalid'):
+            transport.step_generate('one',payload,tmp_path/'action')
     generate.assert_not_called();assert not edge.mock_calls and not authority.mock_calls
-    assert Path(result['source_evidence']).is_file()
+    assert not (tmp_path/'action'/'fixed-master-current-skus.xlsx').exists()
