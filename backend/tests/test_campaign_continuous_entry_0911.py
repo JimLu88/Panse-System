@@ -34,6 +34,35 @@ def test_http_capability_success_is_not_business_readiness(monkeypatch):
     assert runtime.readiness(None)['platform_write'] is False
 
 
+def test_connection_failure_wakes_once_but_never_submits(monkeypatch):
+    calls=[]
+    def get(*a,**kw):
+        calls.append('get')
+        return {'ok':False,'error':'ConnectionError offline'} if len(calls)==1 else {
+            'ok':True,'ready':False,'rule_id':runtime.RULE_ID,'official_entry':runtime.ENTRY}
+    monkeypatch.setattr(web_agent_service,'_get_raw',get)
+    wakes=[]
+    monkeypatch.setattr(web_agent_service,'ensure_online',lambda *a,**kw:wakes.append(kw) or {'online':True})
+    monkeypatch.setattr(web_agent_service,'_post_raw',lambda *a,**kw:(_ for _ in ()).throw(AssertionError()))
+    assert runtime.readiness(None)['ready'] is False
+    assert len(calls)==2 and len(wakes)==1 and wakes[0]['wait_s']==15
+
+
+def test_auth_error_does_not_wake(monkeypatch):
+    monkeypatch.setattr(web_agent_service,'_get_raw',lambda *a,**kw:{'ok':False,'error':'token 无效'})
+    monkeypatch.setattr(web_agent_service,'ensure_online',lambda *a,**kw:(_ for _ in ()).throw(AssertionError()))
+    assert runtime.readiness(None)['ready'] is False
+
+
+def test_accepted_adapter_dispatches_once(db_session,monkeypatch):
+    settings_service.set_value(db_session,'campaign_auto_enabled','true');db_session.commit()
+    monkeypatch.setattr(runtime,'readiness',lambda db:{'ready':True})
+    calls=[]
+    monkeypatch.setattr(runtime,'dispatch',lambda db:calls.append('submit') or {'state':'running'})
+    result=automation.run_auto_execute(db_session)
+    assert result['submitted']==1 and result['business_complete'] is False and calls==['submit']
+
+
 def test_periodic_discovery_72_hours_persistent_after_failure(db_session, monkeypatch):
     calls = []
     monkeypatch.setattr(discovery, 'run_daily_discovery',

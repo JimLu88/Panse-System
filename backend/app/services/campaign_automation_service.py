@@ -198,6 +198,10 @@ def run_auto_execute(db: Session) -> dict:
     if not enabled(db):
         return {"skipped": "campaign_auto_disabled"}
     result = campaign_continuous_runtime.readiness(db)
+    if result.get('ready') is True:
+        job=campaign_continuous_runtime.dispatch(db)
+        return {'processed':0,'submitted':int(job.get('state')=='running'),'job':job,
+                'legacy_fallback':False,'business_complete':False}
     reason = result.get("error") or "continuous_execution_binding_not_installed"
     notice = _notify_once(
         db, "continuous_transport", "活动自动报名接入待完成",

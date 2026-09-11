@@ -328,9 +328,35 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             discount_retries = []
             # Current official template once per campaign; not again each repair round.
             template = call('template', {'items': state['initial_scope']})
+            registered=set(template.get('registered_items',[]))
+            if not registered.issubset(state['initial_scope']):
+                raise Blocked('template','registered_scope_not_in_requested_products')
+            for item in registered:
+                state['success'].setdefault(item,template['evidence'])
+            if time_binding is not None and time_binding['segment']['kind']=='daily':
+                state['previously_enrolled']=sorted(set(state.get('previously_enrolled',[]))|registered)
+            else:
+                pending=[i for i in pending if i not in registered]
+                state['pending']=pending
+                if not pending:
+                    store.save(run_id,state)
+                    continue
             bundle = call('generate', {'items': pending, 'round': round_no,
                 'template': template, 'price_version': state['price_version'],
                 'corrections': state['corrections'], 'required_discount_items': state['discount_required']})
+            if bundle.get('input_issues'):
+                issues=bundle['input_issues']
+                bad={str(r.get('item','')) for r in issues}
+                if not bad or not bad.issubset(pending):
+                    raise Blocked('generate','input_issue_scope_missing_or_invalid')
+                for item in bad:
+                    state['exceptions'][item]=[{'action':'manual','reason':r.get('error','input_unknown'),
+                        'sku':str(r.get('sku',''))} for r in issues if str(r.get('item'))==item]
+                state['pending']=[i for i in pending if i not in bad]
+                state['discount_required']=[i for i in state['discount_required'] if i not in bad]
+                state['round']+=1
+                store.save(run_id,state)
+                continue  # Local generation only; the cached template is not downloaded again.
             _validate_bundle(bundle, pending, rule_sha, state['price_version'], time_binding)
             discount_items = bundle.get('discount_items')
             if (not isinstance(discount_items, list) or len(discount_items) != len(set(discount_items))

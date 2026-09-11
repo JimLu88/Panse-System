@@ -163,7 +163,12 @@ def _generate(args,authority):
     present={r['item'] for r in identities}
     signup_items=(present if signup_items is None else signup_items)-blocked_signup.keys()
     discount_items=present if discount_items is None else discount_items
-    activity, discounts, issues = build_rows(snapshot,identities,rate,args.target,bases,signup_items,discount_items)
+    missing=(signup_items|discount_items)-present
+    if missing and getattr(args,'continuous_rule_sha',None):
+        activity, discounts, issues=build_rows(snapshot,identities,rate,args.target,bases,signup_items&present,discount_items&present)
+        issues.extend(dict(item=i,sku='',error='item_missing_in_official_template') for i in sorted(missing))
+    else:
+        activity, discounts, issues = build_rows(snapshot,identities,rate,args.target,bases,signup_items,discount_items)
     corrections=load(args.custom_corrections) if getattr(args,'custom_corrections',None) else {'rows':[]}
     by_pair={(r['item'],r['sku']):r for r in activity}
     seen=set()

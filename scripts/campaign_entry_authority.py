@@ -31,7 +31,7 @@ def file_sha(path):
 
 
 def exact_campaign(value):
-    if not re.fullmatch(r'[0-9]+/[0-9]+/[0-9]+', str(value)):
+    if not re.fullmatch(r'(?:[0-9]+/[0-9]+/[0-9]+|legacy/itemApply/[0-9]+)', str(value)):
         raise ValueError('exact_campaign_required:campaignId/unitedActivityId/signRecordId')
     return value
 
@@ -263,8 +263,19 @@ class Authority:
                 body=self.get_bundle(row['bundle_id'])
                 offers[key]=dict(offer_id=key,start=row['start'],end=row['end'],rows=body['discount_rows'],items=[])
             offers[key]['items'].append(dict(item=row['item'],status=row['status']))
+            if row['status']=='success' and row['evidence']:
+                evidence=json.loads(row['evidence'])
+                if file_sha(evidence['path'])!=evidence['sha256']:
+                    raise ValueError('discount_terminal_evidence_changed')
+                doc=load(evidence['path'])
+                if str(doc.get('batch_id','')).isdigit():
+                    previous=offers[key].get('platform_offer_id')
+                    if previous and previous!=str(doc['batch_id']):raise ValueError('discount_offer_id_conflict')
+                    offers[key]['platform_offer_id']=str(doc['batch_id'])
         from campaign_discount_amend import apply_confirmed
-        return apply_confirmed(self,list(offers.values()))
+        result=apply_confirmed(self,list(offers.values()))
+        from campaign_continuous_repairs import apply_verified_amendments
+        return apply_verified_amendments(self,result)
 
     def blocked(self, campaign, phase, start, end):
         exact_campaign(campaign);result={}

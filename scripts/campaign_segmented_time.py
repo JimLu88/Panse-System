@@ -42,7 +42,7 @@ def window(value):
 def _activity(value, shop, kind):
     if value.get('shop_id') != shop:
         raise ValueError('time_plan_shop_mismatch')
-    if (not re.fullmatch(r'\d+/\d+/\d+', str(value.get('campaign', '')))
+    if (not re.fullmatch(r'(?:\d+/\d+/\d+|legacy/itemApply/\d+)', str(value.get('campaign', '')))
             or not value.get('page_evidence')):
         raise ValueError('time_plan_official_identity_or_evidence_missing')
     start, end = window(value)

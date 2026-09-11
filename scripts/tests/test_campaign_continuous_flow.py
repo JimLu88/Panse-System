@@ -192,6 +192,32 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(set(out['exceptions']), {'2'})
         self.assertEqual(driver.signup_count, 2)
 
+    def test_bad_generator_product_does_not_stop_other_products(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='generate' and '2' in payload['items']:
+                value['input_issues']=[{'item':'2','sku':'22','error':'fixed_basis_missing'}]
+            return value
+        driver.execute=execute
+        result=self.run_flow(driver)
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(set(result['exceptions']),{'2'})
+        self.assertEqual(set(result['success']),{'1'})
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='signup'],[['1']])
+        self.assertEqual(sum(s=='template' for s,p in driver.calls),1)
+
+    def test_current_template_registered_product_is_not_uploaded_again(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='template':value['registered_items']=['2']
+            return value
+        driver.execute=execute
+        result=self.run_flow(driver)
+        self.assertTrue(result['all_signed_up'])
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='signup'],[['1']])
+
     def test_unknown_persists_across_restart_no_resubmit(self):
         driver = FakeWebAgent(timeout_at='signup')
         first = self.run_flow(driver)
