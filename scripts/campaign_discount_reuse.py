@@ -32,11 +32,11 @@ def historical_offer(document):
                 evidence_kind='historical_official_import_receipt_not_fresh_readback')
 
 
-def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=None, campaign=None, target=None):
+def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=None, campaign=None, target=None, continuous_rule_sha=None):
     """Partition new/reused rows; report unknown, overlap and actual final errors."""
     from campaign_generate_current_files import official_cut
     from campaign_scoped_tolerance import policy_for
-    policy = policy_for(campaign, start, end, rate, target)
+    policy = policy_for(campaign, start, end, rate, target, continuous_rule_sha=continuous_rule_sha)
     index = {}
     for offer in offers:
         if not (offer['start'] <= end and start <= offer['end']) or offer['offer_id'] == excluding_offer:

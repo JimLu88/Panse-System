@@ -41,6 +41,24 @@ class ScopedToleranceTests(unittest.TestCase):
                     self.assertEqual(Decimal(reuse[0]['delta']),Decimal(delta))
                     self.assertEqual(reuse[0]['final_price_tolerance']['max_absolute_delta_cny'],'2.00')
 
+    def test_new_rule_opt_in_does_not_reinterpret_old_bundle(self):
+        from campaign_continuous_policy import RULE_SHA
+        self.assertIsNone(policy_for(entry.CAMPAIGN,entry.START,entry.END,Decimal('.12'),'big'))
+        policy=policy_for(entry.CAMPAIGN,entry.START,entry.END,Decimal('.12'),'big',continuous_rule_sha=RULE_SHA)
+        self.assertEqual(policy['authorization_sha256'],RULE_SHA)
+        self.assertEqual(policy['max_absolute_delta_cny'],'2.00')
+        for sha,target in [('fake','big'),(RULE_SHA,'medium')]:
+            with self.assertRaises(ValueError):
+                policy_for(entry.CAMPAIGN,entry.START,entry.END,Decimal('.12'),target,continuous_rule_sha=sha)
+        _,result=self.generate(row=dict(self.row,custom=True),continuous_rule_sha=RULE_SHA)
+        body=self.auth.get_bundle(result['entry_bundle_id'])
+        self.assertEqual(body['continuous_rule_sha'],RULE_SHA)
+        validated_body(self.auth,result['entry_bundle_id'],'signup')
+        body.pop('continuous_rule_sha')
+        changed=self.auth.save_bundle(body)
+        with self.assertRaisesRegex(ValueError,'tolerance_version_changed'):
+            validated_body(self.auth,changed,'signup')
+
     def test_scope_isolation_campaign_window_rate_target(self):
         scope=list(SCOPE)
         self.assertIsNotNone(policy_for(*scope))

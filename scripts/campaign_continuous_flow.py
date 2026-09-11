@@ -41,6 +41,8 @@ class Store:
             UNIQUE(run_id,step,payload_sha));
           CREATE TABLE IF NOT EXISTS continuous_campaign_shop_owners(
             shop TEXT PRIMARY KEY, run_id TEXT NOT NULL, owner TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS continuous_campaign_recoveries(
+            action_id TEXT PRIMARY KEY, receipt_sha TEXT NOT NULL, receipt TEXT NOT NULL);
         ''')
 
     def close(self):
@@ -84,6 +86,59 @@ class Store:
     def save(self, run_id, state):
         self.db.execute('UPDATE continuous_campaign_runs SET body=? WHERE id=?',
                         (json.dumps(state, ensure_ascii=False), run_id))
+
+    def recover(self, action_id, receipt):
+        """Accept an exact read-only reconciliation, never resubmit a write.
+
+        The concrete transport must normalize the original official receipt;
+        this method verifies binding and preserves the original action identity.
+        Cannot race a live run or overwrite an already terminal receipt.
+        """
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row = self.db.execute('SELECT run_id,step,payload_sha,status FROM continuous_campaign_actions WHERE id=?',
+                                  (action_id,)).fetchone()
+            if row is None:
+                raise Blocked('recovery', 'unknown_action')
+            owner = self.db.execute('SELECT owner FROM continuous_campaign_runs WHERE id=?', (row[0],)).fetchone()[0]
+            if owner is not None:
+                raise Blocked('recovery', 'active_owner_cannot_reconcile')
+            if (not isinstance(receipt, dict) or receipt.get('action_id') != action_id
+                    or receipt.get('request_sha') != row[2] or receipt.get('status') != 'terminal'
+                    or not receipt.get('evidence') or receipt.get('reconciled_readonly') is not True):
+                raise Blocked('recovery', 'exact_readonly_terminal_receipt_required')
+            previous = self.db.execute('SELECT receipt_sha FROM continuous_campaign_recoveries WHERE action_id=?',
+                                       (action_id,)).fetchone()
+            sha = fingerprint(receipt)
+            if previous:
+                if previous[0] != sha:
+                    raise Blocked('recovery', 'recovery_receipt_is_immutable')
+            elif row[3] == 'done':
+                raise Blocked('recovery', 'completed_action_is_immutable')
+            else:
+                self.db.execute('INSERT INTO continuous_campaign_recoveries VALUES(?,?,?)',
+                                (action_id, sha, json.dumps(receipt, ensure_ascii=False)))
+                self.db.execute('UPDATE continuous_campaign_actions SET status=?,result=? WHERE id=?',
+                                ('done', json.dumps(receipt, ensure_ascii=False), action_id))
+            self.db.execute('COMMIT')
+        except Exception:
+            self.db.execute('ROLLBACK')
+            raise
+
+    def allow_read_retry(self, action_id):
+        """Explicit recovery of an interrupted READ only, never an upload/edit."""
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row = self.db.execute('SELECT a.step,a.status,r.owner FROM continuous_campaign_actions a '
+                'JOIN continuous_campaign_runs r ON r.id=a.run_id WHERE a.id=?', (action_id,)).fetchone()
+            if not row or row[0] in WRITE_STEPS or row[1] != 'interrupted_read' or row[2] is not None:
+                raise Blocked('recovery', 'only_idle_interrupted_reads_can_be_retried')
+            # Only a read-attempt checkpoint is removed, never a business claim.
+            self.db.execute('DELETE FROM continuous_campaign_actions WHERE id=?', (action_id,))
+            self.db.execute('COMMIT')
+        except Exception:
+            self.db.execute('ROLLBACK')
+            raise
 
     def once(self, run_id, step, payload, transport):
         sha = fingerprint(payload)
@@ -153,6 +208,7 @@ def run(store, transport, page, *, expected_shop, observed_links):
     run_id = store.start(identity, rule_sha)
     owner = store.lock(run_id, expected_shop)
     state = store.load(run_id)
+    state.setdefault('discount_required', [])
     base = {'identity': deepcopy(page), 'rule_sha': rule_sha}
 
     def call(step, values):
@@ -161,6 +217,39 @@ def run(store, transport, page, *, expected_shop, observed_links):
     def hold(items, reason):
         for item in items:
             state['exceptions'][item] = [{'action': 'manual', 'reason': reason}]
+
+    def repair_failed(errors, batch, phase):
+        repairs, exceptions = classify_items(errors)
+        state['exceptions'].update(exceptions)
+        for item in list(repairs):
+            signature = fingerprint([d['repair'] for d in repairs[item]])
+            if signature in state['repairs_seen'].get(item, []):
+                hold([item], 'same_correction_already_attempted_without_success')
+                del repairs[item]
+        if not repairs:
+            return []
+        repaired = call('repair', {'decisions': repairs, 'items': sorted(repairs),
+                                   'failed_batch': batch, 'failed_phase': phase})
+        fixed_rows = _terminal_scope(repaired, sorted(repairs))
+        next_items = []
+        for row in fixed_rows:
+            item = row['item']
+            if row['outcome'] == 'success' and row.get('changed') is True:
+                next_items.append(item)
+                state['exceptions'].pop(item, None)
+                state['corrections'][item] = repairs[item]
+                state['repairs_seen'].setdefault(item, []).append(fingerprint([d['repair'] for d in repairs[item]]))
+            else:
+                hold([item], 'repair_failed_or_no_verified_change')
+        return next_items
+
+    def failed_report(batch, items, phase):
+        report = call('report', {'batch': batch, 'items': items, 'failed_phase': phase})
+        errors = report.get('errors') or []
+        if (set(str(e.get('item')) for e in errors) != set(items)
+                or any(e.get('batch') != batch for e in errors)):
+            raise Blocked('report', 'failure_report_scope_or_batch_mismatch')
+        return errors
 
     try:
         if state['status'] == 'complete':
@@ -182,6 +271,8 @@ def run(store, transport, page, *, expected_shop, observed_links):
             state['pending'] = initial_scope
             state['price_version'] = scope['price_version']
             state['initial_scope'] = list(initial_scope)
+            imported = scope.get('prior_failures') or {}
+            state['legacy_failures'] = {}
             for item in list(state['pending']):
                 if prior.get(item) == 'success':
                     state['success'][item] = scope['prior_outcomes_evidence']
@@ -190,28 +281,44 @@ def run(store, transport, page, *, expected_shop, observed_links):
                     hold([item], 'previous_unknown_do_not_replay')
                     state['pending'].remove(item)
                 elif prior.get(item) == 'failed':
-                    # Legacy failed files are not automatically replayed. A separately
-                    # normalized failure import must precede migration into this run.
-                    hold([item], 'legacy_failure_needs_exact_report_import')
+                    legacy = imported.get(item)
+                    if (isinstance(legacy, dict) and legacy.get('batch') and legacy.get('errors')
+                            and all(str(e.get('item')) == item and e.get('batch') == legacy['batch']
+                                    and e.get('terminal') == 'failed' and e.get('official_evidence')
+                                    for e in legacy['errors'])):
+                        state['legacy_failures'][item] = legacy
+                    else:
+                        hold([item], 'legacy_failure_needs_exact_report_import')
                     state['pending'].remove(item)
+            store.save(run_id, state)
+        for item, legacy in list(state.get('legacy_failures', {}).items()):
+            fixed = repair_failed(legacy['errors'], legacy['batch'], 'signup')
+            state['pending'] = sorted(set(state['pending']) | set(fixed))
+            del state['legacy_failures'][item]
             store.save(run_id, state)
         while state['pending']:
             pending, round_no = sorted(state['pending']), state['round']
+            discount_retries = []
             # Current official template once per campaign; not again each repair round.
             template = call('template', {'items': state['initial_scope']})
             bundle = call('generate', {'items': pending, 'round': round_no,
                 'template': template, 'price_version': state['price_version'],
-                'corrections': state['corrections']})
+                'corrections': state['corrections'], 'required_discount_items': state['discount_required']})
             _validate_bundle(bundle, pending, rule_sha, state['price_version'])
             discount_items = bundle.get('discount_items')
             if (not isinstance(discount_items, list) or len(discount_items) != len(set(discount_items))
                     or not set(discount_items).issubset(pending)):
                 raise Blocked('generate', 'discount_scope_invalid')
+            if not set(state['discount_required']).issubset(discount_items):
+                raise Blocked('generate', 'failed_discount_must_not_be_skipped')
             if discount_items:
                 discount = call('discount', {'bundle': bundle, 'items': discount_items})
                 rows = _terminal_scope(discount, discount_items)
                 failed = [r['item'] for r in rows if r['outcome'] == 'failed']
-                hold(failed, 'single_discount_failed')
+                if failed:
+                    errors = failed_report(discount['batch'], failed, 'discount')
+                    discount_retries = repair_failed(errors, discount['batch'], 'discount')
+                state['discount_required'] = discount_retries
                 pending = [i for i in pending if i not in failed]
                 if failed and pending:
                     # Never send a full file with a smaller claimed scope.
@@ -220,8 +327,10 @@ def run(store, transport, page, *, expected_shop, observed_links):
                         'corrections': state['corrections'], 'phase': 'after_discount_partial'})
                     _validate_bundle(bundle, pending, rule_sha, state['price_version'])
             if not pending:
-                state['pending'] = []
-                break
+                state['pending'] = discount_retries
+                state['round'] += 1
+                store.save(run_id, state)
+                continue
             window = call('verify_discount_window', {'bundle': bundle, 'items': pending})
             if (window.get('start') != page['start'] or window.get('end') != page['end']
                     or window.get('all_correct') is not True
@@ -234,38 +343,11 @@ def run(store, transport, page, *, expected_shop, observed_links):
                 if row['outcome'] == 'success':
                     state['success'][row['item']] = signup['evidence']
             if not failed:
-                state['pending'] = []
-                break
-            report = call('report', {'batch': signup['batch'], 'items': failed})
-            errors = report.get('errors') or []
-            if (set(str(e.get('item')) for e in errors) != set(failed)
-                    or any(e.get('batch') != signup['batch'] for e in errors)):
-                raise Blocked('report', 'failure_report_scope_or_batch_mismatch')
-            repairs, exceptions = classify_items(errors)
-            state['exceptions'].update(exceptions)
-            for item in list(repairs):
-                # Batch/time/message noise is excluded from the no-progress identity.
-                signature = fingerprint([d['repair'] for d in repairs[item]])
-                if signature in state['repairs_seen'].get(item, []):
-                    hold([item], 'same_correction_already_attempted_without_success')
-                    del repairs[item]
-            if not repairs:
-                state['pending'] = []
-                break
-            repaired = call('repair', {'decisions': repairs, 'items': sorted(repairs),
-                                       'failed_batch': signup['batch']})
-            fixed_rows = _terminal_scope(repaired, sorted(repairs))
-            next_items = []
-            for row in fixed_rows:
-                item = row['item']
-                if row['outcome'] == 'success' and row.get('changed') is True:
-                    next_items.append(item)
-                    state['corrections'][item] = repairs[item]
-                    state['repairs_seen'].setdefault(item, []).append(
-                        fingerprint([d['repair'] for d in repairs[item]]))
-                else:
-                    hold([item], 'repair_failed_or_no_verified_change')
-            state['pending'] = next_items
+                state['pending'] = discount_retries
+            else:
+                errors = failed_report(signup['batch'], failed, 'signup')
+                next_items = repair_failed(errors, signup['batch'], 'signup')
+                state['pending'] = sorted(set(discount_retries + next_items))
             state['round'] += 1
             store.save(run_id, state)
         state['status'] = 'complete'

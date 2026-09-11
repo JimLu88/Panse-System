@@ -50,3 +50,21 @@ def test_bad_checkpoint_does_not_start_browser(db_session, monkeypatch):
     db_session.commit()
     monkeypatch.setattr(discovery, 'run_daily_discovery', lambda db: (_ for _ in ()).throw(AssertionError()))
     assert discovery.run_periodic_discovery(db_session)['error'] == 'campaign_discovery_checkpoint_invalid'
+
+
+def test_known_campaign_end_triggers_once_before_72_hours(db_session, monkeypatch):
+    from app.models.campaign import CampaignPlan
+    calls=[]
+    monkeypatch.setattr(discovery,'run_daily_discovery',lambda db:calls.append('read') or {'ok':True})
+    now=datetime(2026,9,11,1,tzinfo=timezone.utc)
+    db_session.add(CampaignPlan(name='Exact known campaign',campaign_type='big88',tier='big',
+        platform_campaign_id='123',platform_united_activity_id='456',
+        end_at=datetime(2026,9,11,23,59,59)))
+    db_session.commit()
+    discovery.run_periodic_discovery(db_session,now=now)
+    result=discovery.run_periodic_discovery(db_session,now=datetime(2026,9,11,15,59,59,tzinfo=timezone.utc))
+    assert result['skipped']=='discovery_not_due'
+    discovery.run_periodic_discovery(db_session,now=datetime(2026,9,11,16,tzinfo=timezone.utc))
+    result=discovery.run_periodic_discovery(db_session,now=datetime(2026,9,11,17,tzinfo=timezone.utc))
+    assert result['skipped']=='discovery_not_due'
+    assert calls==['read','read']

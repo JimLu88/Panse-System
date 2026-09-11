@@ -198,6 +198,22 @@ def run_periodic_discovery(db: Session, *, now: datetime | None = None) -> dict:
         except ValueError:
             return {"ok": False, "error": "campaign_discovery_checkpoint_invalid"}
         next_due = previous + timedelta(hours=72)
+        # A known end is a real continuity checkpoint, not another speculative
+        # scan. Existing ERP campaign timestamps are China local wall time.
+        # Consume a boundary once by the persisted attempt time, including when
+        # the browser is offline, so an hourly legacy cron cannot spin on it.
+        from app.models.campaign import CampaignPlan
+        china = timezone(timedelta(hours=8))
+        known = db.execute(select(CampaignPlan).where(
+            CampaignPlan.end_at.is_not(None),
+            CampaignPlan.platform_campaign_id.is_not(None),
+            CampaignPlan.platform_united_activity_id.is_not(None),
+        )).scalars().all()
+        for plan in known:
+            end = plan.end_at
+            boundary = (end.replace(tzinfo=china) if end.tzinfo is None else end).astimezone(timezone.utc) + timedelta(seconds=1)
+            if previous < boundary < next_due:
+                next_due = boundary
         if now < next_due:
             return {"ok": True, "skipped": "discovery_not_due", "next_due": next_due.isoformat()}
     settings_service.set_value(db, key, now.isoformat(),

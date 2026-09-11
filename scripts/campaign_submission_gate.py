@@ -45,7 +45,7 @@ def validated_body(authority, identity, phase):
     from campaign_discount_reuse import reconcile
     if discounts!=body['planned_discount_rows']:raise ValueError('planned_discount_rows_changed')
     discounts,reuse,issues=reconcile(body['signup_rows'],discounts,authority.discount_offers(),body['start'],body['end'],
-                                    discount_rate(body['official_rate']),excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'])
+                                    discount_rate(body['official_rate']),excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'],continuous_rule_sha=body.get('continuous_rule_sha'))
     if issues:raise ValueError('actual_discount_reuse_invalid:'+issues[0]['error'])
     if reuse!=body.get('discount_reuse',[]):raise ValueError('discount_reuse_evidence_changed')
     if discounts!=body['discount_rows']:raise ValueError('discount_formula_changed')
@@ -77,6 +77,47 @@ def run_once(bundle_id, phase, submit_callback, *, authority=None):
         if owned:authority.close()
 
 
+def verify_claim(authority, claim_id):
+    """Revalidate a previously claimed exact file; never claim or submit again."""
+    import re
+    if not re.fullmatch('[0-9a-f]{32}', str(claim_id)):
+        raise ValueError('invalid_claim_id')
+    binding=authority.db.execute('SELECT transport,state FROM claim_transports WHERE claim_id=?',(claim_id,)).fetchone()
+    if not binding or tuple(binding)!=('dedicated_edge_v1','claimed_not_dispatched'):
+        raise ValueError('claim_not_freshly_bound_or_already_dispatched_do_not_replay')
+    rows = list(authority.db.execute('SELECT * FROM attempts WHERE id LIKE ?', (claim_id+':%',)))
+    if not rows or any(r['status'] != 'unknown' for r in rows):
+        raise ValueError('claim_missing_or_already_terminal')
+    keys = ('bundle_id', 'campaign', 'phase', 'start', 'end')
+    first = rows[0]
+    if any(any(r[k] != first[k] for k in keys) for r in rows):
+        raise ValueError('claim_identity_inconsistent')
+    body, file = validated_body(authority, first['bundle_id'], first['phase'])
+    items = sorted({r['item'] for r in body[first['phase']+'_rows']})
+    if sorted(r['item'] for r in rows) != items:
+        raise ValueError('claim_item_scope_incomplete')
+    return dict(verified_claim=True, claim_id=claim_id, file=file, items=items,
+                campaign=body['campaign'], phase=first['phase'], start=body['start'], end=body['end'],
+                bundle_id=first['bundle_id'], platform_write=False, automatic_retry=False)
+
+
+def consume_claim(authority, claim_id, job_id):
+    """Atomic once-only dispatch, including across different Web-Agent hosts."""
+    import re
+    if not re.fullmatch('[0-9a-f]{64}',str(job_id)):
+        raise ValueError('invalid_transport_job')
+    authority.db.execute('BEGIN IMMEDIATE')
+    try:
+        result=verify_claim(authority,claim_id)
+        changed=authority.db.execute("UPDATE claim_transports SET state='dispatched_unknown',job_id=? "
+            "WHERE claim_id=? AND state='claimed_not_dispatched'",(job_id,claim_id)).rowcount
+        if changed!=1:raise ValueError('claim_dispatch_already_consumed')
+        authority.db.execute('COMMIT')
+        return dict(result,dispatch_consumed=True,job_id=job_id)
+    except BaseException:
+        authority.db.execute('ROLLBACK');raise
+
+
 def main():
     """Process-separated owner transport: claim before write, record after terminal."""
     import argparse
@@ -86,17 +127,27 @@ def main():
     claim=sub.add_parser('claim')
     claim.add_argument('--bundle',required=True)
     claim.add_argument('--phase',choices=['discount','signup'],required=True)
+    claim.add_argument('--transport',choices=['dedicated_edge_v1'])
     record=sub.add_parser('record')
     record.add_argument('--claim',required=True)
     record.add_argument('--receipt',type=Path,required=True)
+    verify=sub.add_parser('verify-claim')
+    verify.add_argument('--claim',required=True)
+    consume=sub.add_parser('consume-claim')
+    consume.add_argument('--claim',required=True)
+    consume.add_argument('--job',required=True)
     args=parser.parse_args();authority=Authority()
     try:
         if args.command=='claim':
             body,file=validated_body(authority,args.bundle,args.phase)
-            claim_id=authority.claim(args.bundle,args.phase)
+            claim_id=authority.claim(args.bundle,args.phase,transport=args.transport)
             print(json.dumps(dict(claim_id=claim_id,file=file,campaign=body['campaign'],phase=args.phase,
                                   start=body['start'],end=body['end'],state='unknown_until_official_terminal',
                                   platform_write=False,automatic_retry=False),ensure_ascii=False))
+        elif args.command=='verify-claim':
+            print(json.dumps(verify_claim(authority,args.claim),ensure_ascii=False))
+        elif args.command=='consume-claim':
+            print(json.dumps(consume_claim(authority,args.claim,args.job),ensure_ascii=False))
         else:
             receipt=load(args.receipt)
             authority.terminal(args.claim,dict(receipt,evidence_path=str(args.receipt.resolve())))

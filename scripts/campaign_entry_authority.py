@@ -76,6 +76,8 @@ class Authority:
                 campaign TEXT NOT NULL, phase TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL,
                 item TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT,
                 UNIQUE(bundle_id,phase,item));
+              CREATE TABLE IF NOT EXISTS claim_transports(claim_id TEXT PRIMARY KEY,
+                transport TEXT NOT NULL, state TEXT NOT NULL, job_id TEXT);
               CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS fixed_source_corrections(old_path TEXT PRIMARY KEY, old_sha256 TEXT NOT NULL,
                 new_path TEXT NOT NULL, new_sha256 TEXT NOT NULL, reason TEXT NOT NULL, changed_rows TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -312,11 +314,12 @@ class Authority:
         if digest(body)!=identity:raise ValueError('authority_bundle_changed')
         return body
 
-    def claim(self, identity, phase):
+    def claim(self, identity, phase, *, transport=None):
         body=self.get_bundle(identity)
         from campaign_scoped_tolerance import validate_bundle_policy
         validate_bundle_policy(body)
         if phase not in ('signup','discount'):raise ValueError('invalid_phase')
+        if transport not in (None,'dedicated_edge_v1'):raise ValueError('unsupported_claim_transport')
         items=sorted({r['item'] for r in body[phase+'_rows']})
         if not items:raise ValueError('empty_phase')
         self.db.execute('BEGIN IMMEDIATE')
@@ -331,12 +334,15 @@ class Authority:
                 from campaign_official_template import discount_rate
                 _,reuse,issues=reconcile(body['signup_rows'],body['planned_discount_rows'],self.discount_offers(),
                                          body['start'],body['end'],discount_rate(body['official_rate']),
-                                         excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'])
+                                         excluding_offer='bundle:'+identity,campaign=body['campaign'],target=body['target'],continuous_rule_sha=body.get('continuous_rule_sha'))
                 if issues:raise ValueError('actual_discount_reuse_invalid:'+issues[0]['error'])
                 if reuse!=body.get('discount_reuse',[]):raise ValueError('discount_reuse_evidence_changed')
             claim=uuid.uuid4().hex
             for item in items:self.db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?)',
                 (claim+':'+item,identity,body['campaign'],phase,body['start'],body['end'],item,'unknown',None))
+            if transport:
+                self.db.execute('INSERT INTO claim_transports VALUES(?,?,?,NULL)',
+                                (claim,transport,'claimed_not_dispatched'))
             self.db.execute('COMMIT');return claim
         except BaseException:
             self.db.execute('ROLLBACK');raise

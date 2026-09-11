@@ -138,10 +138,11 @@ class FakeWebAgent:
         elif step == 'generate':
             out.update(items=items, validated_rule_sha=payload['rule_sha'], price_version='fixed-v1',
                        full_active_skus=True, file_sha=fingerprint(items),
-                       discount_items=items if payload['round'] == 0 else [])
+                       discount_items=items if payload['round'] == 0 else payload.get('required_discount_items', []))
         elif step == 'discount':
+            prior_discount = sum(s == 'discount' for s, _p in self.calls)
             out.update(batch='D1', items=[{'item': i, 'outcome': 'failed' if
-                self.discount_failure and i == '2' else 'success'} for i in items])
+                self.discount_failure and i == '2' and prior_discount == 1 else 'success'} for i in items])
         elif step == 'verify_discount_window':
             out.update(start=PAGE['start'], end=PAGE['end'], all_correct=True, items=items)
         elif step == 'signup':
@@ -212,10 +213,55 @@ class FlowTests(unittest.TestCase):
     def test_discount_failure_does_not_submit_full_file_or_wrong_scope(self):
         driver = FakeWebAgent(discount_failure=True)
         out = self.run_flow(driver)
-        self.assertFalse(out['all_signed_up'])
+        self.assertTrue(out['all_signed_up'])
         signup = [p for s, p in driver.calls if s == 'signup'][0]
         self.assertEqual(signup['items'], ['1'])
         self.assertEqual(signup['bundle']['items'], ['1'])
+        self.assertEqual([p['items'] for s, p in driver.calls if s == 'discount'], [['1', '2'], ['2']])
+
+    def test_unknown_write_recovery_uses_readonly_receipt_without_reupload(self):
+        driver = FakeWebAgent(timeout_at='signup')
+        out = self.run_flow(driver)
+        row = self.store.db.execute("SELECT id,payload_sha FROM continuous_campaign_actions WHERE step='signup'").fetchone()
+        receipt = {'status': 'terminal', 'action_id': row[0], 'request_sha': row[1],
+                   'reconciled_readonly': True, 'evidence': 'offline-reconciliation-only', 'batch': 'KNOWN',
+                   'items': [{'item': i, 'outcome': 'success'} for i in ['1', '2']]}
+        self.store.recover(row[0], receipt)
+        resumed = FakeWebAgent()
+        self.assertTrue(self.run_flow(resumed)['all_signed_up'])
+        self.assertEqual(resumed.calls, [])
+        with self.assertRaises(Blocked):
+            self.store.recover(row[0], dict(receipt, batch='CHANGED'))
+
+    def test_recovery_rejects_wrong_payload_and_read_retry_of_write(self):
+        self.run_flow(FakeWebAgent(timeout_at='signup'))
+        row = self.store.db.execute("SELECT id,payload_sha FROM continuous_campaign_actions WHERE step='signup'").fetchone()
+        with self.assertRaises(Blocked):
+            self.store.allow_read_retry(row[0])
+        with self.assertRaises(Blocked):
+            self.store.recover(row[0], {'status': 'terminal', 'action_id': row[0], 'request_sha': 'wrong',
+                                      'evidence': 'test', 'reconciled_readonly': True})
+
+    def test_interrupted_read_can_resume_after_explicit_recovery(self):
+        self.run_flow(FakeWebAgent(timeout_at='scope'))
+        action = self.store.db.execute("SELECT id FROM continuous_campaign_actions WHERE step='scope'").fetchone()[0]
+        self.store.allow_read_retry(action)
+        self.assertTrue(self.run_flow(FakeWebAgent())['all_signed_up'])
+
+    def test_imported_old_failure_is_repaired_not_replayed_unchanged(self):
+        driver = FakeWebAgent()
+        original = driver.execute
+        def with_history(step, action, payload):
+            result = original(step, action, payload)
+            if step == 'scope':
+                result.update(prior_outcomes={'1': 'success', '2': 'failed'},
+                    prior_failures={'2': {'batch': 'OLD', 'errors': [error(batch='OLD')]}})
+            return result
+        driver.execute = with_history
+        self.run_flow(driver)
+        steps = [s for s, _p in driver.calls]
+        self.assertEqual(steps[:2], ['scope', 'repair'])
+        self.assertTrue(all(p['items'] == ['2'] for s, p in driver.calls if s == 'signup'))
 
     def test_concurrent_owner_blocked(self):
         run_id = self.store.start('identity', 'rule')

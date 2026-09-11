@@ -179,9 +179,10 @@ def _generate(args,authority):
         except ValueError as exc:issues.append(dict(item=pair[0],sku=pair[1],error=str(exc)))
     from campaign_discount_reuse import reconcile
     from campaign_scoped_tolerance import policy_for
-    tolerance = policy_for(campaign,args.start,args.end,rate,args.target)
+    continuous_rule_sha = getattr(args, 'continuous_rule_sha', None)
+    tolerance = policy_for(campaign,args.start,args.end,rate,args.target,continuous_rule_sha=continuous_rule_sha)
     planned_discounts=discounts
-    discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target)
+    discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target,continuous_rule_sha=continuous_rule_sha)
     issues.extend(reuse_issues)
     result = dict(status='local_input_issues' if issues else 'local_files_ready_not_uploaded',platform_write=False,database_write=False,automatic_retry=False,price_version=snapshot['resolved_price_version_sha256'],official_rate=str(rate),target=args.target,window={'start':args.start,'end':args.end,'timezone':'Asia/Shanghai'},activity_rows=activity,discount_rows=discounts,discount_reuse=reused,issues=issues,activity_template_sha256=sha(raw),files=[],note='Registered local evidence only, not a platform preflight or fresh readback. Actual reused amounts must meet frozen targets; no inherited tolerance. No upload files on issues. Business database untouched; local authority persisted.')
     result['explicit_signup_items'] = sorted(signup_items) if signup_items is not None else None
@@ -215,6 +216,8 @@ def _generate(args,authority):
                   template_path=str(args.activity_template.resolve()),template_sha256=sha(raw),
                   official_rate=args.official_rate,target=args.target,signup_items=sorted(signup_items),discount_items=sorted(discount_items),
                   signup_rows=activity,discount_rows=discounts,planned_discount_rows=planned_discounts,discount_reuse=reused,corrections=corrections,files=result['files'])
+        if continuous_rule_sha is not None:
+            body['continuous_rule_sha']=continuous_rule_sha
         result['entry_bundle_id']=authority.save_bundle(body)
         result['submission_entry']='campaign_submission_gate.run_once'
     with (args.output_dir/'receipt.json').open('x',encoding='utf-8') as stream:
@@ -227,6 +230,7 @@ if __name__ == '__main__':
     parser.add_argument('--snapshot',type=Path,required=True)
     parser.add_argument('--campaign-key',required=True,help='Exact campaignId/unitedActivityId/signRecordId, not title or template filename')
     parser.add_argument('--custom-corrections',type=Path,help='Only current failed exact custom SKUs with pinned authorization/failure receipts; no ordinary price overrides')
+    parser.add_argument('--continuous-rule-sha',help='Explicit approved continuous policy for new bundles only; omitted preserves historical rules')
     parser.add_argument('--activity-template',type=Path,required=True)
     parser.add_argument('--discount-template',type=Path,default=FIXED_TEMPLATE,help='Optional byte-identical local copy of the fixed single-discount master; never download per campaign')
     parser.add_argument('--official-rate',required=True)
