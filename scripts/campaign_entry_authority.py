@@ -77,6 +77,8 @@ class Authority:
                 item TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT,
                 UNIQUE(bundle_id,phase,item));
               CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY, kind TEXT NOT NULL, sha256 TEXT NOT NULL);
+              CREATE TABLE IF NOT EXISTS fixed_source_corrections(old_path TEXT PRIMARY KEY, old_sha256 TEXT NOT NULL,
+                new_path TEXT NOT NULL, new_sha256 TEXT NOT NULL, reason TEXT NOT NULL, changed_rows TEXT NOT NULL, created_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS discount_amendment_batches(id TEXT PRIMARY KEY, body TEXT NOT NULL, claimed_at TEXT NOT NULL);
               CREATE TABLE IF NOT EXISTS discount_amendment_rows(claim_id TEXT NOT NULL, item TEXT NOT NULL, sku TEXT NOT NULL,
                 failed_claim TEXT NOT NULL, offer_id TEXT NOT NULL, status TEXT NOT NULL, evidence TEXT,
@@ -92,6 +94,9 @@ class Authority:
         if kind not in ('fixed','mapping','outcome','rotation','discount'):raise ValueError('unsupported_authority_source')
         if file_sha(path)!=expected_sha:raise ValueError('source_version_mismatch')
         doc=load(path)
+        if kind=='fixed':
+            from campaign_price_basis import receipt_records
+            if not receipt_records(doc,path):raise ValueError('fixed_source_requires_valid_basis_records')
         if kind=='outcome' and doc.get('schema')=='campaign_entry_outcome_v1':
             exact_campaign(doc['campaign'])
             if doc['phase'] not in ('signup','discount') or not doc.get('batch_id'):
@@ -106,10 +111,25 @@ class Authority:
         self.db.execute('INSERT OR IGNORE INTO sources VALUES(?,?,?)',(str(path),kind,expected_sha))
 
     def sources(self):
-        result=[]
+        result=[];seen={}
+        corrections={r['old_path']:dict(r) for r in self.db.execute('SELECT * FROM fixed_source_corrections')}
         for source in self.config['sources']+list(map(dict,self.db.execute('SELECT * FROM sources'))):
+            source=dict(source)
             path=Path(source['path'])
             if not path.is_absolute():path=ROOT/path
+            path=path.resolve();visited=set()
+            while str(path) in corrections:
+                if str(path) in visited:raise ValueError('fixed_source_correction_cycle')
+                visited.add(str(path));fix=corrections[str(path)]
+                if source['kind']!='fixed' or source['sha256']!=fix['old_sha256'] or file_sha(path)!=fix['old_sha256']:
+                    raise ValueError('fixed_source_correction_audit_changed')
+                path=Path(fix['new_path']);source=dict(path=str(path),kind='fixed',sha256=fix['new_sha256'])
+            key=str(path)
+            version=(source['kind'],source['sha256'])
+            if key in seen:
+                if seen[key]!=version:raise ValueError('source_descriptor_conflict')
+                continue
+            seen[key]=version
             try:
                 if file_sha(path)!=source['sha256']:raise ValueError('source_version_mismatch:'+str(path))
                 result.append({**source,'path':str(path),'document':load(path)})
@@ -117,6 +137,52 @@ class Authority:
                 if source['kind']!='fixed':raise
                 result.append({**source,'path':str(path),'document':None,'unavailable':True})
         return result
+
+    def correct_fixed_floor_source(self, old_path, old_sha, new_path, new_sha):
+        """Audited precision-only replacement; cannot rebase originals or scope."""
+        from datetime import datetime, timezone
+        old_path=Path(old_path).resolve();new_path=Path(new_path).resolve()
+        if old_path==new_path or file_sha(old_path)!=old_sha or file_sha(new_path)!=new_sha:
+            raise ValueError('fixed_floor_correction_source_hash_or_path')
+        old,new=load(old_path),load(new_path)
+        if new.get('schema')!='campaign_user_established_fixed_baseline_v1' or old.get('schema')!=new['schema']:
+            raise ValueError('fixed_floor_correction_schema')
+        if Path(new.get('supersedes_receipt','')).resolve()!=old_path or not new.get('correction_reason'):
+            raise ValueError('fixed_floor_correction_provenance')
+        metadata={k:v for k,v in new.items() if k not in ('rows','supersedes_receipt','correction_reason')}
+        if metadata!={k:v for k,v in old.items() if k!='rows'}:raise ValueError('fixed_floor_correction_authority_changed')
+        if len(old['rows'])!=len(new['rows']) or not old['rows']:raise ValueError('fixed_floor_correction_scope_changed')
+        identities=set();changed=[]
+        for before,after in zip(old['rows'],new['rows']):
+            identity=(after['item'],after['sku'],after['erp_code'])
+            if identity in identities:raise ValueError('fixed_floor_correction_duplicate_identity')
+            identities.add(identity)
+            if {k:v for k,v in before.items() if k!='fixed_floor'}!={k:v for k,v in after.items() if k!='fixed_floor'}:
+                raise ValueError('fixed_floor_correction_not_precision_only')
+            fixed_basis(after['fixed_original_record'],after['fixed_floor'])
+            if before['fixed_floor']!=after['fixed_floor']:
+                try:fixed_basis(before['fixed_original_record'],before['fixed_floor'])
+                except ValueError:pass
+                else:raise ValueError('fixed_floor_correction_valid_basis_immutable')
+                changed.append(dict(item=identity[0],sku=identity[1],erp_code=identity[2],old_floor=before['fixed_floor'],new_floor=after['fixed_floor']))
+        if not changed:raise ValueError('fixed_floor_correction_no_changes')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            existing=self.db.execute('SELECT * FROM fixed_source_corrections WHERE old_path=?',(str(old_path),)).fetchone()
+            if existing:
+                if (existing['old_sha256'],existing['new_path'],existing['new_sha256'])!=(old_sha,str(new_path),new_sha):
+                    raise ValueError('fixed_floor_correction_conflict')
+                self.db.execute('COMMIT');return dict(existing,idempotent=True)
+            source=self.db.execute('SELECT * FROM sources WHERE path=?',(str(old_path),)).fetchone()
+            if not source or source['kind']!='fixed' or source['sha256']!=old_sha:
+                raise ValueError('fixed_floor_correction_old_registration_mismatch')
+            self.register_source(new_path,'fixed',new_sha)
+            self.db.execute('INSERT INTO fixed_source_corrections VALUES(?,?,?,?,?,?,?)',
+                (str(old_path),old_sha,str(new_path),new_sha,new['correction_reason'],json.dumps(changed),datetime.now(timezone.utc).isoformat()))
+            self.db.execute('COMMIT')
+            return dict(old_path=str(old_path),old_sha256=old_sha,new_path=str(new_path),new_sha256=new_sha,changed_rows=changed,idempotent=False)
+        except BaseException:
+            self.db.execute('ROLLBACK');raise
 
     def resolve_snapshot(self, snapshot):
         from campaign_price_snapshot import apply_rotation_receipt

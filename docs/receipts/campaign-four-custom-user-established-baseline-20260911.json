@@ -1,0 +1,53 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-11T01:49:05+08:00",
+  "source_thread_id": "01a067c6-7e83-7483-9a21-84b44ed7299b",
+  "user_verbatim": "这个我不知道，但是我现在授权你可以随便更改，因为定制价格具体是什么样的其实无所谓。\n\n你以现在为基线，以后记录入程序，不要再有这样的问题就可以。",
+  "scope": "Only four custom SKUs in preceding user question. One-time establishment from current ERP daily; not global authority to rebase.",
+  "policy": "Fix this baseline going forward; retain 20% floor across later reductions and verified replacement lineage; ordinary SKU and other existing baselines unchanged.",
+  "first_ever_historical_record_claimed": false,
+  "baseline_source": "Live ERP pricing_sku daily readback at this user instruction, consistent with 02 read-only receipt.",
+  "corroborating_receipt": "D:/AI/畔色ERP系统/outputs/01a03341-b2cd-7810-92f3-66fad189521d/four-custom-basis-and-furniture-lineage-20260911.json",
+  "rows": [
+    {
+      "item": "1037239277197",
+      "sku": "6053938801793",
+      "erp_code": "PPS2639007031599",
+      "name": "材质定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037239277197",
+      "sku": "6069704449710",
+      "erp_code": "PPS2639007031598",
+      "name": "尺寸微定制",
+      "fixed_original_record": "210.00",
+      "fixed_floor": "42.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "719436834260",
+      "sku": "5012620812067",
+      "erp_code": "PPS2398001060699",
+      "name": "其他样块",
+      "fixed_original_record": "25.00",
+      "fixed_floor": "5.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "719436834260",
+      "sku": "5556333932522",
+      "erp_code": "PPS2398001060698",
+      "name": "颜色定制",
+      "fixed_original_record": "25.00",
+      "fixed_floor": "5.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    }
+  ]
+}

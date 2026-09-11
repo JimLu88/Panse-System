@@ -1,0 +1,792 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-11T04:56:44.787252+00:00",
+  "source_thread_id": "01a067c6-7e83-7483-9a21-84b44ed7299b",
+  "user_verbatim": "这31件里的78条定制 SKU，是否也按当前价格建立新的固定基线，以后最低保留20%？ ---可以，这个程序里有，你以后自己看。",
+  "scope": "Exactly 78 custom SKUs in autumn remaining31 submission; not global rebase authority.",
+  "policy": "Fixed current ERP daily baseline established now; minimum 20 percent remains fixed across reductions and verified replacement lineage. Preserve existing baselines.",
+  "first_ever_historical_record_claimed": false,
+  "baseline_source": "D:/AI/畔色ERP系统/outputs/01a067c6-7e83-7483-9a21-84b44ed7299b/current-78-erp-baseline-readback-20260911.json",
+  "rows": [
+    {
+      "item": "1038087212258",
+      "sku": "6218710947081",
+      "erp_code": "PPS2638005030199",
+      "name": "免安装 材质定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038087212258",
+      "sku": "6069705665442",
+      "erp_code": "PPS2638005030198",
+      "name": "免安装 尺寸微定制",
+      "fixed_original_record": "250.00",
+      "fixed_floor": "50.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038088884522",
+      "sku": "6218226478208",
+      "erp_code": "PPS2638006032099",
+      "name": "免安装 材质定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038088884522",
+      "sku": "6069706605375",
+      "erp_code": "PPS2638006032098",
+      "name": "免安装 尺寸微定制",
+      "fixed_original_record": "250.00",
+      "fixed_floor": "50.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1044450741007",
+      "sku": "6066017208185",
+      "erp_code": "PPS2525009040199",
+      "name": "其它定制",
+      "fixed_original_record": "500.00",
+      "fixed_floor": "100.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1044450741007",
+      "sku": "6066017208184",
+      "erp_code": "PPS2525009040198",
+      "name": "尺寸微定制",
+      "fixed_original_record": "500.00",
+      "fixed_floor": "100.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1046991099343",
+      "sku": "6076828285640",
+      "erp_code": "PFG2521104011299",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1046992019256",
+      "sku": "6241068342543",
+      "erp_code": "PFG2521101122099",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1046992283533",
+      "sku": "6241476755540",
+      "erp_code": "PFG2521102122299",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1047735990678",
+      "sku": "6241061810058",
+      "erp_code": "PFG2525005122099",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1047741902625",
+      "sku": "6076826145980",
+      "erp_code": "PFG2521002122299",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1048684921443",
+      "sku": "6241449227936",
+      "erp_code": "PFG2525001122599",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1049596868352",
+      "sku": "6076827049564",
+      "erp_code": "PFG2621006010299",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "983187789816",
+      "sku": "6238843254386",
+      "erp_code": "PPS2521009040599",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "983187789816",
+      "sku": "6242473634362",
+      "erp_code": "PPS2521009040598",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1035582527998",
+      "sku": "6069401344490",
+      "erp_code": "PPS2633014011798",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1035582527998",
+      "sku": "6069401344491",
+      "erp_code": "PPS2633014011799",
+      "name": "松木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1035582527998",
+      "sku": "6069401344492",
+      "erp_code": "PPS2633014011797",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1035582527998",
+      "sku": "6069401344493",
+      "erp_code": "PPS2633014011796",
+      "name": "松木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036273574687",
+      "sku": "6070339397128",
+      "erp_code": "PPS2633011022698",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036273574687",
+      "sku": "6070339397129",
+      "erp_code": "PPS2633011022699",
+      "name": "松木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036273574687",
+      "sku": "6070339397130",
+      "erp_code": "PPS2633011022697",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036273574687",
+      "sku": "6070339397131",
+      "erp_code": "PPS2633011022696",
+      "name": "松木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036471324464",
+      "sku": "6069698693749",
+      "erp_code": "PPS2525013042098",
+      "name": "尺寸微定制",
+      "fixed_original_record": "250.00",
+      "fixed_floor": "50.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1036471324464",
+      "sku": "6298076182714",
+      "erp_code": "PPS2525013042099",
+      "name": "定制尺寸",
+      "fixed_original_record": "5000.00",
+      "fixed_floor": "1000.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037224597517",
+      "sku": "6234994191784",
+      "erp_code": "PPS2633012032799",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037224597517",
+      "sku": "6234994191785",
+      "erp_code": "PPS2633012032798",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037237545657",
+      "sku": "6069389752795",
+      "erp_code": "PPS2633015011898",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037237545657",
+      "sku": "6069389752796",
+      "erp_code": "PPS2633015011899",
+      "name": "松木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037237545657",
+      "sku": "6069389752797",
+      "erp_code": "PPS2633015011897",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1037237545657",
+      "sku": "6069389752798",
+      "erp_code": "PPS2633015011896",
+      "name": "松木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038062316046",
+      "sku": "6234599562211",
+      "erp_code": "PPS2633007032098",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038062316046",
+      "sku": "6234599562212",
+      "erp_code": "PPS2633007032099",
+      "name": "松木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038062316046",
+      "sku": "6234599562213",
+      "erp_code": "PPS2633007032097",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038062316046",
+      "sku": "6234599562214",
+      "erp_code": "PPS2633007032096",
+      "name": "松木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038071596128",
+      "sku": "6234557358067",
+      "erp_code": "PPS2633013011598",
+      "name": "榉木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038071596128",
+      "sku": "6234557358068",
+      "erp_code": "PPS2633013011599",
+      "name": "松木 黑胡桃木材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038071596128",
+      "sku": "6234557358069",
+      "erp_code": "PPS2633013011597",
+      "name": "榉木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "1038071596128",
+      "sku": "6234557358070",
+      "erp_code": "PPS2633013011596",
+      "name": "松木 尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793052650673",
+      "sku": "5933484871217",
+      "erp_code": "PPS2435001041099",
+      "name": "整装 其他材质定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793052650673",
+      "sku": "6150018654216",
+      "erp_code": "PPS2435001041098",
+      "name": "整装 差价",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793052650673",
+      "sku": "6222326971493",
+      "erp_code": "PPS2435001041097",
+      "name": "整装 尺寸微定制",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793178436895",
+      "sku": "5433382924637",
+      "erp_code": "PPS2435002042599",
+      "name": "整装 尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5647543899906",
+      "erp_code": "PPS2398002121212",
+      "name": "黑胡桃木(咨询客服)",
+      "fixed_original_record": "5246.00",
+      "fixed_floor": "1049.20",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5647571691285",
+      "erp_code": "PPS2398002121213",
+      "name": "白橡木(咨询客服)",
+      "fixed_original_record": "4168.00",
+      "fixed_floor": "833.60",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5647543899907",
+      "erp_code": "PPS2398002121214",
+      "name": "红橡木(咨询客服)",
+      "fixed_original_record": "3449.00",
+      "fixed_floor": "689.80",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5647543899908",
+      "erp_code": "PPS2398002121215",
+      "name": "榉木(咨询客服)",
+      "fixed_original_record": "3449.00",
+      "fixed_floor": "689.80",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5648925559994",
+      "erp_code": "PPS2398002121216",
+      "name": "白蜡木(咨询客服)",
+      "fixed_original_record": "4168.00",
+      "fixed_floor": "833.60",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "805268708396",
+      "sku": "5503342081613",
+      "erp_code": "PPS2398002121299",
+      "name": "颜色定制（咨询客服）",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840301943626",
+      "sku": "6041970032668",
+      "erp_code": "PPS2455001090135",
+      "name": "洞石背板",
+      "fixed_original_record": "541.67",
+      "fixed_floor": "108.33",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840301943626",
+      "sku": "5916503962527",
+      "erp_code": "PPS2455001090199",
+      "name": "尺寸定制",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840301943626",
+      "sku": "6242873591416",
+      "erp_code": "PPS2455001090198",
+      "name": "尺寸微定制",
+      "fixed_original_record": "541.67",
+      "fixed_floor": "108.33",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840643621692",
+      "sku": "5917906151868",
+      "erp_code": "PPS2445003091598",
+      "name": "配件-竖隔板",
+      "fixed_original_record": "360.00",
+      "fixed_floor": "72.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840643621692",
+      "sku": "6298238302289",
+      "erp_code": "PPS2445003091599",
+      "name": "尺寸定制",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840659847455",
+      "sku": "5917936191345",
+      "erp_code": "PPS2425007090196",
+      "name": "插座配件单拍咨询客服",
+      "fixed_original_record": "900.00",
+      "fixed_floor": "180.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423528",
+      "erp_code": "PPS2425007090197",
+      "name": "蜜蜡色定制咨询",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423529",
+      "erp_code": "PPS2425007090198",
+      "name": "其它尺寸定制",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423530",
+      "erp_code": "PPS2425007090199",
+      "name": "其他材质定制",
+      "fixed_original_record": "1500.20",
+      "fixed_floor": "300.04",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "918340407291",
+      "sku": "5810261220025",
+      "erp_code": "PPS2521008040199",
+      "name": "尺寸定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "918340407291",
+      "sku": "6241436939485",
+      "erp_code": "PPS2521008040198",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "918692510350",
+      "sku": "5788092280413",
+      "erp_code": "PPS2521011041599",
+      "name": "其他尺寸材质定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "918692510350",
+      "sku": "6076788917629",
+      "erp_code": "PPS2521011041598",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "928309307277",
+      "sku": "5978632182731",
+      "erp_code": "PPS2525009040397",
+      "name": "尺寸定制",
+      "fixed_original_record": "100.00",
+      "fixed_floor": "20.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "928309307277",
+      "sku": "6076787609267",
+      "erp_code": "PPS2525009040396",
+      "name": "尺寸微定制",
+      "fixed_original_record": "100.00",
+      "fixed_floor": "20.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717388593550",
+      "sku": "6221831382723",
+      "erp_code": "PPS2325005020299",
+      "name": "尺寸微定制",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040412",
+      "erp_code": "PPS2325005020295",
+      "name": "黑胡桃木定制",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040413",
+      "erp_code": "PPS2325005020296",
+      "name": "白橡木/白蜡木定制",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040414",
+      "erp_code": "PPS2325005020297",
+      "name": "白色岩板定制",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040415",
+      "erp_code": "PPS2325005020298",
+      "name": "其他尺寸定制",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717418169535",
+      "sku": "5011017605466",
+      "erp_code": "PPS2378002020198",
+      "name": "白色岩板定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717418169535",
+      "sku": "5185313143904",
+      "erp_code": "PPS2378002020197",
+      "name": "樱桃木其他尺寸定制咨询",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717418169535",
+      "sku": "5185313143905",
+      "erp_code": "PPS2378002020199",
+      "name": "黑胡桃木材质定制咨询",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717434309002",
+      "sku": "5182692267367",
+      "erp_code": "PPS2345001020198",
+      "name": "尺寸:30x200cm 樱桃木其他尺寸定制咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717434309002",
+      "sku": "5182692267363",
+      "erp_code": "PPS2345001020199",
+      "name": "尺寸:30x200cm 黑胡桃木材质定制咨询",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717809819543",
+      "sku": "5010979293319",
+      "erp_code": "PPS2341002020198",
+      "name": "樱桃木其他尺寸咨询",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717809819543",
+      "sku": "5010979293312",
+      "erp_code": "PPS2341002020199",
+      "name": "黑胡桃木材质咨询",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717809819543",
+      "sku": "5983617464635",
+      "erp_code": "PPS2341002020122",
+      "name": "差价",
+      "fixed_original_record": "1498.00",
+      "fixed_floor": "299.60",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717809819543",
+      "sku": "6298312823107",
+      "erp_code": "PPS2341002020121",
+      "name": "樱桃木插座款可选",
+      "fixed_original_record": "8841.00",
+      "fixed_floor": "1768.20",
+      "floor_provenance": "user_established_from_current_erp_daily_20260911_not_historical_first_price",
+      "first_ever_historical_record_claimed": false
+    }
+  ]
+}

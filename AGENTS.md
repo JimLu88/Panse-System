@@ -13,6 +13,12 @@ a mandatory signup gate or a browser runtime replacement.
 
 ## Campaign signup authority
 
+For the current user-established 78+4 custom baselines, read
+`docs/campaign-user-established-baselines-20260911.md`. Use the 78-row v2 receipt;
+the v1 precision error is retained only for audit. Fixed original times 20% is
+exact; a fractional-cent floor is rounded UP only for the submittable price.
+Do not ask again for this established baseline or rebase after later reductions.
+
 For the current failed ordinary-SKU existing-discount amendment only, use
 `docs/campaign-discount-amend-20260911.md`. The local claim/record guard produces
 an exact in-place-edit payload, not a new offer or bulk replay. The browser owner
