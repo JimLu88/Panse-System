@@ -88,3 +88,52 @@ def unique_mappings(scope, erp_rows):
             unknown.append({'item':fact['item'],'sku':fact['sku'],'sku_code':fact['sku_code'],
                             'reason':'exact_code_and_product_mapping_missing_or_ambiguous'})
     return {'matches':matches,'unknown':unknown,'price_changes':False,'database_write':False}
+
+
+def from_edge_job(job, *, expected_request_id, expected_shop, roots):
+    """Bound export receipt -> verified scope, never trust HTTP/download alone."""
+    import json
+    from pathlib import Path
+    from campaign_continuous_policy import fingerprint
+    if (job.get('operation')!='product_export' or job.get('state')!='finished'
+            or job.get('job_id')!=fingerprint(['product_export',expected_shop,expected_request_id])):
+        raise ValueError('exact_product_export_job_not_finished')
+    result=job.get('result') or {}
+    if (result.get('state')!='downloaded' or result.get('snapshot_request_id')!=expected_request_id
+            or result.get('shop_name')!=expected_shop):
+        raise ValueError('product_export_scope_request_mismatch')
+    allowed=[Path(p).resolve(strict=True) for p in roots]
+    def resolve(value, suffix):
+        path=Path(value).resolve(strict=True)
+        if not path.is_file() or path.suffix.lower()!=suffix or not any(path.is_relative_to(root) for root in allowed):
+            raise ValueError('product_export_evidence_outside_configured_roots')
+        return path
+    evidence_path=resolve(result['evidence_path'],'.json')
+    evidence=json.loads(evidence_path.read_text(encoding='utf-8'))
+    keys=('state','files','observed_item_ids','observed_total','page_count','snapshot_request_id','shop_name')
+    if any(result.get(k)!=evidence.get(k) for k in keys):
+        raise ValueError('product_export_observation_changed')
+    if (type(result['page_count']) is not int or result['page_count']<1
+            or len(result['files'])!=result['page_count']):
+        raise ValueError('product_export_file_page_count_mismatch')
+    files=[];seen=set();record_ids=set()
+    for index,entry in enumerate(result['files'],start=1):
+        scope,record=entry['scope'],entry['record']
+        ids=scope['item_ids'];record_id=str(record['id'])
+        if (scope.get('on_sale') is not True or scope['page']!=index
+                or scope['page_count']!=result['page_count'] or scope['total']!=result['observed_total']
+                or len(ids)!=len(set(ids)) or seen.intersection(ids)
+                or not record_id.isdigit() or record_id in record_ids or record['rowCount']!=len(ids)):
+            raise ValueError('product_export_page_or_record_scope_mismatch')
+        raw=resolve(entry['path'],'.xlsx').read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=entry['sha256']:
+            raise ValueError('official_product_export_changed')
+        if {r['item'] for r in parse_export(raw)}!=set(ids):
+            raise ValueError('official_export_file_does_not_match_selected_page')
+        seen.update(ids);record_ids.add(record_id);files.append((raw,entry['sha256']))
+    if seen!=set(result['observed_item_ids']):
+        raise ValueError('product_export_combined_page_scope_mismatch')
+    return complete_scope(files,observed_item_ids=result['observed_item_ids'],
+        observed_page_count=result['page_count'],observed_total=result['observed_total'],
+        page_evidence={'path':str(evidence_path),'sha256':hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+                       'job_id':job['job_id'],'snapshot_request_id':expected_request_id})

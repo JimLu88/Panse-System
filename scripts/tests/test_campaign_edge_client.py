@@ -13,6 +13,15 @@ def response(value):
 
 
 class ClientTests(unittest.TestCase):
+    def test_full_export_wait_budget_does_not_strand_multiple_pages(self):
+        client=EdgeClient('test-only',session=Mock())
+        client.submit=Mock(return_value={'state':'running','job_id':'id'})
+        client.wait=Mock(return_value={'state':'finished'})
+        client.run('product_export',{})
+        self.assertEqual(client.wait.call_args.kwargs['timeout'],1800)
+        client.run('signup',{})
+        self.assertEqual(client.wait.call_args.kwargs['timeout'],300)
+
     def test_post_once_then_only_exact_status(self):
         session=Mock()
         session.post.side_effect=[response({'ok':True,'job_id':'id','state':'running'}),

@@ -42,7 +42,11 @@ class EdgeClient:
         return self._action('program_job_status', {'job_id': job_id})
 
     def wait(self, job_id, *, timeout=300, progress=None):
-        deadline = time.monotonic() + min(timeout, 300)
+        # Full export can contain several independently bounded 180-second
+        # pages. A 300-second aggregate cap used to strand page 2/3 mid-job.
+        if not isinstance(timeout,(int,float)) or not 0<timeout<=1800:
+            raise ValueError('bounded_edge_job_wait_required')
+        deadline = time.monotonic() + timeout
         while True:
             result = self.status(job_id)
             if result.get('job_id') != job_id:
@@ -61,4 +65,5 @@ class EdgeClient:
         admitted = self.submit(step, payload)
         if admitted.get('state') != 'running':
             return admitted
-        return self.wait(admitted['job_id'], progress=progress)
+        return self.wait(admitted['job_id'], timeout=1800 if step=='product_export' else 300,
+                         progress=progress)

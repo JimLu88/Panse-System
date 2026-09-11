@@ -6,6 +6,11 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from campaign_product_scope import parse_export, complete_scope, unique_mappings
 import hashlib
+import json
+import tempfile
+from copy import deepcopy
+from campaign_product_scope import from_edge_job
+from campaign_continuous_policy import fingerprint
 
 
 class ScopeTests(unittest.TestCase):
@@ -42,3 +47,66 @@ class ScopeTests(unittest.TestCase):
         scope=self.scope([dict(item='1',sku='11',sku_code='SKU',stock='0',sheet='发布模板',row=4)])
         self.assertEqual(scope['platform_rows'],[{'item':'1','on_sale':True}])
         self.assertFalse(scope['sku_enabled_state_inferred_from_stock'])
+
+
+class EdgeScopeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.root=Path(self.tmp.name)
+        self.request='a'*64;self.shop='synthetic-shop'
+        files=[]
+        for index in (1,2):
+            path=self.root/f'{index}.xlsx';path.write_bytes(str(index).encode())
+            files.append(dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                scope=dict(page=index,page_count=2,total=2,item_ids=[str(index)],on_sale=True),
+                record=dict(id=str(index+10),rowCount=1)))
+        self.result=dict(state='downloaded',files=files,observed_item_ids=['1','2'],observed_total=2,
+                         page_count=2,snapshot_request_id=self.request,shop_name=self.shop)
+        self.path=self.root/'receipt.json'
+        self.job=dict(operation='product_export',state='finished',
+            job_id=fingerprint(['product_export',self.shop,self.request]))
+        self.parser=patch('campaign_product_scope.parse_export',side_effect=lambda raw:
+            [dict(item=raw.decode(),sku=raw.decode()+'1',sku_code='SKU'+raw.decode(),sheet='发布模板',row=4)])
+        self.parser.start();self.addCleanup(self.parser.stop)
+
+    def run_readback(self, result=None):
+        value=result or self.result
+        self.path.write_text(json.dumps(value),encoding='utf-8')
+        return from_edge_job(dict(self.job,result=dict(value,evidence_path=str(self.path))),
+            expected_request_id=self.request,expected_shop=self.shop,roots=[self.root])
+
+    def test_downloaded_pages_require_file_coverage_then_produce_scope(self):
+        scope=self.run_readback()
+        self.assertTrue(scope['complete']);self.assertEqual(scope['observed_item_count'],2)
+        self.assertEqual(len(scope['sku_facts']),2)
+        self.assertEqual(scope['page_evidence']['job_id'],self.job['job_id'])
+
+    def test_no_partial_page_or_duplicate_record_acceptance(self):
+        for change in ('missing','duplicate','wrong_page','wrong_record_count'):
+            value=deepcopy(self.result)
+            if change=='missing':value['files'].pop()
+            elif change=='duplicate':value['files'][1]['record']['id']='11'
+            elif change=='wrong_page':value['files'][1]['scope']['page']=1
+            else:value['files'][1]['record']['rowCount']=2
+            with self.subTest(change=change),self.assertRaises(ValueError):self.run_readback(value)
+
+    def test_unknown_job_or_wrong_shop_not_fresh_export(self):
+        self.job['state']='unknown'
+        with self.assertRaisesRegex(ValueError,'not_finished'):self.run_readback()
+        self.job['state']='finished';self.result['shop_name']='other'
+        with self.assertRaisesRegex(ValueError,'request_mismatch'):self.run_readback()
+
+    def test_changed_file_or_wrong_selected_page_not_accepted(self):
+        value=deepcopy(self.result);value['files'][1]['path']=value['files'][0]['path']
+        with self.assertRaisesRegex(ValueError,'changed'):self.run_readback(value)
+        value['files'][1]['sha256']=value['files'][0]['sha256']
+        with self.assertRaisesRegex(ValueError,'selected_page'):self.run_readback(value)
+
+    def test_receipt_tampering_and_unconfigured_file_roots_rejected(self):
+        self.run_readback()
+        value=dict(self.result,evidence_path=str(self.path),observed_total=200)
+        with self.assertRaisesRegex(ValueError,'observation_changed'):
+            from_edge_job(dict(self.job,result=value),expected_request_id=self.request,expected_shop=self.shop,roots=[self.root])
+        other=self.root/'other';other.mkdir()
+        with self.assertRaisesRegex(ValueError,'outside_configured_roots'):
+            from_edge_job(dict(self.job,result=value),expected_request_id=self.request,expected_shop=self.shop,roots=[other])
