@@ -72,6 +72,7 @@ class CampaignTransport:
         if getattr(self,'shared_scope',None):
             scope,source=self.shared_scope
             persist(self.root/'resolved-snapshot.json',load(source/'resolved-snapshot.json'))
+            persist(self.root/'product-scope.json',scope)
             return self.with_prior(dict(scope),payload,folder)
         from campaign_price_snapshot import build_snapshot,load_rows
         from campaign_product_scope import from_edge_job,unique_mappings
@@ -83,6 +84,7 @@ class CampaignTransport:
         self.edge._action('inspect_product_export_setup',{})
         job=self.job('product_export',{'identity':self.identity(payload),'snapshot_request_id':action_id},folder)
         scope=from_edge_job(job,expected_request_id=action_id,expected_shop=payload['identity']['shop_id'],roots=self.roots)
+        persist(self.root/'product-scope.json',scope)
         mapping=unique_mappings(scope,snapshot['all_erp_rows'])
         # This is a local, proven ID mapping overlay only; no business DB change.
         if mapping['matches']:
@@ -129,6 +131,20 @@ class CampaignTransport:
 
     def step_generate(self,action_id,payload,folder):
         from campaign_generate_current_files import _generate
+        if payload['template'].get('fixed_master'):
+            from campaign_product_scope import template_scope_issues
+            from campaign_official_template import template_rows
+            source=Path(payload['template']['path'])
+            if file_sha(source)!=payload['template']['sha256']:
+                raise ValueError('fixed_template_changed_before_generation')
+            scope=load(self.root/'product-scope.json')
+            issues=template_scope_issues(scope,template_rows(source.read_bytes()),payload['items'])
+            if issues:
+                proof=persist(folder/'sku-scope-issues.json',{
+                    'issues':issues,'product_export_evidence':scope['page_evidence'],
+                    'template_sha256':payload['template']['sha256'],
+                    'platform_write':False,'stock_used_as_enabled_state':False})
+                return {'input_issues':issues,'items':payload['items'],'source_evidence':proof}
         p=payload['identity'];timing=payload.get('time_binding')
         segment=timing['segment'] if timing else None
         window=segment['price_window'] if segment else {k:p[k] for k in ('start','end')}

@@ -173,14 +173,15 @@ class Store:
         return result
 
 
-def _terminal_scope(result, requested):
+def _terminal_scope(result, requested, *, allow_partial_discount=False):
     rows = result.get('items') or []
     if not result.get('batch'):
         raise Blocked('terminal', 'official_batch_missing')
     ids = [str(r.get('item') or '') for r in rows]
     if len(ids) != len(set(ids)) or set(ids) != set(requested):
         raise Blocked('terminal', 'official_terminal_item_scope_mismatch')
-    if any(r.get('outcome') not in ('success', 'failed') for r in rows):
+    allowed=('success','failed','partial') if allow_partial_discount else ('success','failed')
+    if any(r.get('outcome') not in allowed for r in rows):
         raise Blocked('terminal', 'unknown_item_outcome_do_not_replay')
     return rows
 
@@ -366,14 +367,16 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                 raise Blocked('generate', 'failed_discount_must_not_be_skipped')
             if discount_items:
                 discount = call('discount', {'bundle': bundle, 'items': discount_items})
-                rows = _terminal_scope(discount, discount_items)
+                rows = _terminal_scope(discount, discount_items,allow_partial_discount=True)
+                partial = [r['item'] for r in rows if r['outcome']=='partial']
+                hold(partial,'partial_discount_import_preserved_no_whole_product_replay')
                 failed = [r['item'] for r in rows if r['outcome'] == 'failed']
                 if failed:
                     errors = failed_report(discount['batch'], failed, 'discount')
                     discount_retries = repair_failed(errors, discount['batch'], 'discount')
                 state['discount_required'] = discount_retries
-                pending = [i for i in pending if i not in failed]
-                if failed and pending:
+                pending = [i for i in pending if i not in failed and i not in partial]
+                if (failed or partial) and pending:
                     # Never send a full file with a smaller claimed scope.
                     bundle = call('generate', {'items': pending, 'round': round_no,
                         'template': template, 'price_version': state['price_version'],

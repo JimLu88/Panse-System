@@ -1,8 +1,8 @@
 """Full on-sale product export facts and unique ERP-code mapping.
 
 No sales filter, stock-as-listing inference, price substitution, or SKU rotation.
-The official export lacks a SKU enabled/disabled column; only the current
-activity template determines the enabled signup SKU range.
+The official export lacks a SKU enabled/disabled column. A pinned activity
+template is not current enabled-state evidence; never infer that from stock.
 """
 from collections import defaultdict
 import hashlib
@@ -88,6 +88,41 @@ def unique_mappings(scope, erp_rows):
             unknown.append({'item':fact['item'],'sku':fact['sku'],'sku_code':fact['sku_code'],
                             'reason':'exact_code_and_product_mapping_missing_or_ambiguous'})
     return {'matches':matches,'unknown':unknown,'price_changes':False,'database_write':False}
+
+
+def template_scope_issues(scope, template_rows, items):
+    """Compare the already downloaded facts in memory; never fetch/preflight.
+
+    A pinned template is a package/layout source, not a current SKU registry.
+    Stock zero does not mean disabled. Differences therefore remain explicit
+    per-product input issues until an exact enabled-SKU fact resolves them.
+    This check does not claim to prove enabled state when the export lacks it.
+    """
+    if scope.get('complete') is not True or not scope.get('page_evidence'):
+        raise ValueError('complete_product_scope_evidence_required')
+    wanted=set(map(str,items));current=defaultdict(set);template=defaultdict(set)
+    for entry in scope.get('sku_facts',[]):
+        fact=entry['facts'];item,sku=str(fact['item']),str(fact['sku'])
+        if item in wanted:
+            if sku in current[item]:raise ValueError('duplicate_current_export_sku')
+            current[item].add(sku)
+    for row in template_rows:
+        item,sku=str(row['item']),str(row['sku'])
+        if item in wanted:
+            if sku in template[item]:raise ValueError('duplicate_template_sku')
+            template[item].add(sku)
+    issues=[]
+    for item in sorted(wanted):
+        if not current[item]:
+            issues.append(dict(item=item,sku='',error='selected_product_missing_from_current_export'))
+            continue
+        for sku in sorted(current[item]-template[item]):
+            issues.append(dict(item=item,sku=sku,error='current_sku_missing_from_fixed_template',
+                               enabled_state='unknown',requires_rotation=False))
+        for sku in sorted(template[item]-current[item]):
+            issues.append(dict(item=item,sku=sku,error='fixed_template_sku_missing_from_current_export',
+                               enabled_state='unknown',requires_rotation=False))
+    return issues
 
 
 def from_edge_job(job, *, expected_request_id, expected_shop, roots):

@@ -245,6 +245,33 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(signup['bundle']['items'], ['1'])
         self.assertEqual([p['items'] for s, p in driver.calls if s == 'discount'], [['1', '2'], ['2']])
 
+    def test_partial_discount_item_is_held_while_other_product_finishes(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='discount':value['items']=[{'item':'1','outcome':'success'},{'item':'2','outcome':'partial'}]
+            return value
+        driver.execute=execute
+        result=self.run_flow(driver)
+        self.assertEqual(result['status'],'complete')
+        self.assertFalse(result['all_signed_up'])
+        self.assertEqual(set(result['success']),{'1'})
+        self.assertEqual(set(result['exceptions']),{'2'})
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='discount'],[['1','2']])
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='signup'],[['1']])
+        self.assertFalse(any(s=='repair' for s,p in driver.calls))
+        calls=len(driver.calls);self.run_flow(driver)
+        self.assertEqual(len(driver.calls),calls)
+
+    def test_partial_outcome_is_not_accepted_for_signup(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='signup':value['items'][0]['outcome']='partial'
+            return value
+        driver.execute=execute
+        self.assertEqual(self.run_flow(driver)['status'],'blocked')
+
     def test_unknown_write_recovery_uses_readonly_receipt_without_reupload(self):
         driver = FakeWebAgent(timeout_at='signup')
         out = self.run_flow(driver)
