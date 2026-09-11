@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -175,6 +175,35 @@ def _latest_discovery_run_status_today(db: Session) -> Optional[str]:
     started = row.started_at
     started_on = started.astimezone().date() if started.tzinfo else started.date()
     return row.status if started_on == date.today() else None
+
+
+def run_periodic_discovery(db: Session, *, now: datetime | None = None) -> dict:
+    """Persistent 72-hour gate, including installations with an old hourly cron.
+
+    Store the attempt time BEFORE calling the browser. Failure or restart does
+    not produce five repeated scans/notifications in the same evening. Explicit
+    user-requested inspection can still call run_daily_discovery directly.
+    """
+    from app.services import settings_service
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise ValueError("discovery_clock_must_have_timezone")
+    key = "campaign_continuous_last_discovery_attempt"
+    raw = settings_service.get(db, key, env_fallback=False)
+    if raw:
+        try:
+            previous = datetime.fromisoformat(str(raw))
+            if previous.tzinfo is None:
+                raise ValueError("ambiguous_clock")
+        except ValueError:
+            return {"ok": False, "error": "campaign_discovery_checkpoint_invalid"}
+        next_due = previous + timedelta(hours=72)
+        if now < next_due:
+            return {"ok": True, "skipped": "discovery_not_due", "next_due": next_due.isoformat()}
+    settings_service.set_value(db, key, now.isoformat(),
+                               description="用户确认每72小时活动发现；失败不自动整晚重扫")
+    db.commit()
+    return run_daily_discovery(db)
 
 
 def run_daily_discovery(db: Session) -> dict:

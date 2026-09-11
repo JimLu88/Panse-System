@@ -2104,7 +2104,9 @@ def _job_campaign_discovery(db: Session) -> dict:
     → 落 CampaignCalendar → 距开始<3天飞书提醒运营报名 (同活动一天只提醒一次)。
     WA 失败 → 飞书报错「活动发现抓取失败请手动查看」。"""
     from app.services import campaign_discovery_service
-    result = campaign_discovery_service.run_daily_discovery(db)
+    result = campaign_discovery_service.run_periodic_discovery(db)
+    if result.get("skipped"):
+        result["_run_status"] = "skipped"
     if result.get("ok") is False:
         result["_run_status"] = "fail"
         result["_error"] = result.get("reason") or result.get("error")
@@ -2112,10 +2114,13 @@ def _job_campaign_discovery(db: Session) -> dict:
 
 
 def _job_campaign_auto_execute(db: Session) -> dict:
-    """活动发现后自动推进：预检→单品立减→差集报名；任一安全门失败即停并飞书。"""
+    """活动发现后的连续报名入口；不可回退到历史价格刷新/预检链。"""
     from app.services import campaign_automation_service
     result = campaign_automation_service.run_auto_execute(db)
-    if result.get("failed"):
+    if result.get("blocked"):
+        result["_run_status"] = "fail"
+        result["_error"] = result.get("error") or "连续报名接入待完成"
+    elif result.get("failed"):
         result["_run_status"] = "fail"
         result["_error"] = f"{result['failed']} 个活动计划自动执行失败"
     elif result.get("processed", 0) == 0:
@@ -2488,8 +2493,8 @@ def _register_default_jobs() -> None:
     register_job("daily_0830_promo_price_check", "活动报名价 vs 定价渠道价 对照",
                  _job_promo_price_check, cron={"hour": 8, "minute": 30})
     # 活动生命周期 P4 (2026-07-17 spec §五): 发现在抓单编排(18:00)后跑; 自动核对每30分钟心跳
-    register_job("campaign_daily_discovery", "千牛活动发现(晚间每小时重试+提醒)",
-                 _job_campaign_discovery, cron={"hour": "18-22", "minute": 40})
+    register_job("campaign_daily_discovery", "千牛活动发现(每3天，持久检查点防重复)",
+                 _job_campaign_discovery, interval_minutes=4320)
     register_job("campaign_price_protection_rule_remind", "活动价保说明链接提醒",
                  _job_campaign_price_protection_rule_remind, cron={"hour": 18, "minute": 45})
     register_job("campaign_auto_execute", "营销活动自动报名(安全门+差集+失败飞书)",

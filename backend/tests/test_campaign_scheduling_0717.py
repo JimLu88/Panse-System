@@ -91,135 +91,35 @@ def test_discovery_same_title_new_period_is_new_row(db_session, monkeypatch):
     assert calls == []                                          # 都在3天窗外, 不提醒
 
 
-def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkeypatch):
+def test_legacy_plan_states_do_not_bypass_new_continuous_entry(db_session, monkeypatch):
+    """The Sep11 user rule retires the old preflight/horizon execution tests."""
     from app.services import campaign_automation_service as automation
-    from app.services import campaign_service, settings_service
+    from app.services import campaign_continuous_runtime, campaign_service, settings_service
 
     now = datetime.now()
-    included = CampaignPlan(
-        name="十天后开学季", campaign_type="big_other", tier="big",
-        start_at=now + timedelta(days=10), end_at=now + timedelta(days=17),
-        status="precheck",
-    )
-    excluded = CampaignPlan(
-        name="十五天后活动", campaign_type="big_other", tier="big",
-        start_at=now + timedelta(days=15), end_at=now + timedelta(days=20),
-        status="precheck",
-    )
-    db_session.add_all([included, excluded])
-    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
-    db_session.commit()
-
-    pushed = []
-    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
-
-    def push_discount(db, plan, *, phase, no_sales_items=None):
-        assert no_sales_items is None
-        pushed.append(("discount", plan.name, phase))
-        plan.status = "discount_pushed"
-        db.flush()
-        return {"ok": True}
-
-    def push_signup(db, plan, *, execution_source):
-        pushed.append(("signup", plan.name, execution_source))
-        return {"ok": True}
-
-    monkeypatch.setattr(campaign_service, "push_discount", push_discount)
-    monkeypatch.setattr(campaign_service, "push_signup", push_signup)
-
-    result = automation.run_auto_execute(db_session)
-
-    assert result["processed"] == 1
-    assert pushed == [
-        ("discount", "十天后开学季", "commit"),
-        ("signup", "十天后开学季", "campaign_automation"),
+    plans = [
+        CampaignPlan(name=f"legacy-{state}-{days}", campaign_type="super_reduce",
+                     tier="mid", start_at=now + timedelta(days=days),
+                     end_at=now + timedelta(days=days + 7), status=state)
+        for state, days in (("draft", 10), ("precheck", 15),
+                            ("discount_pushed", 3), ("discount_pushed", -1))
     ]
-
-
-def test_auto_execute_keeps_draft_for_safe_read_only_connectivity_retry(
-        db_session, monkeypatch):
-    from app.services import campaign_automation_service as automation
-    from app.services import campaign_service, settings_service
-
-    now = datetime.now()
-    plan = CampaignPlan(
-        name="只读刷新断线", campaign_type="big_other", tier="big",
-        start_at=now + timedelta(days=2), end_at=now + timedelta(days=5),
-        status="draft", workflow_key="campaign:test:transient-read",
-    )
-    db_session.add(plan)
-    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
-    db_session.commit()
-    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
-    monkeypatch.setattr(
-        campaign_service, "refresh_floor_evidence_from_current_activity",
-        lambda *_a, **_k: {
-            "ok": False, "step": "web_agent",
-            "error": "Web-Agent 未在线 8500 connection refused",
-        })
-
-    result = automation.run_auto_execute(db_session)
-
-    assert result["processed"] == 1
-    assert result["details"][0]["automatic_retry"] is True
-    assert plan.status == "draft"
-
-
-def test_auto_execute_does_not_infer_super_reduce_delay_from_plan_start(
-        db_session, monkeypatch):
-    from app.services import campaign_automation_service as automation
-    from app.services import campaign_service, settings_service
-
-    now = datetime.now()
-    plan = CampaignPlan(
-        name="未来超级立减", campaign_type="super_reduce", tier="mid",
-        start_at=now + timedelta(days=3), end_at=now + timedelta(days=7),
-        status="discount_pushed",
-    )
-    db_session.add(plan)
+    db_session.add_all(plans)
     settings_service.set_value(db_session, "campaign_auto_enabled", "true")
     db_session.commit()
     calls = []
-    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
-    monkeypatch.setattr(
-        campaign_service, "push_signup",
-        lambda *args, **kwargs: calls.append("signup") or {"ok": True})
-
+    for name in ("group_by_sales", "preflight", "refresh_floor_evidence_from_current_activity",
+                 "push_discount", "push_signup"):
+        monkeypatch.setattr(campaign_service, name,
+                            lambda *a, **k: calls.append("legacy-call"))
+    monkeypatch.setattr(campaign_continuous_runtime, "readiness",
+                        lambda db: {"ready": False, "error": "adapter_not_verified"})
+    monkeypatch.setattr(automation, "_notify_once", lambda *a, **k: {})
     result = automation.run_auto_execute(db_session)
-
-    assert result["processed"] == 1
-    assert result["succeeded"] == 1
-    assert result["details"][0]["step"] == "signup"
-    assert calls == ["signup"]
-    assert plan.status == "discount_pushed"
-
-
-def test_auto_execute_picks_deferred_super_reduce_once_start_arrives(
-        db_session, monkeypatch):
-    from app.services import campaign_automation_service as automation
-    from app.services import campaign_service, settings_service
-
-    now = datetime.now()
-    plan = CampaignPlan(
-        name="已到点超级立减", campaign_type="super_reduce", tier="mid",
-        start_at=now - timedelta(minutes=1), end_at=now + timedelta(days=4),
-        status="discount_pushed",
-    )
-    db_session.add(plan)
-    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
-    db_session.commit()
-    calls = []
-    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
-    monkeypatch.setattr(
-        campaign_service, "push_signup",
-        lambda db, plan, *, execution_source: calls.append(execution_source)
-        or {"ok": True})
-
-    result = automation.run_auto_execute(db_session)
-
-    assert result["processed"] == 1
-    assert result["succeeded"] == 1
-    assert calls == ["campaign_automation"]
+    assert result["blocked"] == 1
+    assert result["platform_write"] is False
+    assert calls == []
+    assert [p.status for p in plans] == ["draft", "precheck", "discount_pushed", "discount_pushed"]
 
 
 def test_discovery_unknown_date_actionable_reminds_once_and_ended_is_ignored(

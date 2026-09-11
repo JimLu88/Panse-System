@@ -1,5 +1,15 @@
 # Panse-System agent instructions
 
+## Current continuous-campaign migration (user approved 2026-09-11)
+
+Read `docs/campaign-continuous-flow-20260911.md` for new automatic signup work.
+The user-approved new flow supersedes conflicting old preparation steps for new
+runs: ERP sellable intersect Taobao on-sale, fixed official discovery entry,
+no historical preflight, continuous changed-failure repair, human-approved rotation.
+Preserve old claim/rule fingerprints for existing batches. The new controller
+is NOT yet connected to verified live Web-Agent transport. Do not restore the
+retired preflight pipeline or advertise fake/offline adapters as production-ready.
+
 ## Browser failures (not a campaign preflight)
 
 After a browser-control failure, use `docs/browser-control-short-recovery.md`.

@@ -1,7 +1,7 @@
 """营销活动全自动执行。
 
 发现阶段只读锁定父活动、子阶段、秒级档期、官方力度和活动 ID；缺一项就停并通知。
-执行阶段按 只读证据预检 → 候选单品立减 → 唯一一次活动报名 → 终态分流 → 自动核对 推进。
+新版执行规则见 docs/campaign-continuous-flow-20260911.json；旧预检执行链已退役。
 """
 from __future__ import annotations
 
@@ -188,140 +188,24 @@ def sync_upcoming_plans(db: Session, calendars: list[CampaignCalendar]) -> dict:
 
 
 def run_auto_execute(db: Session) -> dict:
-    """执行未来 14 天内的自动计划；与计划发现窗口保持一致。"""
-    from app.services import campaign_execution_service, campaign_service
+    """New scheduled entry. Never fall back to the retired preflight pipeline.
+
+    Existing separately claimed business batches retain their original receipt
+    paths. New automation waits for the verified continuous Web-Agent binding.
+    """
+    from app.services import campaign_continuous_runtime
 
     if not enabled(db):
         return {"skipped": "campaign_auto_disabled"}
-    now = datetime.now()
-    horizon = now + timedelta(days=AUTO_EXECUTION_HORIZON_DAYS)
-    plans = db.execute(select(CampaignPlan).where(
-        CampaignPlan.status.in_(("draft", "precheck", "discount_pushed")),
-        or_(
-            and_(CampaignPlan.start_at > now, CampaignPlan.start_at <= horizon),
-            and_(
-                CampaignPlan.campaign_type == "super_reduce",
-                CampaignPlan.status == "discount_pushed",
-                CampaignPlan.start_at <= now,
-                CampaignPlan.end_at >= now,
-            ),
-        ),
-    ).order_by(CampaignPlan.start_at)).scalars().all()
-    processed = succeeded = failed = held = 0
-    details: list[dict] = []
-    for plan in plans:
-        processed += 1
-        # 每次执行前刷新 60 天动销登记。已确认无动销的商品必须从活动
-        # 报名范围排除；平台终态只能补充新事实，不能把它们重新塞回报名表。
-        grouping = campaign_service.group_by_sales(db)
-        if plan.status == "draft":
-            floor_refresh = campaign_service.refresh_floor_evidence_from_current_activity(db, plan)
-            if not floor_refresh.get("ok"):
-                retryable = campaign_execution_service.failure_is_retryable_prewrite(
-                    floor_refresh)
-                failed += 1
-                if retryable:
-                    details.append({
-                        "plan_id": plan.id, "ok": False,
-                        "step": "floor_evidence_refresh",
-                        "automatic_retry": True,
-                        "retry_boundary": "read_only_before_platform_write",
-                        "error": floor_refresh.get("error"),
-                    })
-                    # Keep draft. The next hourly window may retry because this
-                    # step is read-only and no platform-write claim exists.
-                    continue
-                plan.status = "alarmed"
-                db.commit()
-                text = (
-                    f"活动：{plan.name}\n失败步骤：价格线证据刷新\n"
-                    f"原因：{floor_refresh.get('error') or '无法导出当前活动'}\n"
-                    "系统已停止并等待用户决定；不会生成报名表、自动改价或自动重试。")
-                notice = _notify_once(
-                    db, f"floor_refresh_{plan.id}", "活动自动执行失败", text)
-                details.append({
-                    "plan_id": plan.id, "ok": False,
-                    "step": "floor_evidence_refresh", "notification": notice,
-                })
-                continue
-            # QianNiu has no read-only upload qualification: attaching the
-            # workbook creates a real signup operation. All pre-submit checks
-            # here are local/read-only; the platform is written exactly once
-            # later by push_signup.
-            checks = campaign_service.preflight(db, plan)
-            critical = [c for c in checks if c.get("level") == "error"]
-            if critical:
-                failed += 1
-                plan.status = "alarmed"
-                db.commit()
-                text = (
-                    f"活动：{plan.name}\n失败步骤：ERP 预检\n"
-                    f"原因：{json.dumps(critical, ensure_ascii=False, default=str)[:2200]}\n"
-                    "系统已停止并标记为待人工决定；不会继续生成、上传、自动改价或自动重试。")
-                notice = _notify_once(db, f"precheck_{plan.id}", "活动自动执行失败", text)
-                details.append({"plan_id": plan.id, "ok": False,
-                                "step": "precheck", "notification": notice})
-                continue
-            price_holds = campaign_service.price_hold_items(db, plan)
-            if price_holds:
-                hold_text = (
-                    f"活动：{plan.name}\n"
-                    f"本次有 {len(price_holds)} 个商品命中历史价格线，已从报名表和同期单品立减表整品暂缓；"
-                    "其余商品继续自动报名。\n"
-                    f"明细：{json.dumps(price_holds, ensure_ascii=False, default=str)[:2600]}\n"
-                    f"当前暂按 {getattr(plan, 'price_protection_days', None) or 19} 天冷静期。"
-                    "请提供本场价保说明链接；若要承担亏损提前报名，必须人工明确批准。"
-                )
-                _notify_once(
-                    db, f"price_hold_{plan.id}", "活动商品因价保/历史价暂缓",
-                    hold_text, level="warning")
-                signup_rows, _ = campaign_service.build_signup_rows(db, plan)
-                if not signup_rows:
-                    held += 1
-                    plan.status = "alarmed"
-                    db.commit()
-                    details.append({
-                        "plan_id": plan.id, "ok": False, "step": "price_hold",
-                        "held_items": len(price_holds), "waiting_for_manual_decision": True,
-                    })
-                    continue
-            plan.status = "precheck"
-            db.commit()
-
-        if plan.status == "precheck":
-            # Registered no-sales items are already excluded from campaign
-            # signup and use the same-window standalone-discount fallback.
-            discount = campaign_service.push_discount(
-                db, plan, phase="commit")
-            if not discount.get("ok"):
-                failed += 1
-                plan.status = "alarmed"
-                db.commit()
-                text = (
-                    f"活动：{plan.name}\n失败步骤：单品立减\n"
-                    f"原因：{discount.get('error') or discount.get('validation') or '未知'}\n"
-                    "系统已停止，未继续活动报名；不会自动改价或自动重试，等待用户决定。")
-                notice = _notify_once(db, f"discount_{plan.id}", "活动自动执行失败", text)
-                details.append({"plan_id": plan.id, "ok": False, "step": "discount",
-                                "notification": notice})
-                continue
-
-        signup = campaign_service.push_signup(
-            db, plan, execution_source="campaign_automation")
-        if signup.get("ok"):
-            succeeded += 1
-        else:
-            failed += 1
-        details.append({
-            "plan_id": plan.id,
-            "ok": bool(signup.get("ok")),
-            "step": "signup",
-            "no_change": bool(signup.get("no_change")),
-            "pending_items": len((signup.get("stats") or {}).get("pending_items") or []),
-            "excluded_no_sales": len(
-                (signup.get("stats") or {}).get("excluded_no_sales_items") or []),
-            "promote_candidates": grouping.get("promote_candidates") or [],
-            "error": signup.get("error"),
-        })
-    return {"processed": processed, "succeeded": succeeded, "failed": failed, "held": held,
-            "details": details}
+    result = campaign_continuous_runtime.readiness(db)
+    reason = result.get("error") or "continuous_execution_binding_not_installed"
+    notice = _notify_once(
+        db, "continuous_transport", "活动自动报名接入待完成",
+        "新版连续报名尚未通过真实 Web-Agent 接入验收。"
+        "旧预检报名链已停用，不会回退或重复提交。\n"
+        f"原因：{reason}\n需要程序维护完成接入，不是要求逐个商品人工报名。",
+    )
+    return {"processed": 0, "failed": 0, "blocked": 1,
+            "step": "continuous_transport", "error": reason,
+            "legacy_fallback": False, "platform_write": False,
+            "notification": notice, "transport": result}
