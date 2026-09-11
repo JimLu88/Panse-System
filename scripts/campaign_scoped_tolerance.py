@@ -18,7 +18,7 @@ def policy_for(campaign, start, end, rate, target, *, continuous_rule_sha=None):
         if continuous_rule_sha != RULE_SHA:
             raise ValueError('unapproved_continuous_rule_version')
         if (not re.fullmatch(r'\d+/\d+/\d+', str(campaign))
-                or datetime.fromisoformat(start) >= datetime.fromisoformat(end)):
+                or datetime.fromisoformat(start) > datetime.fromisoformat(end)):
             raise ValueError('continuous_tolerance_exact_identity_required')
         numeric_rate = Decimal(str(rate))
         if not numeric_rate.is_finite() or not 0 <= numeric_rate < 1:

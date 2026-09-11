@@ -2,6 +2,13 @@
 
 ## Current continuous-campaign migration (user approved 2026-09-11)
 
+User additionally approved segmented timing: read
+`docs/campaign-segmented-time-20260911.md`. Super-reduce platform validity is
+NOT its single-discount window. New timed bundles use M in daily gaps and B
+in exact big-campaign windows; preserve old hashes/claims and successful offers.
+Already enrolled super-reduce items may need a new discount segment but MUST
+NOT be enrolled again. This is pure generation/controller logic, no preflight.
+
 Read `docs/campaign-continuous-flow-20260911.md` for new automatic signup work.
 The user-approved new flow supersedes conflicting old preparation steps for new
 runs: ERP sellable intersect Taobao on-sale, fixed official discovery entry,

@@ -9,10 +9,12 @@ from campaign_entry_authority import Authority, file_sha, load, validate_price
 from campaign_generate_current_files import build_rows
 from campaign_official_template import discount_rate, template_rows, fill_selected_rows, fill_single_discount_rows
 from campaign_discount_template import load_fixed_discount_template
+from campaign_segmented_time import phase_window, validate_binding
 
 
 def validated_body(authority, identity, phase):
     body=authority.get_bundle(identity)
+    validate_binding(body)
     from campaign_scoped_tolerance import validate_bundle_policy
     validate_bundle_policy(body)
     if body['rule_sha256']!=authority.rule_sha:raise ValueError('rule_version_changed')
@@ -70,7 +72,7 @@ def run_once(bundle_id, phase, submit_callback, *, authority=None):
         # Callback gets the exact validated file and campaign/window; must check
         # its currently selected page and return a true official terminal receipt.
         result=submit_callback(dict(file=file,campaign=body['campaign'],phase=phase,
-                                    start=body['start'],end=body['end'],claim_id=claim))
+                                    **phase_window(body,phase),claim_id=claim))
         authority.terminal(claim,result or {})
         return {'claim_id':claim,'result':result,'automatic_retry':False}
     finally:
@@ -93,11 +95,14 @@ def verify_claim(authority, claim_id):
     if any(any(r[k] != first[k] for k in keys) for r in rows):
         raise ValueError('claim_identity_inconsistent')
     body, file = validated_body(authority, first['bundle_id'], first['phase'])
+    timing = phase_window(body, first['phase'])
+    if any(first[k] != timing[k] for k in ('start','end')):
+        raise ValueError('claim_phase_window_changed')
     items = sorted({r['item'] for r in body[first['phase']+'_rows']})
     if sorted(r['item'] for r in rows) != items:
         raise ValueError('claim_item_scope_incomplete')
     return dict(verified_claim=True, claim_id=claim_id, file=file, items=items,
-                campaign=body['campaign'], phase=first['phase'], start=body['start'], end=body['end'],
+                campaign=body['campaign'], phase=first['phase'], **timing,
                 bundle_id=first['bundle_id'], platform_write=False, automatic_retry=False)
 
 
@@ -142,7 +147,7 @@ def main():
             body,file=validated_body(authority,args.bundle,args.phase)
             claim_id=authority.claim(args.bundle,args.phase,transport=args.transport)
             print(json.dumps(dict(claim_id=claim_id,file=file,campaign=body['campaign'],phase=args.phase,
-                                  start=body['start'],end=body['end'],state='unknown_until_official_terminal',
+                                  **phase_window(body,args.phase),state='unknown_until_official_terminal',
                                   platform_write=False,automatic_retry=False),ensure_ascii=False))
         elif args.command=='verify-claim':
             print(json.dumps(verify_claim(authority,args.claim),ensure_ascii=False))

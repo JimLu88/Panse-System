@@ -316,6 +316,8 @@ class Authority:
 
     def claim(self, identity, phase, *, transport=None):
         body=self.get_bundle(identity)
+        from campaign_segmented_time import phase_window
+        timing=phase_window(body,phase)
         from campaign_scoped_tolerance import validate_bundle_policy
         validate_bundle_policy(body)
         if phase not in ('signup','discount'):raise ValueError('invalid_phase')
@@ -324,7 +326,7 @@ class Authority:
         if not items:raise ValueError('empty_phase')
         self.db.execute('BEGIN IMMEDIATE')
         try:
-            blocked=self.blocked(body['campaign'],phase,body['start'],body['end'])
+            blocked=self.blocked(body['campaign'],phase,timing['start'],timing['end'])
             if set(items)&blocked.keys():raise ValueError('successful_or_unknown_scope_must_not_replay')
             if phase=='signup' and body['discount_rows']:
                 done={r['item'] for r in self.db.execute("SELECT item FROM attempts WHERE bundle_id=? AND phase='discount' AND status='success'",(identity,))}
@@ -339,7 +341,7 @@ class Authority:
                 if reuse!=body.get('discount_reuse',[]):raise ValueError('discount_reuse_evidence_changed')
             claim=uuid.uuid4().hex
             for item in items:self.db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?)',
-                (claim+':'+item,identity,body['campaign'],phase,body['start'],body['end'],item,'unknown',None))
+                (claim+':'+item,identity,body['campaign'],phase,timing['start'],timing['end'],item,'unknown',None))
             if transport:
                 self.db.execute('INSERT INTO claim_transports VALUES(?,?,?,NULL)',
                                 (claim,transport,'claimed_not_dispatched'))

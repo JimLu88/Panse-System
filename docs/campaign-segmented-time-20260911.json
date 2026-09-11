@@ -1,0 +1,18 @@
+{
+  "rule_id": "user-segmented-discount-time-20260911",
+  "approval": "是的，就是分段设置时间",
+  "timezone": "Asia/Shanghai",
+  "precision": "closed_intervals_exact_seconds",
+  "platform_validity_is_price_window": false,
+  "daily_target": "medium",
+  "campaign_target": "big",
+  "daily_windows": "explicit_coverage_minus_verified_campaign_windows",
+  "campaign_windows": "exact_official_sale_windows",
+  "unknown_future_dates": "never_invent",
+  "overlapping_campaigns": "report_conflict_do_not_guess_priority",
+  "existing_success_or_unknown_offers": "preserve_never_cancel_resize_or_replay_implicitly",
+  "existing_claims": "keep_original_rule_and_window",
+  "ordinary_signup_price": "erp_daily_price",
+  "custom_floor": "unchanged_first_original_times_0.20",
+  "extra_browser_preflight": false
+}

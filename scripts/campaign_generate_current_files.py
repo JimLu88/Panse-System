@@ -134,7 +134,7 @@ def _generate(args,authority):
     if args.output_dir.exists():
         raise ValueError('output_exists_do_not_overwrite_or_replay')
     start, end = (datetime.strptime(x,'%Y-%m-%d %H:%M:%S') for x in (args.start,args.end))
-    if end <= start:
+    if end < start or (end == start and not getattr(args, 'time_request', None)):
         raise ValueError('invalid_exact_window')
     from campaign_entry_authority import exact_campaign, validate_price
     campaign = exact_campaign(getattr(args, 'campaign_key', None))
@@ -146,6 +146,16 @@ def _generate(args,authority):
     for path in args.custom_basis_receipt:
         authority.register_source(path,'fixed',sha(path.read_bytes()))
     snapshot = authority.resolve_snapshot(load(args.snapshot))
+    time_binding = None
+    if getattr(args, 'time_request', None) or getattr(args, 'time_segment', None):
+        if not getattr(args, 'time_request', None) or not getattr(args, 'time_segment', None):
+            raise ValueError('time_request_and_segment_required_together')
+        from campaign_segmented_time import bind_request, validate_binding
+        time_binding = bind_request(args.time_request, args.time_segment)
+        validate_binding(dict(time_binding=time_binding,
+            continuous_rule_sha=getattr(args, 'continuous_rule_sha', None),
+            campaign=campaign, target=args.target, official_rate=args.official_rate,
+            price_version=snapshot['resolved_price_version_sha256'], start=args.start, end=args.end))
     bases=authority.bases(snapshot)
     identities=template_rows(raw)
     blocked_signup=authority.blocked(campaign,'signup',args.start,args.end)
@@ -189,6 +199,8 @@ def _generate(args,authority):
     result['explicit_discount_items'] = sorted(discount_items) if discount_items is not None else None
     result['campaign']=campaign
     result['final_price_tolerance']=tolerance
+    if time_binding is not None:
+        result['time_binding']=time_binding
     if tolerance:
         result['note']='Current pinned campaign-only user tolerance applied to actual reused discounts; not a daily-price change or automatic minus-two adjustment. No upload files on other issues; no platform preflight.'
     result['protected_scope']={'signup':blocked_signup,'discount':blocked_discount}
@@ -218,6 +230,8 @@ def _generate(args,authority):
                   signup_rows=activity,discount_rows=discounts,planned_discount_rows=planned_discounts,discount_reuse=reused,corrections=corrections,files=result['files'])
         if continuous_rule_sha is not None:
             body['continuous_rule_sha']=continuous_rule_sha
+        if time_binding is not None:
+            body['time_binding']=time_binding
         result['entry_bundle_id']=authority.save_bundle(body)
         result['submission_entry']='campaign_submission_gate.run_once'
     with (args.output_dir/'receipt.json').open('x',encoding='utf-8') as stream:
@@ -231,6 +245,8 @@ if __name__ == '__main__':
     parser.add_argument('--campaign-key',required=True,help='Exact campaignId/unitedActivityId/signRecordId, not title or template filename')
     parser.add_argument('--custom-corrections',type=Path,help='Only current failed exact custom SKUs with pinned authorization/failure receipts; no ordinary price overrides')
     parser.add_argument('--continuous-rule-sha',help='Explicit approved continuous policy for new bundles only; omitted preserves historical rules')
+    parser.add_argument('--time-request',type=Path,help='Approved segmented-time input; no platform reads, source pinned into bundle')
+    parser.add_argument('--time-segment',help='Exact segment_id from campaign_segmented_time; --start/--end are this price window, not platform validity')
     parser.add_argument('--activity-template',type=Path,required=True)
     parser.add_argument('--discount-template',type=Path,default=FIXED_TEMPLATE,help='Optional byte-identical local copy of the fixed single-discount master; never download per campaign')
     parser.add_argument('--official-rate',required=True)

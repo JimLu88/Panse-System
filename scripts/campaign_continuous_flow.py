@@ -5,6 +5,7 @@ to legacy campaign_service.preflight. Integration must supply real receipts.
 No real adapter is registered by this module: simulations are not readiness.
 """
 from copy import deepcopy
+from decimal import Decimal
 import json
 import sqlite3
 import uuid
@@ -184,15 +185,17 @@ def _terminal_scope(result, requested):
     return rows
 
 
-def _validate_bundle(bundle, pending, rule_sha, price_version):
+def _validate_bundle(bundle, pending, rule_sha, price_version, time_binding=None):
     if (bundle.get('validated_rule_sha') != rule_sha
             or bundle.get('price_version') != price_version
             or sorted(bundle.get('items') or []) != pending
             or not bundle.get('file_sha') or bundle.get('full_active_skus') is not True):
         raise Blocked('generate', 'generation_contract_incomplete')
+    if time_binding is not None and bundle.get('time_binding') != time_binding:
+        raise Blocked('generate', 'segmented_time_binding_missing_or_changed')
 
 
-def run(store, transport, page, *, expected_shop, observed_links):
+def run(store, transport, page, *, expected_shop, observed_links, time_binding=None):
     """Run continuously; return once finished or a real unrecoverable gate occurs.
 
     `execute` uses Web-Agent actions only. A stage acknowledgement or HTTP 200
@@ -201,6 +204,23 @@ def run(store, transport, page, *, expected_shop, observed_links):
     rules = load_rules()
     rule_sha = fingerprint(rules)
     identity = activity_identity(page, expected_shop=expected_shop, observed_links=observed_links)
+    price_window = {'start':page['start'], 'end':page['end']}
+    if time_binding is not None:
+        from campaign_segmented_time import validate_binding
+        segment=time_binding['segment']
+        validate_binding(dict(time_binding=time_binding, continuous_rule_sha=rule_sha,
+            campaign=segment['campaign'], target=segment['target'],
+            official_rate=segment['official_rate'],price_version=segment['price_version'],
+            **segment['price_window']))
+        if (segment['shop_id'] != expected_shop
+                or segment['official_window'] != price_window
+                or segment['campaign'] != '/'.join(str(page.get(k,'')) for k in
+                    ('campaign_id','phase_id','sign_record_id'))
+                or Decimal(segment['official_rate']) != Decimal(str(page['official_rate']))):
+            raise ValueError('time_segment_does_not_match_official_page')
+        # A new price gap is new discount work, NOT a new campaign enrollment.
+        identity=fingerprint({'activity':identity,'time_binding':time_binding})
+        price_window=segment['price_window']
     if not REQUIRED_CAPABILITIES.issubset(set(transport.capabilities())):
         return {'status': 'blocked', 'step': 'transport',
                 'reason': 'verified_continuous_web_agent_transport_not_available',
@@ -210,6 +230,8 @@ def run(store, transport, page, *, expected_shop, observed_links):
     state = store.load(run_id)
     state.setdefault('discount_required', [])
     base = {'identity': deepcopy(page), 'rule_sha': rule_sha}
+    if time_binding is not None:
+        base['time_binding']=deepcopy(time_binding)
 
     def call(step, values):
         return store.once(run_id, step, dict(base, **values), transport)
@@ -266,6 +288,8 @@ def run(store, transport, page, *, expected_shop, observed_links):
                 raise Blocked('scope', 'historical_outcome_invalid')
             if not scope.get('price_version'):
                 raise Blocked('scope', 'erp_price_version_missing')
+            if time_binding is not None and scope['price_version'] != time_binding['segment']['price_version']:
+                raise Blocked('scope', 'time_plan_price_version_changed')
             # Do not checkpoint a half-initialized scope that could skip the
             # history check on restart after a malformed adapter response.
             state['pending'] = initial_scope
@@ -276,7 +300,10 @@ def run(store, transport, page, *, expected_shop, observed_links):
             for item in list(state['pending']):
                 if prior.get(item) == 'success':
                     state['success'][item] = scope['prior_outcomes_evidence']
-                    state['pending'].remove(item)
+                    if time_binding is not None and time_binding['segment']['kind']=='daily':
+                        state.setdefault('previously_enrolled',[]).append(item)
+                    else:
+                        state['pending'].remove(item)
                 elif prior.get(item) == 'unknown':
                     hold([item], 'previous_unknown_do_not_replay')
                     state['pending'].remove(item)
@@ -304,7 +331,7 @@ def run(store, transport, page, *, expected_shop, observed_links):
             bundle = call('generate', {'items': pending, 'round': round_no,
                 'template': template, 'price_version': state['price_version'],
                 'corrections': state['corrections'], 'required_discount_items': state['discount_required']})
-            _validate_bundle(bundle, pending, rule_sha, state['price_version'])
+            _validate_bundle(bundle, pending, rule_sha, state['price_version'], time_binding)
             discount_items = bundle.get('discount_items')
             if (not isinstance(discount_items, list) or len(discount_items) != len(set(discount_items))
                     or not set(discount_items).issubset(pending)):
@@ -325,17 +352,30 @@ def run(store, transport, page, *, expected_shop, observed_links):
                     bundle = call('generate', {'items': pending, 'round': round_no,
                         'template': template, 'price_version': state['price_version'],
                         'corrections': state['corrections'], 'phase': 'after_discount_partial'})
-                    _validate_bundle(bundle, pending, rule_sha, state['price_version'])
+                    _validate_bundle(bundle, pending, rule_sha, state['price_version'], time_binding)
             if not pending:
                 state['pending'] = discount_retries
                 state['round'] += 1
                 store.save(run_id, state)
                 continue
             window = call('verify_discount_window', {'bundle': bundle, 'items': pending})
-            if (window.get('start') != page['start'] or window.get('end') != page['end']
+            if (window.get('start') != price_window['start'] or window.get('end') != price_window['end']
                     or window.get('all_correct') is not True
                     or sorted(window.get('items') or []) != pending):
                 raise Blocked('verify_discount_window', 'actual_discount_time_or_scope_mismatch')
+            enrolled=set(state.get('previously_enrolled',[]))
+            signup_pending=[i for i in pending if i not in enrolled]
+            if not signup_pending:
+                state['pending']=discount_retries
+                state['round']+=1
+                store.save(run_id,state)
+                continue
+            if signup_pending != pending:
+                pending=signup_pending
+                bundle=call('generate', {'items':pending,'round':round_no,
+                    'template':template,'price_version':state['price_version'],
+                    'corrections':state['corrections'],'phase':'signup_excluding_enrolled'})
+                _validate_bundle(bundle,pending,rule_sha,state['price_version'],time_binding)
             signup = call('signup', {'bundle': bundle, 'items': pending})
             rows = _terminal_scope(signup, pending)
             failed = [r['item'] for r in rows if r['outcome'] == 'failed']
