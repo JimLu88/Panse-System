@@ -81,9 +81,21 @@ class CampaignTransport:
         else:
             snapshot=self.authority.resolve_snapshot(build_snapshot(load_rows()))
             persist(snapshot_path,snapshot)
-        self.edge._action('inspect_product_export_setup',{})
-        job=self.job('product_export',{'identity':self.identity(payload),'snapshot_request_id':action_id},folder)
-        scope=from_edge_job(job,expected_request_id=action_id,expected_shop=payload['identity']['shop_id'],roots=self.roots)
+        existing=self.request.get('existing_product_export')
+        if existing:
+            # The daily task may have completed this same final test's export
+            # while maintenance was deploying. Re-read its exact persisted job;
+            # do not start another export or accept caller-supplied file content.
+            export_request_id=existing['snapshot_request_id']
+            job=self.edge.status(existing['job_id'])
+            if job.get('job_id')!=existing['job_id']:
+                raise ValueError('existing_product_export_job_identity_mismatch')
+            persist(folder/'reused-product-export.json',job)
+        else:
+            export_request_id=action_id
+            self.edge._action('inspect_product_export_setup',{})
+            job=self.job('product_export',{'identity':self.identity(payload),'snapshot_request_id':action_id},folder)
+        scope=from_edge_job(job,expected_request_id=export_request_id,expected_shop=payload['identity']['shop_id'],roots=self.roots)
         persist(self.root/'product-scope.json',scope)
         mapping=unique_mappings(scope,snapshot['all_erp_rows'])
         # This is a local, proven ID mapping overlay only; no business DB change.

@@ -24,6 +24,12 @@ def validate_request(request):
     load_rules()
     if request.get('rule_sha')!=RULE_SHA or request.get('schema')!='continuous_campaign_request_v1':
         raise ValueError('approved_continuous_request_required')
+    existing=request.get('existing_product_export')
+    if existing is not None:
+        import re
+        if (not isinstance(existing,dict) or set(existing)!={'job_id','snapshot_request_id'}
+                or any(not re.fullmatch('[0-9a-f]{64}',str(existing[k])) for k in existing)):
+            raise ValueError('exact_existing_product_export_reference_required')
     calendar=request['calendar'];shop=calendar['shop_id'];pages=request['pages']
     expected={calendar['daily_activity']['campaign'],*[c['campaign'] for c in calendar['campaigns']]}
     if set(pages)!=expected:raise ValueError('calendar_discovery_page_scope_mismatch')
@@ -55,7 +61,7 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
     try:
         first=request['pages'][request['calendar']['daily_activity']['campaign']]
         base={'identity':first,'rule_sha':RULE_SHA}
-        transport=CampaignTransport(edge,authority,root=root/'shared',request={},artifact_roots=artifact_roots,progress=progress)
+        transport=CampaignTransport(edge,authority,root=root/'shared',request=request,artifact_roots=artifact_roots,progress=progress)
         # Saved through the same once-only ledger as all later actions. A crash
         # during export cannot silently submit another export on restart.
         pre_id=store.start(fingerprint(['scope',request]),RULE_SHA)

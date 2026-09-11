@@ -53,6 +53,25 @@ def test_shared_product_export_reuses_file_but_checks_each_campaign_history(tmp_
     t.edge.submit.assert_not_called()
 
 
+def test_final_test_reuses_exact_verified_prefetch_without_second_download(tmp_path):
+    existing={'job_id':'a'*64,'snapshot_request_id':'b'*64}
+    edge=Mock();edge.status.return_value={'job_id':existing['job_id'],'state':'finished'}
+    a=Mock();a.resolve_snapshot.return_value={'all_erp_rows':[],
+        'current_sellable_item_ids':['1'],'resolved_price_version_sha256':'same'}
+    t=CampaignTransport(edge,a,root=tmp_path,request={'existing_product_export':existing},artifact_roots=[tmp_path])
+    t.with_prior=lambda value,*args:value
+    p={'identity':{'shop_id':'test-shop'}}
+    with patch('campaign_price_snapshot.load_rows',return_value=[]),patch(
+            'campaign_price_snapshot.build_snapshot',return_value={}),patch(
+            'campaign_product_scope.from_edge_job',return_value={'complete':True,'page_evidence':'proof'}) as verify,patch(
+            'campaign_product_scope.unique_mappings',return_value={'matches':[],'unknown':[]}):
+        result=t.step_scope('c'*64,p,tmp_path/'action')
+    assert result['complete']
+    assert verify.call_args.kwargs['expected_request_id']=='b'*64
+    edge.status.assert_called_once_with('a'*64)
+    edge.submit.assert_not_called();edge._action.assert_not_called()
+
+
 def test_request_binds_discovery_to_calendar_not_arbitrary_window(tmp_path):
     cal=time_request();pages={}
     for c in [cal['daily_activity'],*cal['campaigns']]:
@@ -67,6 +86,10 @@ def test_request_binds_discovery_to_calendar_not_arbitrary_window(tmp_path):
     first=register_request(req,tmp_path)
     assert first==register_request(req,tmp_path) and first['platform_write'] is False
     assert len(list((tmp_path/'requests').glob('*.json')))==1
+    cached=deepcopy(req);cached['existing_product_export']={'job_id':'a'*64,'snapshot_request_id':'b'*64}
+    assert validate_request(cached)=='test-shop'
+    cached['existing_product_export']['path']='arbitrary.xlsx'
+    with pytest.raises(ValueError,match='exact_existing'):validate_request(cached)
     bad=deepcopy(req);bad['calendar']['campaigns'][0]['end']='2026-09-28 23:59:59'
     with pytest.raises(ValueError,match='not_bound'):validate_request(bad)
 
