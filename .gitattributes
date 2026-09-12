@@ -9,4 +9,4 @@ docs/receipts/campaign-four-custom-user-established-baseline-20260911.json text 
 docs/receipts/campaign-78-custom-user-established-baseline-20260911.json text eol=lf
 docs/receipts/campaign-78-custom-user-established-baseline-20260911-v2.json text eol=lf
 docs/receipts/campaign-three-user-established-baselines-20260912.json -text
-docs/receipts/campaign-scoped-catalog-repair-20260912.json -text
+docs/receipts/campaign-scoped-catalog-repair-20260912.json -text whitespace=cr-at-eol
