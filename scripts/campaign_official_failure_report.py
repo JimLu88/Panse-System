@@ -15,10 +15,13 @@ HEADERS = {'item': '商品ID', 'sku': 'SKUID', 'name': 'SKU名称',
            'submitted_price': '活动价', 'status': '是否成功', 'message': '失败原因或风险提示'}
 COUPON = re.compile(r'\[([^\[\]]+?)（活动普惠券后价：([\d.]+)元，最低普惠券后价：([\d.]+)元(?:，[\d.]+折折后券后价：([\d.]+)元)?）\]')
 LIST = re.compile(r'您的sku[：:]\s*(.*?)\s+在管控期标价为([\d.]+)元')
+APPROVED = re.compile(r'需小于审核通过值[（(]([\d.]+)[）)].*?skuId[：:]\s*(\d+)', re.I)
+INVALID = re.compile(r'SKUID\s*=\s*(\d+)不属于当前商品或已下架', re.I)
 
 
 def attributes(name):
-    return tuple(sorted(x.strip() for x in re.split('[,，;；]', name) if x.strip()))
+    return tuple(sorted(re.sub(r'^[^:：]+[:：]', '', x.strip()).strip()
+                        for x in re.split('[,，;；]', name) if x.strip()))
 
 
 def amount(value):
@@ -105,6 +108,14 @@ def parse_feedback(raw, *, expected_sha, batch, expected_items, official_counts=
         names = defaultdict(list)
         for row in group['rows']:
             names[attributes(row['name'])].append(row)
+        # No-sales is a product-wide terminal for this campaign only. Preserve
+        # all raw reasons, but do not repair prices on an ineligible product.
+        if any('动销' in m and '不予准入' in m for m in group['messages']):
+            errors.append(dict(item=item,sku='',kind='no_sales',terminal='failed',batch=str(batch),
+                message='\n'.join(group['messages']),official_evidence={'sha256':actual_sha,
+                'sheet':'商品SKU导入列表','product_row':group['rows'][0]['row']}))
+            group['statuses']=sorted(group['statuses'])
+            continue
         for message in group['messages']:
             mentions = []
             for m in COUPON.finditer(message):
@@ -115,6 +126,20 @@ def parse_feedback(raw, *, expected_sha, batch, expected_items, official_counts=
             base = {'item': item, 'batch': str(batch), 'terminal': 'failed', 'message': message,
                     'official_evidence': {'sha256': actual_sha, 'sheet': '商品SKU导入列表',
                                           'product_row': group['rows'][0]['row']}}
+            direct = [(m[2], 'approved_price', {'official_cap':amount(m[1]),'strict_cap':True})
+                      for m in APPROVED.finditer(message)]
+            direct += [(m[1], 'mapping', {'official_invalid_or_disabled':True})
+                       for m in INVALID.finditer(message)]
+            if direct:
+                for sku,kind,limits in direct:
+                    matches=[r for r in group['rows'] if r['sku']==sku]
+                    if len(matches)!=1:
+                        errors.append(dict(base,sku='',kind='unknown',parse_issue='reported_sku_id_not_in_file'))
+                    else:
+                        errors.append(dict(base,sku=sku,kind=kind,
+                            submitted_price=matches[0]['submitted_price'],**limits))
+                if not mentions:
+                    continue
             # Detect unparsed price mentions, including malformed/truncated
             # numeric clauses; retaining the raw text alone must not auto-pass.
             remainder = message

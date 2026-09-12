@@ -143,6 +143,11 @@ class CampaignTransport:
 
     def step_generate(self,action_id,payload,folder):
         from campaign_generate_current_files import _generate
+        from campaign_failure_remediation import corrected_scope
+        snapshot_path=self.root/'resolved-snapshot.json'
+        exclusion_refs={d['repair']['scope_evidence']['path']:d['repair']['scope_evidence']
+                        for ds in payload.get('corrections',{}).values() for d in ds
+                        if d['repair']['kind']=='exclude_ineligible_sku'}
         activity_template=Path(payload['template']['path'])
         if payload['template'].get('fixed_master'):
             from campaign_fixed_template_projection import project
@@ -150,6 +155,22 @@ class CampaignTransport:
             if file_sha(source)!=payload['template']['sha256']:
                 raise ValueError('fixed_template_changed_before_generation')
             scope=load(self.root/'product-scope.json')
+            scope,mapping_facts=corrected_scope(scope,payload.get('corrections',{}))
+            missing=set(payload['items'])-{e['facts']['item'] for e in scope['sku_facts']}
+            if missing:
+                return {'input_issues':[dict(item=i,sku='',error='no_remaining_eligible_sku_after_official_export')
+                    for i in sorted(missing)],'items':payload['items']}
+            if mapping_facts:
+                refs={d['repair']['scope_evidence']['path'] for ds in payload['corrections'].values()
+                      for d in ds if d['repair']['kind']=='exclude_ineligible_sku'}
+                files=[]
+                for ref in sorted(refs):
+                    proof=load(load(ref)['scope']['page_evidence']['path'])
+                    files.extend({'path':f['path'],'sha256':f['sha256']} for f in proof['files'])
+                unique={f['sha256']:f for f in files}
+                overlay=persist(folder/'official-mapping-overlay.json',{'facts':mapping_facts,'files':list(unique.values())})
+                snapshot=dict(load(snapshot_path),official_mapping_overlay={'path':overlay,'sha256':file_sha(overlay)})
+                snapshot_path=Path(persist(folder/'snapshot-with-id-overlay.json',snapshot))
             projected=project(source.read_bytes(),scope,payload['items'])
             activity_template=folder/'fixed-master-current-skus.xlsx'
             if activity_template.exists():
@@ -176,12 +197,13 @@ class CampaignTransport:
         if set(custom)!=set(wanted):raise ValueError('custom_correction_authority_missing')
         corrections=folder/'custom-corrections.json'
         if custom:persist(corrections,{'rows':list(custom.values())})
-        args=SimpleNamespace(snapshot=self.root/'resolved-snapshot.json',activity_template=activity_template,
+        args=SimpleNamespace(snapshot=snapshot_path,activity_template=activity_template,
             campaign_key='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id')),
             official_rate=str(p['official_rate']),target=segment['target'] if segment else self.request['target'],
             start=window['start'],end=window['end'],custom_basis_receipt=[],signup_items=','.join(payload['items']),
             discount_items=','.join(payload['items']),continuous_rule_sha=RULE_SHA,output_dir=folder/'files',
             custom_corrections=corrections if corrections.exists() else None,
+            sku_exclusion_receipts=list(exclusion_refs.values()),
             time_request=Path(self.request['time_request']) if timing else None,
             time_segment=segment['segment_id'] if segment else None)
         result=_generate(args,self.authority)
@@ -245,15 +267,24 @@ class CampaignTransport:
 
     def step_report(self,action_id,payload,folder):
         from campaign_feedback_normalization import normalize_errors
+        from campaign_failure_remediation import report_from_download, resolve_invalid_skus
         result=load(self.root/'terminals'/(payload['failed_phase']+'-'+str(payload['batch'])+'.json'))
-        if not result.get('errors'):raise ValueError('official_failure_report_missing_no_redownload')
-        body=self.authority.get_bundle(result['bundle_id']);snapshot=load(self.root/'resolved-snapshot.json')
+        if not result.get('errors'):
+            result=report_from_download(self,result,payload,folder)
+        body=self.authority.get_bundle(result['bundle_id']);snapshot=load(body['snapshot_path'])
         path=self.root/'verified-discounts'/(result['bundle_id']+'.json')
         readback=load(path) if path.exists() else {'rows':[]}
         actual=[dict(r,verified_readback=True,evidence=readback.get('evidence'),target=body['target']) for r in readback['rows']]
         errors=normalize_errors(result,submitted_rows=body['signup_rows'],erp_rows=snapshot['all_erp_rows'],
-            fixed_bases=self.authority.bases(snapshot),actual_discounts=actual,rate=body['official_rate'])
+            fixed_bases=self.authority.bases(snapshot),actual_discounts=actual,rate=body['official_rate'],target_mode=body['target'])
         errors=[e for e in errors if e['item'] in payload['items']]
+        try:
+            errors=resolve_invalid_skus(self,errors,payload,folder)
+        except (ValueError,OSError,KeyError) as exc:
+            # The export failure holds only the affected mapping items; pricing
+            # repairs on unrelated failed products must still progress.
+            errors=[dict(e,kind='unknown',parse_issue='mapping_export_unavailable:'+str(exc))
+                    if e.get('kind')=='mapping' else e for e in errors]
         report=dict(errors=errors,batch=payload['batch'],bundle_id=result['bundle_id'],source_terminal=result['evidence'])
         persist(self.root/'reports'/(str(payload['batch'])+'.json'),report)
         return report

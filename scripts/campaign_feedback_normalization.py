@@ -11,7 +11,7 @@ from campaign_continuous_policy import money
 from campaign_generate_current_files import official_cut
 
 
-def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_discounts, rate):
+def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_discounts, rate, target_mode=None):
     rate = Decimal(str(rate))
     if not rate.is_finite() or not Decimal('0') <= rate < Decimal('1'):
         raise ValueError('invalid_official_rate')
@@ -33,6 +33,9 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
     normalized = []
     for pair, constraints in grouped.items():
         base = dict(constraints[0], constraints=constraints)
+        if all(e['kind'] in ('no_sales','mapping') for e in constraints):
+            normalized.append(base)
+            continue
         if not pair[1] or any(e['kind'] == 'unknown' for e in constraints):
             normalized.append(dict(base, kind='unknown'))
             continue
@@ -50,6 +53,8 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
             base.update(custom=facts['custom'], erp_daily=str(daily), submitted_price=str(price),
                         erp_code=source['erp_code'])
             list_caps = [money(e['official_cap']) for e in constraints if e['kind']=='list_price']
+            approved_caps = [money(e['official_cap'])-Decimal('.01') for e in constraints
+                             if e['kind']=='approved_price']
             coupon_caps = [money(e['official_cap']) for e in constraints if e['kind']=='coupon_price']
             if facts['custom']:
                 basis = fixed_bases.get(pair)
@@ -57,7 +62,7 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
                     raise ValueError('fixed_original_evidence_missing')
                 # Conservative maximum in cents; the actual official rounded
                 # cut cannot make this exceed the cap. Do not invent coupons.
-                feasible = min([price, daily] + list_caps + [
+                feasible = min([price, daily] + list_caps + approved_caps + [
                     (cap/(1-rate)).quantize(Decimal('.01'), rounding=ROUND_FLOOR)
                     for cap in coupon_caps])
                 base.update(fixed_original=str(money(basis['original'])),
@@ -66,7 +71,21 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
             elif price != daily:
                 # classify() corrects our generated price back to daily first.
                 base['kind'] = 'signup_not_daily'
+            elif approved_caps:
+                base['kind']='signup_not_daily'
             else:
+                # A proven coupon ceiling below target-2 cannot possibly fit
+                # the authorized range, regardless of unexplained stacking.
+                # Route to approval without guessing/editing any deduction.
+                modes={r.get('target') for r in discounts[pair]}
+                mode=target_mode if target_mode is not None else next(iter(modes)) if len(modes)==1 else None
+                if mode not in ('big','medium'):raise ValueError('fixed_erp_target_mode_unknown')
+                target = money(facts['big_target'] if mode=='big' else facts['medium_target'])
+                if coupon_caps and min(coupon_caps)<target-Decimal('2'):
+                    base.update(kind='coupon_price',erp_final_target=str(target),
+                                feasible_final_price=str(min(coupon_caps)))
+                    normalized.append(base)
+                    continue
                 rows = discounts[pair]
                 if len(rows) != 1 or rows[0].get('verified_readback') is not True or not rows[0].get('evidence'):
                     raise ValueError('exact_existing_discount_readback_missing')
@@ -88,5 +107,5 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
                             discount_readback_evidence=rows[0]['evidence'])
             normalized.append(base)
         except (KeyError, ValueError, ArithmeticError) as exc:
-            normalized.append(dict(base, kind='unknown', custom=None, parse_issue=str(exc)))
+            normalized.append(dict(base, kind='unknown', parse_issue=str(exc)))
     return normalized

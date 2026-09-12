@@ -1,5 +1,16 @@
 # Panse-System agent instructions
 
+## Failure handling confirmed 2026-09-12
+
+Read `docs/campaign-failure-remediation-20260912.md` for automatic failed-scope
+continuation. The user directly authorized recurring custom reductions within
+the established fixed 20% floor and ordinary final-price delta <=2 CNY. Do not
+ask again for those. No-sales failures are skipped for this campaign; invalid
+or disabled SKUs require one recorded full export/ID-code reconciliation, then
+file-only exclusion of proven ineligible SKUs. Rotation remains a human gate.
+These clarifications supersede old per-attempt price-approval wording only in
+the continuous flow; original successful/unknown claims stay protected.
+
 ## Current continuous-campaign migration (user approved 2026-09-11)
 
 User additionally approved segmented timing: read

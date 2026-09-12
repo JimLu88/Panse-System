@@ -84,13 +84,22 @@ def classify(error):
     """Return a decision, never perform an edit. Needs exact official failure."""
     base = {'item': str(error.get('item') or ''), 'sku': str(error.get('sku') or ''),
             'reason': error.get('message', ''), 'action': 'manual', 'repair': None}
-    if (not base['item'] or not base['sku'] or error.get('terminal') != 'failed'
+    if (not base['item'] or error.get('terminal') != 'failed'
             or not error.get('batch') or not error.get('official_evidence')):
         return dict(base, reason='official_failed_scope_not_proven')
     kind = error.get('kind')
+    if kind=='unknown' and error.get('parse_issue'):
+        return dict(base,reason=error['parse_issue'])
     if kind == 'no_sales':
         return dict(base, action='not_eligible_this_campaign')
+    if not base['sku']:
+        return dict(base, reason='official_failed_sku_not_proven')
     if kind == 'mapping':
+        if (error.get('full_official_export_verified') is True
+                and error.get('official_invalid_or_disabled') is True
+                and error.get('remove_from_signup') is True and error.get('mapping_scope_evidence')):
+            return dict(base, action='repair', repair={'kind':'exclude_ineligible_sku',
+                'scope_evidence':error['mapping_scope_evidence']})
         matches = error.get('verified_mapping_candidates')
         if (error.get('full_official_export_verified') is True
                 and isinstance(matches, list) and len(matches) == 1
@@ -109,7 +118,7 @@ def classify(error):
         if kind == 'signup_not_daily':
             return dict(base, reason='platform_requires_non_daily_signup_price')
         if error.get('custom') is True:
-            if kind not in ('custom_price', 'coupon_price', 'list_price'):
+            if kind not in ('custom_price', 'coupon_price', 'list_price', 'approved_price'):
                 return base
             if not error.get('fixed_basis_evidence'):
                 return dict(base, reason='fixed_basis_unknown_not_rotation_proof')

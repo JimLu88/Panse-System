@@ -25,7 +25,12 @@ def validated_body(authority, identity, phase):
         raise ValueError('mapping_or_price_authority_changed_regenerate_local_files')
     bases=authority.bases(snapshot)
     raw=Path(body['template_path']).read_bytes()
-    rows,discounts,issues=build_rows(snapshot,template_rows(raw),discount_rate(body['official_rate']),body['target'],bases,set(body['signup_items']),set(body['discount_items']))
+    identities=template_rows(raw)
+    if body.get('sku_exclusion_receipts'):
+        from campaign_failure_remediation import excluded_pairs
+        excluded=excluded_pairs(body['sku_exclusion_receipts'])
+        identities=[r for r in identities if (r['item'],r['sku']) not in excluded]
+    rows,discounts,issues=build_rows(snapshot,identities,discount_rate(body['official_rate']),body['target'],bases,set(body['signup_items']),set(body['discount_items']))
     if issues:raise ValueError('generation_inputs_no_longer_valid')
     expected={(r['item'],r['sku']):r for r in rows}
     if len(expected)!=len(body['signup_rows']) or set(expected)!={(r['item'],r['sku']) for r in body['signup_rows']}:

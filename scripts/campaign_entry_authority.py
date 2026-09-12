@@ -218,12 +218,13 @@ class Authority:
         return result
 
     def bases(self, snapshot):
+        from campaign_failure_remediation import mapped_erp_rows
         sources=[{k:s[k] for k in ('path','kind','sha256')} for s in self.sources() if s['kind']=='fixed']
         catalog=BasisCatalog(sources)
         # Bind fixed source identities to logical ERP codes only through current or
         # verified receipt mappings. Then inherit to other physical IDs of that code.
         bindings={}
-        for row in snapshot['all_erp_rows']:
+        for row in mapped_erp_rows(snapshot):
             for item in {str(row.get('item')),str(row.get('product_item_id')),*map(str,row.get('product_alt_item_ids') or [])}:
                 for sku in {str(row.get('sku')),*map(str,row.get('alt') or [])}:
                     bindings.setdefault((item,sku),set()).add(row['code'])

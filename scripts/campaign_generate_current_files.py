@@ -58,6 +58,8 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
     erp = snapshot['all_erp_rows']
     if digest(erp) != snapshot['resolved_price_version_sha256']:
         raise ValueError('price_snapshot_changed')
+    from campaign_failure_remediation import mapped_erp_rows
+    erp=mapped_erp_rows(snapshot)
     index = {}
     for row in erp:
         item_ids = set(str(x) for x in [row.get('item'),row.get('product_item_id'),*(row.get('product_alt_item_ids') or [])] if x)
@@ -158,6 +160,11 @@ def _generate(args,authority):
             price_version=snapshot['resolved_price_version_sha256'], start=args.start, end=args.end))
     bases=authority.bases(snapshot)
     identities=template_rows(raw)
+    exclusions=getattr(args,'sku_exclusion_receipts',[]) or []
+    if exclusions:
+        from campaign_failure_remediation import excluded_pairs
+        excluded=excluded_pairs(exclusions)
+        identities=[r for r in identities if (r['item'],r['sku']) not in excluded]
     blocked_signup=authority.blocked(campaign,'signup',args.start,args.end)
     blocked_discount=authority.blocked(campaign,'discount',args.start,args.end)
     present={r['item'] for r in identities}
@@ -235,6 +242,7 @@ def _generate(args,authority):
                   signup_rows=activity,discount_rows=discounts,planned_discount_rows=planned_discounts,discount_reuse=reused,corrections=corrections,files=result['files'])
         if continuous_rule_sha is not None:
             body['continuous_rule_sha']=continuous_rule_sha
+        if exclusions:body['sku_exclusion_receipts']=exclusions
         if time_binding is not None:
             body['time_binding']=time_binding
         result['entry_bundle_id']=authority.save_bundle(body)

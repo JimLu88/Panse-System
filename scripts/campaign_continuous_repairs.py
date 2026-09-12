@@ -102,6 +102,14 @@ def execute_repairs(transport,action_id,payload,folder):
                 custom.append(dict(item=item,sku=d['sku'],activity_price=repair['price']))
                 local_items.add(item)
             elif repair['kind']=='file_price':local_items.add(item) # Generator already writes ERP daily.
+            elif repair['kind']=='exclude_ineligible_sku':
+                ref=repair['scope_evidence']
+                if file_sha(ref['path'])!=ref['sha256']:raise ValueError('sku_exclusion_evidence_changed')
+                evidence=load(ref['path'])
+                if (evidence['batch']!=str(payload['failed_batch']) or
+                        pair not in {(r['item'],r['sku']) for r in evidence['excluded']}):
+                    raise ValueError('sku_exclusion_outside_failed_scope')
+                local_items.add(item) # Only next signup file changes. No product deletion.
             else:raise ValueError('unsupported_repair_kind_no_browser_fallback')
     if custom:
         auth={'campaign':body['campaign'],'continuous_rule_sha':RULE_SHA,'authorized_custom_prices':custom,

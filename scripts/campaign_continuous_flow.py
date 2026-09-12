@@ -260,7 +260,9 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             if row['outcome'] == 'success' and row.get('changed') is True:
                 next_items.append(item)
                 state['exceptions'].pop(item, None)
-                state['corrections'][item] = repairs[item]
+                prior={(d['sku'],d['repair']['kind']):d for d in state['corrections'].get(item,[])}
+                prior.update({(d['sku'],d['repair']['kind']):d for d in repairs[item]})
+                state['corrections'][item] = list(prior.values())
                 state['repairs_seen'].setdefault(item, []).append(fingerprint([d['repair'] for d in repairs[item]]))
             else:
                 hold([item], 'repair_failed_or_no_verified_change')
