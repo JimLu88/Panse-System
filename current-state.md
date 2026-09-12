@@ -1,5 +1,12 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-13 业务验收通过，原72小时定时已启用
+
+- round51原57件=33成功+18无动销+1新基线待确认+1暂缓轮换+4价格例外；无pending/owner/unknown，200 action全done。
+- 本次5条定制基线按用户批准固定（4×1000、1×900），组合柜新成功；升降桌轮换已授权但本次明确不做，authorized_deferred不可自动派发。
+- 正式Web Agent finalize与NAS ERP readiness均ready=true，同验收b4ab3fc6…5495；同原request普通start幂等检查无新action/重传。85视频哈希核验，4历史采帧警告保留，业务验收不再被历史缺帧单独阻挡。
+- 原定时3已ACTIVE/72小时/目标03读回；下一次自然定时触发尚未发生。详情docs/receipts/campaign-operational-enable-20260913.md，旧暂停/未验收段落仅作历史。
+
 ## 2026-09-13 round49批量收口：32成功，映射缺口清零
 
 - 原57商品互斥结果：32官方成功、16本场无动销、4缺固定定制原价依据、1升降桌轮换、4价格例外；complete/pending空/owner空/无未完成action。本轮新增5成功，不宣称57全部报名成功。
