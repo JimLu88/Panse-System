@@ -79,11 +79,33 @@ def apply_verified_amendments(authority,offers):
     return offers
 
 
+def mapping_report(report,payload):
+    """Add the verified export evidence without overwriting the old report."""
+    from campaign_failure_remediation import excluded_pairs
+    decisions=[d for ds in payload['decisions'].values() for d in ds]
+    if not decisions or any(d['repair']['kind']!='exclude_ineligible_sku' for d in decisions):
+        return report
+    additions={}
+    for item,ds in payload['decisions'].items():
+        for d in ds:
+            ref=d['repair']['scope_evidence'];pair=item,d['sku']
+            if pair not in excluded_pairs([ref]):raise ValueError('mapping_exclusion_not_verified')
+            doc=load(ref['path'])
+            source=[e for e in doc['errors'] if (e['item'],e['sku'])==pair]
+            old=[e for e in report['errors'] if (e['item'],e['sku'])==pair]
+            if (len(source)!=1 or len(old)!=1 or any(source[0].get(k)!=old[0].get(k)
+                    for k in ('item','sku','batch','message','official_evidence'))
+                    or str(doc['batch'])!=str(payload['failed_batch'])):
+                raise ValueError('mapping_report_source_changed')
+            additions[pair]=dict(source[0],full_official_export_verified=True,remove_from_signup=True,mapping_scope_evidence=ref)
+    return dict(report,errors=[additions.get((e['item'],e['sku']),e) for e in report['errors']])
+
+
 def execute_repairs(transport,action_id,payload,folder):
     from campaign_continuous_transport import persist
     a=transport.authority;table(a)
     report_path=transport.root/'reports'/(str(payload['failed_batch'])+'.json')
-    report=load(report_path);repairs,exceptions=classify_items(report['errors'])
+    report=mapping_report(load(report_path),payload);repairs,exceptions=classify_items(report['errors'])
     if any(repairs.get(i)!=payload['decisions'][i] for i in payload['items']):
         raise ValueError('repair_decisions_do_not_match_official_report')
     body=a.get_bundle(report['bundle_id']);ordinary=[];custom=[];local_items=set()
