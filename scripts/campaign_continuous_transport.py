@@ -211,7 +211,7 @@ class CampaignTransport:
         return result
 
     def step_discount(self,action_id,payload,folder):
-        self.edge._action('inspect_discount_setup',{})
+        self.edge._action('inspect_discount_setup',{'open_if_missing':True})
         return self.submit_phase('discount',payload,folder)
 
     def step_signup(self,action_id,payload,folder):

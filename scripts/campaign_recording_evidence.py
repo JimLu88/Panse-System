@@ -25,6 +25,13 @@ def collect(job, roots):
                 raise ValueError('recording_source_outside_artifact_roots')
             append(json.loads(source.read_text(encoding='utf-8')))
     elif result.get('recording'):
+        source=Path(result.get('evidence_path','')).parent
+        if (job.get('operation')=='discount' and source.name=='form-recovery-1'
+                and source.parent.name==job['job_id']):
+            prior=source.parent/'recording-result.json'
+            if not any(prior.resolve().is_relative_to(root) for root in allowed):
+                raise ValueError('prior_recording_outside_artifact_roots')
+            append(json.loads(prior.read_text(encoding='utf-8')))
         append(result['recording'])
     if not records:raise ValueError('required_job_recording_missing')
     return records

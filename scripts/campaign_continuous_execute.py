@@ -94,16 +94,22 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
                 'segments':results,'plan_id':plan['plan_id'],'legacy_fallback':False}
         from campaign_recording_evidence import collect
         recordings=[];recording_errors=[]
+        observations={}
         for p in [*root.rglob('*-observation.json'),*root.rglob('reused-product-export.json')]:
             job=load(p)
             if not job.get('operation'):continue
+            old=observations.get(job['job_id'])
+            if old is None or (old.get('state')!='finished' and job.get('state')=='finished'):
+                observations[job['job_id']]=job
+        for job in observations.values():
             try:recordings.extend(collect(job,artifact_roots))
             except (OSError,ValueError,KeyError) as exc:
                 recording_errors.append({'job_id':job.get('job_id'),'error_type':type(exc).__name__})
         result['recordings']=recordings
         result['recording_errors']=recording_errors
         result['full_recording_verified']=bool(recordings) and not recording_errors
-        persist(root/'result.json',result)
+        from campaign_continuous_recovery import persist_run_outcome
+        persist_run_outcome(root,result)
         return result
     finally:store.db.close()
 
@@ -113,8 +119,10 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--request-id')
     mode.add_argument('--register-discovery',action='store_true')
+    p.add_argument('--reconcile-discount',action='store_true')
     args=p.parse_args()
     if args.register_discovery:
+        if args.reconcile_discount:raise ValueError('recovery_requires_existing_request')
         print(json.dumps(register_request(json.load(sys.stdin)),ensure_ascii=False));return
     import re
     if not re.fullmatch('[0-9a-f]{64}',args.request_id):raise ValueError('invalid_request_id')
@@ -123,6 +131,10 @@ def main():
     secret=json.loads(sys.stdin.readline());edge=EdgeClient(secret.pop('token'))
     a=Authority()
     try:
+        if args.reconcile_discount:
+            from campaign_continuous_recovery import recover_finished_discount
+            recovery=recover_finished_discount(ROOT/'runs'/args.request_id,a,edge)
+            print(json.dumps({'discount_reconciliation':recovery},ensure_ascii=False),flush=True)
         result=execute_request(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,
             artifact_roots=secret['artifact_roots'],
             progress=lambda job: print(json.dumps({'progress':job['state'],'job_id':job['job_id']},ensure_ascii=False),flush=True))
