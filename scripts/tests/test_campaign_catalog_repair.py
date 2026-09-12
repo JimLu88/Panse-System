@@ -47,3 +47,29 @@ def test_changed_or_invented_retirement_is_rejected(tmp_path):
 def test_existing_official_exclusion_empty_is_still_valid():
     from campaign_failure_remediation import excluded_pairs as official_excluded
     assert official_excluded([])==set()
+
+
+@pytest.mark.parametrize('change',['none','sku','spec','code','custom'])
+def test_legacy_prefix_requires_existing_exact_identity_and_spec(tmp_path,change):
+    snapshot,doc,write=fixture(tmp_path)
+    scope=write('legacy-scope.json',{'scope':{'complete':True,'sku_facts':[{'facts':dict(item='1',sku='2',sku_code='12345',attributes='oak-large')} ]}})
+    doc.update(official_scope_path=scope,restored=[dict(item='1',sku='2',erp_code='PPS12345',official_sku_code='12345',repair_kind='verified_bound_legacy_prefix')])
+    doc['sources'].append(dict(path=scope,sha256=file_sha(scope)))
+    path=write('legacy.json',doc);snapshot['catalog_repair_sources']=[dict(path=path,sha256=file_sha(path))]
+    row=dict(item='1',sku='2',code='PPS12345',sku_name='oak-large',custom=False,daily='55')
+    if change=='sku':row['sku']='9'
+    if change=='spec':row['sku_name']='pine-small'
+    if change=='code':row['code']='PPS54321'
+    if change=='custom':row['custom']=True
+    if change=='none':assert mapped_rows(snapshot,[row])==[row]
+    else:
+        with pytest.raises(ValueError):mapped_rows(snapshot,[row])
+
+
+def test_remaining_summary_does_not_rewrite_historical_exceptions():
+    from campaign_catalog_repair import remaining_mapping_summary
+    snapshot={'registered_delisted_sku_ids':['2'],'all_erp_rows':[]}
+    exceptions={'1':[dict(reason='erp_mapping_missing_or_not_unique',sku='2'),dict(reason='erp_mapping_missing_or_not_unique',sku='3')]}
+    before=deepcopy(exceptions);summary=remaining_mapping_summary(snapshot,exceptions)
+    assert summary['historical_sku_count']==2 and summary['remaining_sku_count']==1
+    assert summary['products'][0]['remaining_skus']==['3'] and exceptions==before

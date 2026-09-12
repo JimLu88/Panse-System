@@ -150,7 +150,9 @@ def excluded_pairs(refs):
 def verified_code_aliases(snapshot):
     """Exact registered backup codes only; never strip a B1/B2 suffix by guess."""
     result=set()
-    from campaign_catalog_repair import documents
+    from campaign_catalog_repair import documents,mapped_rows
+    if snapshot.get('catalog_repair_sources'):
+        mapped_rows(snapshot,snapshot['all_erp_rows'])  # Validate aliases, not just their receipt hash.
     for doc in documents(snapshot):
         for row in doc.get('restored',[]):
             result.add((row['item'],row['sku'],row['erp_code'],row['official_sku_code']))

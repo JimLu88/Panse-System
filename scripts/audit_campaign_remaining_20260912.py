@@ -39,7 +39,56 @@ def inspect():
 
 if __name__=='__main__':
     import sys
-    if '--live-erp' in sys.argv:
+    if '--legacy-cloud-aliases' in sys.argv:
+        from campaign_entry_authority import file_sha
+        from campaign_catalog_repair import mapped_rows
+        original=Path(__file__).resolve().parents[1]/'docs/receipts/campaign-scoped-catalog-repair-20260912.json'
+        doc=load(original);snapshot_path=SEG/'resolved-snapshot.json'
+        authority=Authority()
+        try:snapshot=authority.resolve_snapshot(load(snapshot_path))
+        finally:authority.close()
+        terminal_path=ROOT/'Web-Agent程序/data/output/campaign-transfers/9dcd8d27aa0c659f2c6cd4c283cfc11f83c492f56ead629a5529f4284283f02e/created-discount-terminal.json'
+        rejected={(r['item'],r['sku']) for r in load(terminal_path)['failure_rows']}
+        facts=load(doc['official_scope_path'])['scope']['sku_facts'];restored=[]
+        for entry in facts:
+            f=entry['facts']
+            if f['item']!='720234422814' or not f['sku_code'].isdigit():continue
+            if (f['item'],f['sku']) in rejected:continue
+            candidates=[r for r in snapshot['all_erp_rows'] if '720234422814' in item_ids(r)
+                and f['sku'] in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
+            if len(candidates)!=1:continue
+            r=candidates[0]
+            if r['code']!='PPS'+f['sku_code'] or r.get('custom') is not False or r.get('sku_name')!=f['attributes']:
+                raise ValueError('cloud_legacy_code_or_spec_conflict')
+            restored.append(dict(item=f['item'],sku=f['sku'],erp_code=r['code'],official_sku_code=f['sku_code'],
+                                 repair_kind='verified_bound_legacy_prefix'))
+        if len(restored)!=36:raise ValueError('exact_36_cloud_aliases_required')
+        doc.update(retired=[],restored=restored,user_verbatim='14件：商品与ERP映射缺口。你进行修复，其实等于原因不明，需要你排查',
+                   scope='Exact already-bound physical SKU and same specification only; no price, stock or platform edits.')
+        doc['sources'].append(dict(path=str(snapshot_path),sha256=file_sha(snapshot_path)))
+        doc['sources'].append(dict(path=str(terminal_path),sha256=file_sha(terminal_path)))
+        path=original.with_name('campaign-cloud36-legacy-code-aliases-20260912.json')
+        with path.open('x',encoding='utf-8',newline='\n') as stream:json.dump(doc,stream,ensure_ascii=False,indent=2)
+        ref=dict(path=str(path),sha256=file_sha(path));snapshot['catalog_repair_sources']=[ref]
+        if mapped_rows(snapshot,snapshot['all_erp_rows'])!=snapshot['all_erp_rows']:raise ValueError('legacy_alias_changed_mapping_or_price')
+        print(json.dumps(ref,ensure_ascii=False))
+    elif '--current-mapping-summary' in sys.argv:
+        import sqlite3
+        from campaign_catalog_repair import remaining_mapping_summary
+        authority=Authority()
+        try:snapshot=authority.resolve_snapshot(load(SEG/'resolved-snapshot.json'))
+        finally:authority.close()
+        db=sqlite3.connect((RUN/'controller.sqlite3').resolve().as_uri()+'?mode=ro',uri=True)
+        try:
+            states=[json.loads(r[0]) for r in db.execute('SELECT body FROM continuous_campaign_runs')]
+        finally:db.close()
+        matches=[s for s in states if any(d.get('reason')=='erp_mapping_missing_or_not_unique' for ds in s.get('exceptions',{}).values() for d in ds)]
+        if len(matches)!=1:raise ValueError('exact_mapping_exception_run_required')
+        summary=remaining_mapping_summary(snapshot,matches[0]['exceptions'])
+        target=ROOT/'outputs/01a03341-b2cd-7810-92f3-66fad189521d/mapping11-current-summary-20260912.json'
+        with target.open('x',encoding='utf-8') as stream:json.dump(summary,stream,ensure_ascii=False,indent=2)
+        print(json.dumps(dict(path=str(target),historical=summary['historical_sku_count'],remaining=summary['remaining_sku_count']),ensure_ascii=False))
+    elif '--live-erp' in sys.argv:
         from campaign_price_snapshot import load_rows,build_snapshot
         path=ROOT/'outputs/01a03341-b2cd-7810-92f3-66fad189521d/remaining25-current-erp-20260912.json'
         with path.open('x',encoding='utf-8') as stream:

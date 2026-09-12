@@ -48,14 +48,45 @@ def mapped_rows(snapshot,rows):
         facts={(e['facts']['item'],e['facts']['sku']):e['facts'] for e in scope['sku_facts']}
         for m in doc.get('restored',[]):
             fact=facts.get((m['item'],m['sku']))
-            if (not fact or fact['sku_code']!=m['official_sku_code']
-                    or m['official_sku_code']!=m['erp_code']+'|'
-                    or m.get('repair_kind')!='verified_exact_trailing_delimiter'):
+            kind=m.get('repair_kind')
+            suffix=(kind=='verified_exact_trailing_delimiter' and m['official_sku_code']==m['erp_code']+'|')
+            legacy=(kind=='verified_bound_legacy_prefix' and m['official_sku_code'].isdigit()
+                    and m['erp_code']=='PPS'+m['official_sku_code'])
+            if not fact or fact['sku_code']!=m['official_sku_code'] or not (suffix or legacy):
                 raise ValueError('catalog_exact_mapping_proof_missing')
             candidates=[r for r in result if r['code']==m['erp_code'] and m['item'] in {
                 str(r.get('item')),str(r.get('product_item_id')),*map(str,r.get('product_alt_item_ids') or [])}]
             if len(candidates)!=1:raise ValueError('catalog_repair_erp_identity_not_unique')
             existing=[r for r in result if m['sku'] in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
             if any(r['code']!=m['erp_code'] for r in existing):raise ValueError('catalog_repair_identity_conflict')
+            if legacy:
+                # Existing exact physical binding + exact specification. This
+                # only recognizes a proven legacy spelling, never maps an
+                # unknown SKU by adding a guessed prefix or changing prices.
+                if (len(existing)!=1 or existing[0]['code']!=m['erp_code']
+                        or not fact.get('attributes')
+                        or fact['attributes'].strip()!=existing[0].get('sku_name','').strip()
+                        or existing[0].get('custom') is not False):
+                    raise ValueError('catalog_legacy_physical_or_spec_not_proven')
+                continue
             candidates[0]['alt']=list(dict.fromkeys([*(candidates[0].get('alt') or []),m['sku']]))
     return result
+
+
+def remaining_mapping_summary(snapshot,exceptions):
+    """Projection only: preserve historical controller exceptions verbatim."""
+    rows=mapped_rows(snapshot,snapshot['all_erp_rows']);products=[]
+    for item,issues in exceptions.items():
+        original=[d['sku'] for d in issues if d.get('reason')=='erp_mapping_missing_or_not_unique' and d.get('sku')]
+        if not original:continue
+        pairs=[dict(item=item,sku=s) for s in original];removed=excluded_pairs(snapshot,pairs)
+        unresolved=[];resolved=[]
+        for sku in dict.fromkeys(original):
+            matches=[r for r in rows if item in {str(r.get('item')),str(r.get('product_item_id')),*map(str,r.get('product_alt_item_ids') or [])}
+                and sku in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
+            if (item,sku) in removed or len(matches)==1:resolved.append(sku)
+            else:unresolved.append(sku)
+        products.append(dict(item=item,historical_sku_count=len(original),resolved_skus=resolved,
+                             remaining_skus=unresolved,remaining_sku_count=len(unresolved)))
+    return dict(products=products,historical_sku_count=sum(p['historical_sku_count'] for p in products),
+                remaining_sku_count=sum(p['remaining_sku_count'] for p in products),controller_modified=False)

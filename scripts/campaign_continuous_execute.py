@@ -85,6 +85,17 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
             local.shared_scope=(scope,transport.root)
             binding=bind_request(time_path,segment['segment_id'])
             value=run(store,local,page,expected_shop=shop,observed_links=request['observed_links'],time_binding=binding)
+            if any(d.get('reason')=='erp_mapping_missing_or_not_unique'
+                   for ds in value.get('exceptions',{}).values() for d in ds):
+                # Report projection only; don't erase historical exceptions or
+                # alter queues merely to make the current count look smaller.
+                from campaign_catalog_repair import remaining_mapping_summary
+                try:
+                    current_snapshot=authority.resolve_snapshot(load(local.root/'resolved-snapshot.json'))
+                    value=dict(value,mapping_summary=remaining_mapping_summary(current_snapshot,value['exceptions']))
+                except (ValueError,OSError,KeyError) as exc:
+                    value=dict(value,mapping_summary={'remaining_sku_count':None,'error_type':type(exc).__name__,
+                                                       'controller_modified':False})
             results.append(dict(value,segment_id=segment['segment_id']))
             # Unknown external writes or security gates are never worked around
             # by another activity. Pure missing-input segments may be skipped.
