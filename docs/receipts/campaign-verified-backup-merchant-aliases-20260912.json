@@ -1,0 +1,101 @@
+{
+  "status": "verified_partial_mapping_restored",
+  "schema": "campaign_verified_backup_merchant_alias_v1",
+  "prices_unchanged": true,
+  "database_price_write": false,
+  "platform_write": false,
+  "restored": [
+    {
+      "item": "1007407909979",
+      "sku": "6134048133857",
+      "erp_code": "PPS2525012041599",
+      "official_sku_code": "PPS2525012041599B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\1007407909979.remaining-backups.claim.json",
+          "sha256": "2d35d1edca43d9e8edccc1e45fb9ed3195967d74f229870c96387834d490a6aa"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-2-record-331310289.xlsx",
+          "sha256": "0b8c960f173dec3ad40347b6bc5cc18cf3330909faa07a35a4e79a9073409ff6"
+        }
+      ]
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423528",
+      "erp_code": "PPS2425007090197",
+      "official_sku_code": "PPS2425007090197B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.20260905135609.run.json",
+          "sha256": "8b2d6d0daade64bbdbcbfaf1b591dbbfa1be192fe2051524e9723a7109b3f4de"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.edge-backups.claim.json",
+          "sha256": "fbdd6ee09fafcf645c675d3488d0d0f8df00b4788114aa62d7c991f07511c84e"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-2-record-331310289.xlsx",
+          "sha256": "0b8c960f173dec3ad40347b6bc5cc18cf3330909faa07a35a4e79a9073409ff6"
+        }
+      ]
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423529",
+      "erp_code": "PPS2425007090198",
+      "official_sku_code": "PPS2425007090198B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.20260905133813.run.json",
+          "sha256": "f280d5592f6741561906577a8c43c656fbc0878f74a38dc84f9de142adc9ae1f"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.edge-backups.claim.json",
+          "sha256": "fbdd6ee09fafcf645c675d3488d0d0f8df00b4788114aa62d7c991f07511c84e"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-2-record-331310289.xlsx",
+          "sha256": "0b8c960f173dec3ad40347b6bc5cc18cf3330909faa07a35a4e79a9073409ff6"
+        }
+      ]
+    },
+    {
+      "item": "840659847455",
+      "sku": "6298418423530",
+      "erp_code": "PPS2425007090199",
+      "official_sku_code": "PPS2425007090199B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.20260905133813.run.json",
+          "sha256": "f280d5592f6741561906577a8c43c656fbc0878f74a38dc84f9de142adc9ae1f"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\840659847455.edge-backups.claim.json",
+          "sha256": "fbdd6ee09fafcf645c675d3488d0d0f8df00b4788114aa62d7c991f07511c84e"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-2-record-331310289.xlsx",
+          "sha256": "0b8c960f173dec3ad40347b6bc5cc18cf3330909faa07a35a4e79a9073409ff6"
+        }
+      ]
+    }
+  ]
+}

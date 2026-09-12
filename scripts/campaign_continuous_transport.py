@@ -170,7 +170,8 @@ class CampaignTransport:
                     files.extend({'path':f['path'],'sha256':f['sha256']} for f in proof['files'])
                 unique={f['sha256']:f for f in files}
                 overlay=persist(folder/'official-mapping-overlay.json',{'facts':mapping_facts,'files':list(unique.values())})
-                snapshot=dict(load(snapshot_path),official_mapping_overlay={'path':overlay,'sha256':file_sha(overlay)})
+                snapshot=dict(self.authority.resolve_snapshot(load(snapshot_path)),
+                    official_mapping_overlay={'path':overlay,'sha256':file_sha(overlay)})
                 from campaign_failure_remediation import mapping_conflicts
                 issues=mapping_conflicts(snapshot,mapping_facts)
                 if issues:return {'input_issues':issues,'items':payload['items']}

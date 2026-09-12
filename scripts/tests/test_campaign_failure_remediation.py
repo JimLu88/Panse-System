@@ -63,6 +63,54 @@ def test_scope_replaces_only_failed_item_and_preserves_zero_stock(tmp_path):
     assert mappings[0]['facts']['stock']=='0' and original['sku_facts'][0]['facts']['sku']=='11'
 
 
+def test_exclusions_accumulate_across_failure_batches_without_reintroducing_skus(tmp_path):
+    facts=[{'facts':{'item':'1','sku':s},'sources':[]} for s in ['11','12','13']]
+    scope={'complete':True,'page_evidence':'same-export','sku_facts':facts}
+    decisions=[]
+    for n,sku in enumerate(['11','12']):
+        p=persist(tmp_path/f'scope-{n}.json',{'scope':scope,'excluded':[dict(item='1',sku=sku)]})
+        decisions.append({'repair':{'kind':'exclude_ineligible_sku','scope_evidence':{'path':p,'sha256':file_sha(p)}}})
+    result,mappings=corrected_scope(scope,{'1':decisions})
+    assert [r['facts']['sku'] for r in result['sku_facts']]==['13']
+    assert len(mappings)==1
+
+
+def test_complete_export_is_reused_without_browser_or_resubmission(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from campaign_failure_remediation import reusable_failure_export
+    import campaign_product_scope
+    p=persist(tmp_path/'resolved-snapshot.json',{'price_version':'unchanged'})
+    scope={'complete':True,'page_evidence':{'job_id':'already-finished'},'sku_facts':[]}
+    persist(tmp_path/'repairs/scope-old.json',{'rule':'failure-remediation-20260912','batch':'old','scope':scope})
+    seen=[]
+    edge=SimpleNamespace(status=lambda jid:seen.append(jid) or {'verified':'job'})
+    t=SimpleNamespace(root=tmp_path,roots=[tmp_path],edge=edge,identity=lambda p:{'shop_name':'shop'})
+    monkeypatch.setattr(campaign_product_scope,'from_edge_job',lambda job,**kw:scope)
+    result,request,context=reusable_failure_export(t,{'identity':{'shop_id':'shop'},'batch':'new'})
+    assert result==scope and seen==['already-finished'] and request and context
+    # A different catalog version cannot reuse a version-bound export.
+    old=__import__('json').loads((tmp_path/'repairs/scope-old.json').read_text())
+    old['catalog_context_sha256']='other-version'
+    (tmp_path/'repairs/scope-old.json').write_text(__import__('json').dumps(old))
+    assert reusable_failure_export(t,{'identity':{'shop_id':'shop'},'batch':'new'})[0] is None
+
+
+def test_backup_suffix_requires_exact_registered_alias_and_unchanged_provenance(tmp_path):
+    from campaign_failure_remediation import mapping_conflicts
+    snapshot={'all_erp_rows':[dict(item='1',sku='10',alt=['11'],code='ERP')]}
+    facts=[{'facts':dict(item='1',sku='11',sku_code='ERPB1')}]
+    assert mapping_conflicts(snapshot,facts)  # Never guess by suffix.
+    source=persist(tmp_path/'source.json',{'verified':'prior-backup-readback'})
+    receipt=persist(tmp_path/'alias.json',{'status':'verified_partial_mapping_restored','restored':[
+        dict(item='1',sku='11',erp_code='ERP',official_sku_code='ERPB1',
+             alias_evidence=[{'path':source,'sha256':file_sha(source)}])]})
+    snapshot['verified_code_alias_sources']=[{'path':receipt,'sha256':file_sha(receipt)}]
+    assert mapping_conflicts(snapshot,facts)==[]
+    assert mapping_conflicts(snapshot,[{'facts':dict(item='1',sku='11',sku_code='ERPB2')}])
+    Path(source).write_text('{}')
+    with pytest.raises(ValueError,match='backup_alias_source_changed'):mapping_conflicts(snapshot,facts)
+
+
 @pytest.mark.parametrize('delta,action',[('2','repair'),('2.01','rotation_approval')])
 def test_ordinary_threshold_is_inclusive_and_never_rotates(delta,action):
     from decimal import Decimal

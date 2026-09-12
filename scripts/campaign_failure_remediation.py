@@ -43,19 +43,47 @@ def report_from_download(transport, terminal, payload, folder):
     return dict(terminal,errors=parsed['errors'],feedback=result)
 
 
+def reusable_failure_export(transport, payload):
+    """Reuse this unchanged controller's complete export, never a global cache.
+
+    The controller has no product-edit/rotation operation. Its immutable ERP
+    snapshot and exact campaign/shop bind this cache; a changed catalog needs a
+    new controller/snapshot. Revalidate the live job and every exported file.
+    """
+    from campaign_product_scope import from_edge_job
+    context=fingerprint([transport.identity(payload),file_sha(transport.root/'resolved-snapshot.json')])
+    for path in sorted((transport.root/'repairs').glob('scope-*.json'),reverse=True):
+        doc=load(path)
+        if doc.get('rule')!='failure-remediation-20260912':continue
+        if doc.get('catalog_context_sha256',context)!=context:continue
+        proof=(doc.get('scope') or {}).get('page_evidence') or {}
+        request_id=fingerprint(['failed-sku-export',transport.identity(payload),str(doc['batch'])])
+        # A reused receipt retains its originating export request, not the new
+        # failure batch. Its binding was written by this same fixed function.
+        request_id=doc.get('export_request_id',request_id)
+        job=transport.edge.status(proof['job_id'])
+        scope=from_edge_job(job,expected_request_id=request_id,
+            expected_shop=payload['identity']['shop_id'],roots=transport.roots)
+        if scope!=doc['scope']:raise ValueError('cached_product_export_scope_changed')
+        return scope,request_id,context
+    return None,None,context
+
+
 def resolve_invalid_skus(transport, errors, payload, folder):
-    """One complete recorded export per failed batch, with exact ID/code checks."""
+    """One complete export for the unchanged catalog, reused by later failures."""
     from campaign_product_scope import from_edge_job
     from campaign_continuous_transport import persist
     from campaign_continuous_policy import classify
     invalid=[e for e in errors if e.get('kind')=='mapping']
     if not invalid:return errors
-    request_id=fingerprint(['failed-sku-export',transport.identity(payload),str(payload['batch'])])
-    transport.edge._action('inspect_product_export_setup',{})
-    job=transport.job('product_export',{'identity':transport.identity(payload),
-        'snapshot_request_id':request_id},folder/'mapping-export')
-    scope=from_edge_job(job,expected_request_id=request_id,
-        expected_shop=payload['identity']['shop_id'],roots=transport.roots)
+    scope,request_id,context=reusable_failure_export(transport,payload)
+    if scope is None:
+        request_id=fingerprint(['failed-sku-export',transport.identity(payload),str(payload['batch'])])
+        transport.edge._action('inspect_product_export_setup',{})
+        job=transport.job('product_export',{'identity':transport.identity(payload),
+            'snapshot_request_id':request_id},folder/'mapping-export')
+        scope=from_edge_job(job,expected_request_id=request_id,
+            expected_shop=payload['identity']['shop_id'],roots=transport.roots)
     excluded=sorted({(e['item'],e['sku']) for e in invalid
                      if e.get('official_invalid_or_disabled') is True})
     if not excluded:raise ValueError('official_rejected_sku_scope_missing')
@@ -63,8 +91,14 @@ def resolve_invalid_skus(transport, errors, payload, folder):
     # failure is the exclusion proof even if that inactive SKU is exported.
     receipt={'scope':scope,'excluded':[{'item':i,'sku':s} for i,s in excluded],
         'batch':str(payload['batch']),'errors':invalid,'rule':'failure-remediation-20260912',
-        'product_deleted':False,'stock_modified':False}
-    path=persist(transport.root/'repairs'/('scope-'+str(payload['batch'])+'.json'),receipt)
+        'product_deleted':False,'stock_modified':False,
+        'export_request_id':request_id,'catalog_context_sha256':context}
+    target=transport.root/'repairs'/('scope-'+str(payload['batch'])+'.json')
+    if target.exists():
+        prior=load(target)
+        if any(prior.get(k)!=receipt.get(k) for k in prior):raise ValueError('sku_scope_evidence_changed')
+        receipt=prior  # Previously signed receipts remain byte-for-byte immutable.
+    path=persist(target,receipt)
     ref={'path':path,'sha256':file_sha(path)}
     return [dict(e,full_official_export_verified=True,remove_from_signup=True,mapping_scope_evidence=ref)
             if (e.get('item'),e.get('sku')) in excluded else e for e in errors]
@@ -78,18 +112,21 @@ def corrected_scope(scope, corrections):
             repair=decision['repair']
             if repair['kind']=='exclude_ineligible_sku':
                 ref=repair['scope_evidence'];refs[ref['path']]=ref
-    mappings=[]
+    mappings=[];documents=[];all_excluded=set()
     for ref in refs.values():
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('sku_scope_evidence_changed')
         doc=load(ref['path']);fresh=doc['scope']
         if fresh.get('complete') is not True or not fresh.get('page_evidence'):
             raise ValueError('complete_product_export_required')
         excluded={(r['item'],r['sku']) for r in doc['excluded']}
+        all_excluded.update(excluded);documents.append((fresh,excluded))
+    for fresh,excluded in documents:
         items={i for i,s in excluded if i in corrections}
         selected=[e for e in fresh['sku_facts'] if e['facts']['item'] in items
-                  and (e['facts']['item'],e['facts']['sku']) not in excluded]
+                  and (e['facts']['item'],e['facts']['sku']) not in all_excluded]
         value['sku_facts']=[e for e in value['sku_facts'] if e['facts']['item'] not in items]+selected
         mappings.extend(selected)
+    mappings=list({(e['facts']['item'],e['facts']['sku']):e for e in mappings}.values())
     return value,mappings
 
 
@@ -110,6 +147,22 @@ def excluded_pairs(refs):
     return result
 
 
+def verified_code_aliases(snapshot):
+    """Exact registered backup codes only; never strip a B1/B2 suffix by guess."""
+    result=set()
+    for ref in snapshot.get('verified_code_alias_sources',[]):
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('backup_alias_receipt_changed')
+        doc=load(ref['path'])
+        if doc.get('status')!='verified_partial_mapping_restored':raise ValueError('backup_alias_not_verified')
+        for row in doc['restored']:
+            if not row.get('official_sku_code'):continue
+            if not row.get('alias_evidence'):raise ValueError('backup_alias_provenance_missing')
+            for source in row['alias_evidence']:
+                if file_sha(source['path'])!=source['sha256']:raise ValueError('backup_alias_source_changed')
+            result.add((row['item'],row['sku'],row['erp_code'],row['official_sku_code']))
+    return result
+
+
 def mapped_erp_rows(snapshot):
     """Apply only official ID aliases; monetary snapshot/version stay unchanged."""
     from campaign_product_scope import parse_export
@@ -117,7 +170,7 @@ def mapped_erp_rows(snapshot):
     overlay=snapshot.get('official_mapping_overlay')
     if not overlay:return rows
     if file_sha(overlay['path'])!=overlay['sha256']:raise ValueError('mapping_overlay_changed')
-    doc=load(overlay['path']);raw_rows={}
+    doc=load(overlay['path']);raw_rows={};aliases=verified_code_aliases(snapshot)
     for entry in doc['facts']:
         fact=entry['facts'];code=fact['sku_code'];pair=fact['item'],fact['sku']
         proofs=[]
@@ -135,7 +188,7 @@ def mapped_erp_rows(snapshot):
         existing=[r for r in rows if pair[0] in {str(r.get('item')),str(r.get('product_item_id')),
             *map(str,r.get('product_alt_item_ids') or [])} and pair[1] in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
         if existing:
-            if len(existing)!=1 or (code and existing[0]['code']!=code):
+            if len(existing)!=1 or (code and existing[0]['code']!=code and (*pair,existing[0]['code'],code) not in aliases):
                 raise ValueError('mapping_conflicts_with_current_erp')
             continue
         if len(candidates)!=1:continue  # Generation isolates the precise unmatched item.
@@ -145,12 +198,12 @@ def mapped_erp_rows(snapshot):
 
 def mapping_conflicts(snapshot, facts):
     """Isolate semantic code conflicts to their product; do not halt peers."""
-    issues=[]
+    issues=[];aliases=verified_code_aliases(snapshot)
     for entry in facts:
         f=entry['facts'];pair=f['item'],f['sku'];code=f['sku_code']
         bound=[r for r in snapshot['all_erp_rows'] if pair[0] in {str(r.get('item')),
             str(r.get('product_item_id')),*map(str,r.get('product_alt_item_ids') or [])}
             and pair[1] in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
-        if len(bound)>1 or (len(bound)==1 and code and bound[0]['code']!=code):
+        if len(bound)>1 or (len(bound)==1 and code and bound[0]['code']!=code and (*pair,bound[0]['code'],code) not in aliases):
             issues.append(dict(item=pair[0],sku=pair[1],error='official_code_conflicts_with_erp_mapping'))
     return issues

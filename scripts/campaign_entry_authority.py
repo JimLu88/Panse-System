@@ -215,6 +215,8 @@ class Authority:
         result=deepcopy(snapshot);result['all_erp_rows']=rows
         result['resolved_price_version_sha256']=digest(rows)
         result['entry_source_sha256']=digest([{k:s[k] for k in ('path','kind','sha256')} for s in sources])
+        result['verified_code_alias_sources']=[{k:s[k] for k in ('path','sha256')} for s in sources
+            if s['kind']=='mapping' and any(m.get('official_sku_code') for m in s['document'].get('restored',[]))]
         return result
 
     def bases(self, snapshot):
