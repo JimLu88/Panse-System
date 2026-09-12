@@ -196,6 +196,23 @@ def _validate_bundle(bundle, pending, rule_sha, price_version, time_binding=None
         raise Blocked('generate', 'segmented_time_binding_missing_or_changed')
 
 
+def repair_signature(decisions):
+    return fingerprint(sorted([{'sku':str(d['sku']),'repair':d['repair']} for d in decisions],
+                              key=lambda d:(d['sku'],fingerprint(d['repair']))))
+
+
+def repair_already_attempted(state,item,decisions):
+    seen=state['repairs_seen'].get(item,[])
+    if repair_signature(decisions) in seen:return True
+    # Older checkpoints omitted SKU from the signature. Preserve their no-replay
+    # protection only for the physical SKU actually repaired, not a sibling SKU.
+    if fingerprint([d['repair'] for d in decisions]) in seen:
+        prior=state['corrections'].get(item,[])
+        return any(any(str(d['sku'])==str(p['sku']) and d['repair']==p['repair'] for p in prior)
+                   for d in decisions)
+    return False
+
+
 def run(store, transport, page, *, expected_shop, observed_links, time_binding=None):
     """Run continuously; return once finished or a real unrecoverable gate occurs.
 
@@ -245,8 +262,7 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
         repairs, exceptions = classify_items(errors)
         state['exceptions'].update(exceptions)
         for item in list(repairs):
-            signature = fingerprint([d['repair'] for d in repairs[item]])
-            if signature in state['repairs_seen'].get(item, []):
+            if repair_already_attempted(state,item,repairs[item]):
                 hold([item], 'same_correction_already_attempted_without_success')
                 del repairs[item]
         if not repairs:
@@ -263,7 +279,7 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                 prior={(d['sku'],d['repair']['kind']):d for d in state['corrections'].get(item,[])}
                 prior.update({(d['sku'],d['repair']['kind']):d for d in repairs[item]})
                 state['corrections'][item] = list(prior.values())
-                state['repairs_seen'].setdefault(item, []).append(fingerprint([d['repair'] for d in repairs[item]]))
+                state['repairs_seen'].setdefault(item, []).append(repair_signature(repairs[item]))
             else:
                 hold([item], 'repair_failed_or_no_verified_change')
         return next_items

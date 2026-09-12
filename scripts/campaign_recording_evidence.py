@@ -7,7 +7,8 @@ from pathlib import Path
 def collect(job, roots):
     allowed=[Path(p).resolve() for p in roots]
     records=[]
-    def append(record):
+    def append(record,depth=0):
+        if depth>1:raise ValueError('nested_recording_depth_invalid')
         if not isinstance(record,dict) or not isinstance(record.get('video'),str) or not record['video']:
             raise ValueError('recording_video_missing')
         if any(t.get('capture_gap') or not t.get('new_safe_frames') for t in record.get('failure_tails',[])):
@@ -21,8 +22,10 @@ def collect(job, roots):
             raise ValueError('recording_incomplete_or_changed')
         if not any(r['recording']['video']==record['video'] for r in records):
             records.append({'job_id':job['job_id'],'operation':job['operation'],'recording':record})
+        for related in record.get('related_recordings',[]):append(related,depth+1)
     result=job.get('result') or {}
     if job.get('operation')=='product_export':
+        if result.get('recording'):append(result['recording'])
         for entry in result.get('files',[]):
             source=Path(entry['path']).resolve(strict=True).parent/'recording-result.json'
             if not any(source.is_relative_to(root) for root in allowed):

@@ -54,3 +54,16 @@ def test_final_summary_preserves_worker_decision_without_interpreting_prices():
     assert summary['disposition'] is decision and summary['recording']['video'] is None
     assert summary['report_recovery']['retries_used']==1
     assert failure_handling({'result':{'failure_disposition':{'action':'continue'}}}) is None
+
+
+def test_failed_export_also_checks_the_records_page_video(tmp_path):
+    records=[]
+    for i in range(2):
+        video=tmp_path/f'{i}.mp4';video.write_bytes(bytes([i]))
+        records.append(dict(video=str(video),video_sha256=hashlib.sha256(video.read_bytes()).hexdigest(),
+                            active=False,frames=2,capture_errors=0))
+    records[0]['related_recordings']=[records[1]]
+    job=dict(job_id='a'*64,operation='product_export',result={'recording':records[0]})
+    assert len(collect(job,[tmp_path]))==2
+    records[1]['capture_errors']=1
+    with pytest.raises(ValueError,match='incomplete'):collect(job,[tmp_path])
