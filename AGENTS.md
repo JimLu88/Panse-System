@@ -1,5 +1,14 @@
 # Panse-System agent instructions
 
+## User operational acceptance amendment (2026-09-13)
+
+Read `docs/campaign-automation-amendment-20260913.md` for the five newly approved
+fixed custom bases, authorized-but-deferred lift-desk rotation, and separation
+of business readiness from historical video capture gaps. Historical missing
+frames remain warnings, not a standalone recurring-dispatch blocker. Official
+receipts, prices, idle terminal state, artifact integrity and no replay remain
+mandatory. Do not execute the deferred rotation without its explicit activation.
+
 ## Failure handling confirmed 2026-09-12
 
 Read `docs/campaign-failure-remediation-20260912.md` for automatic failed-scope

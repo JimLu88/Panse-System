@@ -236,7 +236,8 @@ def execute_repairs(transport,action_id,payload,folder):
     a=transport.authority;table(a)
     report_path=transport.root/'reports'/(str(payload['failed_batch'])+'.json')
     report=mapping_report(load(report_path),payload)
-    if any(e.get('parse_issue')=='unexplained_stacked_price_difference' for e in report['errors']):
+    if any(e.get('parse_issue') in {'unexplained_stacked_price_difference','fixed_original_evidence_missing'}
+           for e in report['errors']):
         from campaign_price_report_recovery import reclassify
         report=reclassify(transport,report,dict(payload,batch=payload['failed_batch']),folder)
         report_path=Path(persist(folder/'reclassified-price-report.json',report))
