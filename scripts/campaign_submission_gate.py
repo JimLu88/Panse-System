@@ -12,6 +12,23 @@ from campaign_discount_template import load_fixed_discount_template
 from campaign_segmented_time import phase_window, validate_binding
 
 
+def source_version_matches(authority,body,current_sha):
+    if current_sha==body['entry_source_sha256']:return True
+    from campaign_price_snapshot import digest
+    sources=authority.sources();descriptors=[{k:s[k] for k in ('path','kind','sha256')} for s in sources]
+    wanted=set(body['signup_items'])|set(body['discount_items'])
+    # Only an appended tail of verified mappings for OTHER products can be
+    # irrelevant. The complete original ordered source list must still match.
+    # Changed/removed sources, baselines, money or this batch's mappings fail.
+    for end in range(len(sources)-1,-1,-1):
+        extra=sources[end:]
+        if any(s['kind']!='mapping' or (s.get('document') or {}).get('status')!='verified_partial_mapping_restored'
+               or not s['document'].get('restored')
+               or any(r['item'] in wanted for r in s['document']['restored']) for s in extra):break
+        if digest(descriptors[:end])==body['entry_source_sha256']:return True
+    return False
+
+
 def validated_body(authority, identity, phase):
     body=authority.get_bundle(identity)
     validate_binding(body)
@@ -21,7 +38,7 @@ def validated_body(authority, identity, phase):
     if file_sha(body['snapshot_path'])!=body['snapshot_sha256']:raise ValueError('snapshot_file_changed')
     if file_sha(body['template_path'])!=body['template_sha256']:raise ValueError('official_template_changed')
     snapshot=authority.resolve_snapshot(load(body['snapshot_path']))
-    if snapshot['resolved_price_version_sha256']!=body['price_version'] or snapshot['entry_source_sha256']!=body['entry_source_sha256']:
+    if snapshot['resolved_price_version_sha256']!=body['price_version'] or not source_version_matches(authority,body,snapshot['entry_source_sha256']):
         raise ValueError('mapping_or_price_authority_changed_regenerate_local_files')
     bases=authority.bases(snapshot)
     raw=Path(body['template_path']).read_bytes()
