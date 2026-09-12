@@ -1,0 +1,183 @@
+{
+  "schema": "campaign_scoped_catalog_repair_v1",
+  "user_verbatim": "14件：商品与ERP映射缺口。你进行修复，其实等于原因不明，需要你排查",
+  "snapshot_captured_at": "2026-09-12T05:38:10.333933+00:00",
+  "price_version": "53818531fe0cea6417c738ee18f930a2604fa3c173f63943b60f1109c80d194b",
+  "registry_path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\remaining25-current-identities-20260912.json",
+  "official_scope_path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-continuous\\runs\\2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110\\segments\\bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7\\repairs\\scope-842934471.json",
+  "sources": [
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\remaining25-current-identities-20260912.json",
+      "sha256": "ff091e0e33ce0c5203e717dba7513821deebddcd0c8f06ab3e6991c214a540c3"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\remaining-current-checkpoint-20260905.json",
+      "sha256": "986904ff649dd3dfaa84c389f5eab0cca62493ba53bf29a8c7369f032e23fa94"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-continuous\\runs\\2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110\\segments\\bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7\\repairs\\scope-842934471.json",
+      "sha256": "94e114ff4ad8b93fa45faaeae21a4547209a2a4e856c66c7049a2deb9dc994af"
+    }
+  ],
+  "retired": [
+    {
+      "item": "797294092429",
+      "sku": "5436184245156"
+    },
+    {
+      "item": "797294092429",
+      "sku": "5436184245162"
+    },
+    {
+      "item": "792992319206",
+      "sku": "6114945844277"
+    },
+    {
+      "item": "792992319206",
+      "sku": "6114945844278"
+    },
+    {
+      "item": "792992319206",
+      "sku": "6114945844279"
+    },
+    {
+      "item": "792992319206",
+      "sku": "6114945844280"
+    },
+    {
+      "item": "792992319206",
+      "sku": "6207832455952"
+    },
+    {
+      "item": "793084818113",
+      "sku": "5433316024446"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925171"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925172"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925173"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925174"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925175"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925176"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925177"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925178"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925179"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925180"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925181"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925182"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925183"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925184"
+    },
+    {
+      "item": "793084818113",
+      "sku": "6115888925185"
+    },
+    {
+      "item": "719436834260",
+      "sku": "5024477897620"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321580"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321581"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321582"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321583"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321584"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321585"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321586"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321587"
+    },
+    {
+      "item": "840643621692",
+      "sku": "6042972321595"
+    },
+    {
+      "item": "928309307277",
+      "sku": "6207811675863"
+    },
+    {
+      "item": "928309307277",
+      "sku": "6207811675864"
+    },
+    {
+      "item": "928309307277",
+      "sku": "6207811675867"
+    },
+    {
+      "item": "928309307277",
+      "sku": "6207811675868"
+    }
+  ],
+  "historical_disabled_not_applied_without_current_confirmation": ["6134178749284", "6134178749285"],
+  "restored": [
+    {
+      "item": "720234422814",
+      "sku": "6135325229595",
+      "erp_code": "PPS2316001040302",
+      "official_sku_code": "PPS2316001040302|",
+      "repair_kind": "verified_exact_trailing_delimiter"
+    }
+  ],
+  "scope": "Only this unchanged product snapshot. No listing switch changes, no retired identity restoration, no price changes."
+}

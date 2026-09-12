@@ -62,11 +62,24 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
             continue
         offer,status = candidates[0]
         base = dict(item=pair[0],sku=pair[1],offer_id=offer['offer_id'],evidence_kind=offer.get('evidence_kind','registered_terminal'))
+        actual = [r for r in offer['rows'] if (r['item'],r['sku']) == pair]
+        # A partial *ordinary* import does not create a discount requirement for
+        # an unsubmitted custom SKU. Revalidate the original failed complement
+        # and full successful readback; an unverified unknown still stays held.
+        if row['custom'] and not actual and offer.get('partial_terminal_evidence'):
+            from campaign_partial_discount import verified_rows
+            # Later verified amendments change amounts, not which custom rows
+            # were absent from the original import. Verify original amounts
+            # against the original receipt, never against the amended values.
+            original=offer.get('verified_partial_original_rows',offer['rows'])
+            if {(r['item'],r['sku']) for r in original}!={(r['item'],r['sku']) for r in offer['rows']}:
+                raise ValueError('partial_discount_amendment_scope_changed')
+            verified_rows(dict(offer,rows=original),offer['partial_terminal_evidence'])
+            continue
         if status != 'success' and pair not in set(map(tuple,offer.get('verified_partial_skus',[]))):
             issues.append(dict(base,error='existing_discount_outcome_unknown'));continue
         if (offer['start'],offer['end']) != (start,end):
             issues.append(dict(base,error='existing_discount_window_not_exact'));continue
-        actual = [r for r in offer['rows'] if (r['item'],r['sku']) == pair]
         if row['custom']:
             if actual:issues.append(dict(base,error='custom_sku_has_existing_discount_requires_review'))
             continue

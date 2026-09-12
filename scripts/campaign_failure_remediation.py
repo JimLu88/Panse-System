@@ -150,6 +150,10 @@ def excluded_pairs(refs):
 def verified_code_aliases(snapshot):
     """Exact registered backup codes only; never strip a B1/B2 suffix by guess."""
     result=set()
+    from campaign_catalog_repair import documents
+    for doc in documents(snapshot):
+        for row in doc.get('restored',[]):
+            result.add((row['item'],row['sku'],row['erp_code'],row['official_sku_code']))
     for ref in snapshot.get('verified_code_alias_sources',[]):
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('backup_alias_receipt_changed')
         doc=load(ref['path'])
@@ -166,7 +170,8 @@ def verified_code_aliases(snapshot):
 def mapped_erp_rows(snapshot):
     """Apply only official ID aliases; monetary snapshot/version stay unchanged."""
     from campaign_product_scope import parse_export
-    rows=deepcopy(snapshot['all_erp_rows'])
+    from campaign_catalog_repair import mapped_rows
+    rows=mapped_rows(snapshot,snapshot['all_erp_rows'])
     overlay=snapshot.get('official_mapping_overlay')
     if not overlay:return rows
     if file_sha(overlay['path'])!=overlay['sha256']:raise ValueError('mapping_overlay_changed')

@@ -26,6 +26,9 @@ def validated_body(authority, identity, phase):
     bases=authority.bases(snapshot)
     raw=Path(body['template_path']).read_bytes()
     identities=template_rows(raw)
+    from campaign_catalog_repair import excluded_pairs as catalog_excluded_pairs
+    catalog_excluded=catalog_excluded_pairs(snapshot,identities)
+    identities=[r for r in identities if (r['item'],r['sku']) not in catalog_excluded]
     if body.get('sku_exclusion_receipts'):
         from campaign_failure_remediation import excluded_pairs
         excluded=excluded_pairs(body['sku_exclusion_receipts'])

@@ -84,3 +84,24 @@ class DiscountReceiptTests(unittest.TestCase):
         from pathlib import Path
         Path(job['result']['feedback']['path']).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError,'hash_changed'):self.auth.discount_offers()
+
+    def test_unsubmitted_custom_not_blocked_by_verified_partial_ordinary_import(self):
+        from campaign_discount_reuse import reconcile
+        from decimal import Decimal
+        job=self.partial_job();reconcile_discount(self.auth,job,output_dir=self.root/'partial-out')
+        offer=self.auth.discount_offers()[0]
+        row=dict(item=entry.ITEM,sku='unsubmitted-custom',custom=True,activity_price='1000.00')
+        new,reused,issues=reconcile([row],[],[offer],entry.START,entry.END,Decimal('.12'))
+        self.assertEqual((new,reused,issues),([],[],[]))
+        from copy import deepcopy
+        amended=deepcopy(offer);amended['rows'][0]['deduct']='1.23'
+        self.assertEqual(reconcile([row],[],[amended],entry.START,entry.END,Decimal('.12'))[2],[])
+        self.assertEqual(offer['items'][0]['status'],'unknown')
+        unverified=dict(offer);unverified.pop('partial_terminal_evidence')
+        self.assertEqual(reconcile([row],[],[unverified],entry.START,entry.END,Decimal('.12'))[2][0]['error'],
+                         'existing_discount_outcome_unknown')
+        submitted=dict(row,sku=offer['rows'][0]['sku'])
+        self.assertTrue(reconcile([submitted],[],[offer],entry.START,entry.END,Decimal('.12'))[2])
+        from pathlib import Path
+        Path(job['result']['feedback']['path']).write_bytes(b'changed')
+        with self.assertRaises(ValueError):reconcile([row],[],[offer],entry.START,entry.END,Decimal('.12'))

@@ -1,0 +1,16 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-12T22:29:45+08:00",
+  "source_thread_id": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "user_verbatim": "3. 3件：缺首次定制原价依据。---------按照现在的定制价格定为首次定制原价",
+  "scope": "Only the three missing custom SKU baselines in campaign-scope57-final-checkpoint-20260912.json. Existing baselines are immutable.",
+  "first_ever_historical_record_claimed": false,
+  "policy": "Establish once from current verified custom prices; preserve across later reductions and verified SKU replacement. Where current platform price exceeds ERP daily, preserve the higher protection basis, not a lower inferred historical original.",
+  "erp_readback": {"path":"D:/AI/畔色ERP系统/outputs/01a03341-b2cd-7810-92f3-66fad189521d/remaining25-current-erp-20260912.json","sha256":"dcd3191ead17e29cf0521eb9be0404373fc94a57949734d3b309169e4edf795e"},
+  "official_export_job": "5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759",
+  "rows": [
+    {"item":"1047742974354","sku":"6075963900521","erp_code":"PFG2521103011099","name":"孚格蜂蜜灵巧圆桌-尺寸定制","current_platform_price":"1333.33","current_erp_daily":"1000.00","fixed_original_record":"1333.33","fixed_floor":"266.6660","minimum_submittable_price":"266.67","floor_provenance":"user_established_from_current_verified_platform_price_20260912_not_historical_first_price","first_ever_historical_record_claimed":false},
+    {"item":"793202812082","sku":"5610459948672","erp_code":"PPS2441004051399","name":"樱桃木2024款新升降桌-尺寸定制","current_platform_price":"2000.00","current_erp_daily":"2000.00","fixed_original_record":"2000.00","fixed_floor":"400.0000","minimum_submittable_price":"400.00","floor_provenance":"user_established_from_current_verified_platform_and_erp_price_20260912_not_historical_first_price","first_ever_historical_record_claimed":false},
+    {"item":"919215369800","sku":"6160377915155","erp_code":"PPS2521010041099","name":"黑胡桃木三角腿餐桌-定制尺寸","current_platform_price":"5000.00","current_erp_daily":"5000.00","fixed_original_record":"5000.00","fixed_floor":"1000.0000","minimum_submittable_price":"1000.00","floor_provenance":"user_established_from_current_verified_platform_and_erp_price_20260912_not_historical_first_price","first_ever_historical_record_claimed":false}
+  ]
+}

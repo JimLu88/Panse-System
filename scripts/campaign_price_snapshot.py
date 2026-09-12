@@ -21,8 +21,14 @@ SELECT row_to_json(q) FROM (
  FROM pricing_sku s LEFT JOIN pricing_sku_promo p ON p.sku_code=s.sku_code
  LEFT JOIN products g ON g.code=s.product_code ORDER BY s.product_code,s.sku_code
 ) q;
+SELECT json_build_object('_catalog_state',true,'delisted_skuids',value_plain)
+FROM system_settings WHERE key='delisted_skuids' AND is_secret=false;
 COMMIT;
 """
+
+
+class SnapshotRows(list):
+    """One transaction's prices plus non-price listing registry evidence."""
 
 
 def digest(value):
@@ -32,7 +38,13 @@ def digest(value):
 def load_rows():
     command = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-db-1 psql -X -v ON_ERROR_STOP=1 -U panse -d panse_erp -At'
     run = subprocess.run(['C:/Program Files/Git/usr/bin/ssh.exe', '-i', str(Path.home()/'.ssh/panse_nas'), '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-p', '2222', '15068803006@DS923plus', command], input=SQL, capture_output=True, text=True, encoding='utf-8', timeout=45, check=True)
-    rows = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{')]
+    parsed = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{')]
+    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state'))
+    state=[r for r in parsed if r.get('_catalog_state')]
+    if len(state)>1:raise ValueError('catalog_registry_not_unique')
+    rows.registered_delisted_sku_ids=json.loads(state[0]['delisted_skuids']) if state else []
+    if not isinstance(rows.registered_delisted_sku_ids,list) or not all(isinstance(s,str) and s.isdigit() for s in rows.registered_delisted_sku_ids):
+        raise ValueError('invalid_delisted_sku_registry')
     if not rows or len({r['code'] for r in rows}) != len(rows):
         raise ValueError('empty_or_duplicate_erp_snapshot')
     return rows
@@ -75,6 +87,8 @@ def build_snapshot(rows, receipt=None):
         'erp_price_version_sha256': digest(rows), 'resolved_price_version_sha256': digest(resolved),
         'rotation_receipt_sha256': digest(receipt) if receipt else None,
         'database_write': False, 'platform_write': False, 'no_sales_filter_applied': False,
+        'registered_delisted_sku_ids': sorted(set(getattr(rows,'registered_delisted_sku_ids',[]))),
+        'catalog_registry_source': 'system_settings.delisted_skuids in the same read-only ERP transaction',
         'all_erp_rows': resolved, 'current_sellable_item_ids': sorted(ids),
         'unknown_listing_status_codes': [r['code'] for r in resolved if not r.get('listing_status')],
         'unmapped_sellable_codes': [r['code'] for r in active if not r.get('item') or not r.get('sku')],

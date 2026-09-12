@@ -160,6 +160,9 @@ def _generate(args,authority):
             price_version=snapshot['resolved_price_version_sha256'], start=args.start, end=args.end))
     bases=authority.bases(snapshot)
     identities=template_rows(raw)
+    from campaign_catalog_repair import excluded_pairs as catalog_excluded_pairs
+    catalog_excluded=catalog_excluded_pairs(snapshot,identities)
+    identities=[r for r in identities if (r['item'],r['sku']) not in catalog_excluded]
     exclusions=getattr(args,'sku_exclusion_receipts',[]) or []
     if exclusions:
         from campaign_failure_remediation import excluded_pairs

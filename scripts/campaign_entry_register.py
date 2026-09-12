@@ -4,7 +4,7 @@ from campaign_entry_authority import Authority
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--kind',choices=('fixed','mapping','rotation','outcome','discount'),required=True)
+    p.add_argument('--kind',choices=('fixed','mapping','rotation','outcome','discount','catalog'),required=True)
     p.add_argument('--receipt',required=True)
     p.add_argument('--sha256',required=True)
     args=p.parse_args()

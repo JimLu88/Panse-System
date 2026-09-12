@@ -93,7 +93,7 @@ class Authority:
 
     def register_source(self, path, kind, expected_sha):
         path=Path(path).resolve()
-        if kind not in ('fixed','mapping','outcome','rotation','discount'):raise ValueError('unsupported_authority_source')
+        if kind not in ('fixed','mapping','outcome','rotation','discount','catalog'):raise ValueError('unsupported_authority_source')
         if file_sha(path)!=expected_sha:raise ValueError('source_version_mismatch')
         doc=load(path)
         if kind=='fixed':
@@ -217,6 +217,9 @@ class Authority:
         result['entry_source_sha256']=digest([{k:s[k] for k in ('path','kind','sha256')} for s in sources])
         result['verified_code_alias_sources']=[{k:s[k] for k in ('path','sha256')} for s in sources
             if s['kind']=='mapping' and any(m.get('official_sku_code') for m in s['document'].get('restored',[]))]
+        result['catalog_repair_sources']=[{k:s[k] for k in ('path','sha256')} for s in sources if s['kind']=='catalog'
+            and s['document'].get('snapshot_captured_at')==result['captured_at']
+            and s['document'].get('price_version')==result['resolved_price_version_sha256']]
         return result
 
     def bases(self, snapshot):
@@ -289,6 +292,7 @@ class Authority:
         for offer in offers.values():
             if offer.get('partial_terminal_evidence'):
                 offer['verified_partial_skus']=[list(pair) for pair in sorted(verified_rows(offer,offer['partial_terminal_evidence']))]
+                offer['verified_partial_original_rows']=deepcopy(offer['rows'])
         from campaign_discount_amend import apply_confirmed
         result=apply_confirmed(self,list(offers.values()))
         from campaign_continuous_repairs import apply_verified_amendments
