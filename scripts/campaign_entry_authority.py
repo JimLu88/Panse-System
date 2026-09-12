@@ -275,6 +275,20 @@ class Authority:
                     previous=offers[key].get('platform_offer_id')
                     if previous and previous!=str(doc['batch_id']):raise ValueError('discount_offer_id_conflict')
                     offers[key]['platform_offer_id']=str(doc['batch_id'])
+                    if doc.get('partial_items'):offers[key]['partial_terminal_evidence']=evidence
+        from campaign_partial_discount import verified_rows
+        if self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='verified_partial_discount_receipts'").fetchone():
+            for saved in self.db.execute('SELECT bundle_id,path,sha256 FROM verified_partial_discount_receipts'):
+                offer=offers.get('bundle:'+saved[0])
+                if offer is not None:
+                    if file_sha(saved[1])!=saved[2]:raise ValueError('partial_discount_receipt_changed')
+                    doc=load(saved[1]);platform=str(doc['batch_id'])
+                    if offer.get('platform_offer_id',platform)!=platform:raise ValueError('partial_discount_offer_conflict')
+                    offer['platform_offer_id']=platform
+                    offer['partial_terminal_evidence']=dict(path=saved[1],sha256=saved[2])
+        for offer in offers.values():
+            if offer.get('partial_terminal_evidence'):
+                offer['verified_partial_skus']=[list(pair) for pair in sorted(verified_rows(offer,offer['partial_terminal_evidence']))]
         from campaign_discount_amend import apply_confirmed
         result=apply_confirmed(self,list(offers.values()))
         from campaign_continuous_repairs import apply_verified_amendments

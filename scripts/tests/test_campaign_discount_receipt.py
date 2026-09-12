@@ -72,3 +72,15 @@ class DiscountReceiptTests(unittest.TestCase):
         result.pop('evidence_path');result['evidence_path']=str(self.write('partial-empty-readback.json',result))
         with self.assertRaisesRegex(ValueError,'sku_amount_mismatch'):
             reconcile_discount(self.auth,job,output_dir=self.root/'partial-out')
+
+    def test_partial_receipt_exposes_only_exact_readback_rows_without_releasing_claim(self):
+        job=self.partial_job();reconcile_discount(self.auth,job,output_dir=self.root/'partial-out')
+        offer=self.auth.discount_offers()[0]
+        expected={(row['item'],sku) for row in job['result']['readbacks'] for sku in row['values']}
+        self.assertEqual(set(map(tuple,offer['verified_partial_skus'])),expected)
+        self.assertEqual(offer['items'][0]['status'],'unknown')
+        self.assertEqual(self.auth.blocked(entry.CAMPAIGN,'discount',entry.START,entry.END)[entry.ITEM],'unknown')
+        self.assertNotIn((entry.ITEM,job['result']['failure_rows'][0]['sku']),set(map(tuple,offer['verified_partial_skus'])))
+        from pathlib import Path
+        Path(job['result']['feedback']['path']).write_bytes(b'changed')
+        with self.assertRaisesRegex(ValueError,'hash_changed'):self.auth.discount_offers()

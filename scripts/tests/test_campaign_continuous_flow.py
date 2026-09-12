@@ -263,6 +263,23 @@ class FlowTests(unittest.TestCase):
         calls=len(driver.calls);self.run_flow(driver)
         self.assertEqual(len(driver.calls),calls)
 
+    def test_verified_invalid_partial_rows_are_excluded_then_only_signup_continues(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='discount':
+                value.update(partial_failure_report_verified=True,items=[{'item':'1','outcome':'success'},{'item':'2','outcome':'partial'}])
+            if step=='report' and payload['failed_phase']=='discount':
+                value['errors']=[dict(item='2',sku='22',kind='mapping',terminal='failed',batch='D1',
+                    official_evidence='report',official_invalid_or_disabled=True,full_official_export_verified=True,
+                    remove_from_signup=True,mapping_scope_evidence={'path':'full-export','sha256':'verified'})]
+            if step=='signup':value['items']=[dict(item=i,outcome='success') for i in payload['items']]
+            return value
+        driver.execute=execute;result=self.run_flow(driver)
+        self.assertTrue(result['all_signed_up'])
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='discount'],[['1','2']])
+        self.assertEqual([p['items'] for s,p in driver.calls if s=='signup'],[['1'],['2']])
+
     def test_partial_outcome_is_not_accepted_for_signup(self):
         driver=FakeWebAgent();original=driver.execute
         def execute(step,action,payload):

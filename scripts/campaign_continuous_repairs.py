@@ -40,9 +40,16 @@ def verify_claim(authority,cid,*,consume_job=None):
                     or Decimal(e['proposed_deduct'])!=Decimal(r['new_deduct'])
                     or abs(Decimal(e['feasible_final_price'])-Decimal(e['erp_final_target']))>Decimal('2')):
                 raise ValueError('repair_amount_outside_frozen_rule')
+            if e.get('bounded_observation_adjustment'):
+                delta=Decimal(r['new_deduct'])-Decimal(r['old_deduct']);target=Decimal(e['erp_final_target'])
+                observed=list(map(Decimal,e['official_observed_finals']))
+                bounds=[Decimal(e['calculated_final_before']),Decimal(e['feasible_final_price']),*observed,*[v-delta for v in observed]]
+                if not observed or any(v<=0 or abs(v-target)>Decimal('2') for v in bounds):
+                    raise ValueError('observed_price_adjustment_outside_two_yuan')
             candidates=[o for o in offers if o.get('platform_offer_id',o['offer_id'])==r['offer_id']
                         and (o['start'],o['end'])==(body['start'],body['end'])
-                        and any(i['item']==r['item'] and i['status']=='success' for i in o['items'])]
+                        and (any(i['item']==r['item'] and i['status']=='success' for i in o['items'])
+                             or (r['item'],r['sku']) in set(map(tuple,o.get('verified_partial_skus',[]))))]
             actual=[a for o in candidates for a in o['rows'] if (a['item'],a['sku'])==(r['item'],r['sku'])]
             if len(candidates)!=1 or len(actual)!=1 or Decimal(actual[0]['deduct'])!=Decimal(r['old_deduct']):
                 raise ValueError('repair_saved_old_amount_changed')
@@ -101,11 +108,44 @@ def mapping_report(report,payload):
     return dict(report,errors=[additions.get((e['item'],e['sku']),e) for e in report['errors']])
 
 
+def reconcile_finished_amend(authority,cid,job):
+    binding=authority.db.execute('SELECT * FROM continuous_discount_repairs WHERE id=?',(cid,)).fetchone()
+    if (not binding or binding['state'] not in ('dispatched_unknown','verified')
+            or binding['job_id']!=job.get('job_id') or job.get('operation')!='discount_amend' or job.get('state')!='finished'):
+        raise ValueError('repair_job_binding_mismatch')
+    body=json.loads(binding['body']);result=job.get('result') or {}
+    for ref in body['sources']:
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('repair_source_changed')
+    if result.get('state')!='verified_saved' or result.get('claim_id')!=cid or result.get('job_id')!=job['job_id']:
+        raise ValueError('repair_actual_readback_missing')
+    proof_path=Path(result['evidence_path']);proof=load(proof_path)
+    if any(result.get(k)!=proof.get(k) for k in ('state','claim_id','rows','job_id')):
+        raise ValueError('repair_readback_observation_changed')
+    observed={(r['offer_id'],r['item'],s):v for r in proof['rows'] for s,v in r['values'].items()}
+    expected={(r['offer_id'],r['item'],r['sku']):r['new_deduct'] for r in body['rows']}
+    if len(observed)!=sum(len(r['values']) for r in proof['rows']) or len(expected)!=len(body['rows']):
+        raise ValueError('repair_readback_duplicate_scope')
+    if set(observed)!=set(expected) or any(Decimal(observed[k])!=Decimal(v) for k,v in expected.items()):
+        raise ValueError('repair_readback_full_scope_mismatch')
+    if any(r['window']['start']!=body['start'] or r['window']['end']!=body['end'] for r in proof['rows']):
+        raise ValueError('repair_readback_time_mismatch')
+    ref={'path':str(proof_path),'sha256':file_sha(proof_path)}
+    if binding['state']=='verified' and json.loads(binding['receipt'])!=ref:raise ValueError('repair_receipt_immutable')
+    authority.db.execute("UPDATE continuous_discount_repairs SET state='verified',receipt=? WHERE id=?",
+                         (json.dumps(ref),cid))
+    return sorted({r['item'] for r in body['rows']})
+
+
 def execute_repairs(transport,action_id,payload,folder):
     from campaign_continuous_transport import persist
     a=transport.authority;table(a)
     report_path=transport.root/'reports'/(str(payload['failed_batch'])+'.json')
-    report=mapping_report(load(report_path),payload);repairs,exceptions=classify_items(report['errors'])
+    report=mapping_report(load(report_path),payload)
+    if any(e.get('parse_issue')=='unexplained_stacked_price_difference' for e in report['errors']):
+        from campaign_price_report_recovery import reclassify
+        report=reclassify(transport,report,dict(payload,batch=payload['failed_batch']),folder)
+        report_path=Path(persist(folder/'reclassified-price-report.json',report))
+    repairs,exceptions=classify_items(report['errors'])
     if any(repairs.get(i)!=payload['decisions'][i] for i in payload['items']):
         raise ValueError('repair_decisions_do_not_match_official_report')
     body=a.get_bundle(report['bundle_id']);ordinary=[];custom=[];local_items=set()
@@ -156,23 +196,7 @@ def execute_repairs(transport,action_id,payload,folder):
             persist(ref,{'claim_id':cid})
         verify_claim(a,cid)
         job=transport.job('discount_amend',{'identity':transport.identity(payload),'claim_id':cid},folder)
-        result=job.get('result') or {};binding=a.db.execute('SELECT * FROM continuous_discount_repairs WHERE id=?',(cid,)).fetchone()
-        if binding['state']!='dispatched_unknown' or binding['job_id']!=job['job_id']:
-            raise ValueError('repair_job_binding_mismatch')
-        if result.get('state')!='verified_saved' or result.get('claim_id')!=cid:
-            raise ValueError('repair_actual_readback_missing')
-        proof_path=Path(result['evidence_path']);proof=load(proof_path)
-        if any(result.get(k)!=proof.get(k) for k in ('state','claim_id','rows','job_id')):
-            raise ValueError('repair_readback_observation_changed')
-        observed={(r['offer_id'],r['item'],s):v for r in proof['rows'] for s,v in r['values'].items()}
-        expected={(r['offer_id'],r['item'],r['sku']):r['new_deduct'] for r in ordinary}
-        if set(observed)!=set(expected) or any(Decimal(observed[k])!=Decimal(v) for k,v in expected.items()):
-            raise ValueError('repair_readback_full_scope_mismatch')
-        if any(r['window']['start']!=body['start'] or r['window']['end']!=body['end'] for r in proof['rows']):
-            raise ValueError('repair_readback_time_mismatch')
-        a.db.execute("UPDATE continuous_discount_repairs SET state='verified',receipt=? WHERE id=?",
-                     (json.dumps({'path':str(proof_path),'sha256':file_sha(proof_path)}),cid))
-        local_items.update(r['item'] for r in ordinary)
+        local_items.update(reconcile_finished_amend(a,cid,job))
     return dict(batch=payload['failed_batch'],items=[dict(item=i,outcome='success' if i in local_items else 'failed',
                changed=i in local_items) for i in payload['items']],rotation_performed=False)
 

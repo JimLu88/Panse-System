@@ -344,7 +344,7 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             store.save(run_id, state)
         while state['pending']:
             pending, round_no = sorted(state['pending']), state['round']
-            discount_retries = []
+            discount_retries = [];partial_retries=[]
             # Current official template once per campaign; not again each repair round.
             template = call('template', {'items': state['initial_scope']})
             registered=set(template.get('registered_items',[]))
@@ -388,6 +388,9 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                 rows = _terminal_scope(discount, discount_items,allow_partial_discount=True)
                 partial = [r['item'] for r in rows if r['outcome']=='partial']
                 hold(partial,'partial_discount_import_preserved_no_whole_product_replay')
+                if partial and discount.get('partial_failure_report_verified') is True:
+                    errors=failed_report(discount['batch'],partial,'discount')
+                    partial_retries=repair_failed(errors,discount['batch'],'discount')
                 failed = [r['item'] for r in rows if r['outcome'] == 'failed']
                 if failed:
                     errors = failed_report(discount['batch'], failed, 'discount')
@@ -401,7 +404,7 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                         'corrections': state['corrections'], 'phase': 'after_discount_partial'})
                     _validate_bundle(bundle, pending, rule_sha, state['price_version'], time_binding)
             if not pending:
-                state['pending'] = discount_retries
+                state['pending'] = sorted(set(discount_retries+partial_retries))
                 state['round'] += 1
                 store.save(run_id, state)
                 continue
@@ -413,7 +416,7 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             enrolled=set(state.get('previously_enrolled',[]))
             signup_pending=[i for i in pending if i not in enrolled]
             if not signup_pending:
-                state['pending']=discount_retries
+                state['pending']=sorted(set(discount_retries+partial_retries))
                 state['round']+=1
                 store.save(run_id,state)
                 continue
@@ -430,11 +433,11 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                 if row['outcome'] == 'success':
                     state['success'][row['item']] = signup['evidence']
             if not failed:
-                state['pending'] = discount_retries
+                state['pending'] = sorted(set(discount_retries+partial_retries))
             else:
                 errors = failed_report(signup['batch'], failed, 'signup')
                 next_items = repair_failed(errors, signup['batch'], 'signup')
-                state['pending'] = sorted(set(discount_retries + next_items))
+                state['pending'] = sorted(set(discount_retries + partial_retries + next_items))
             state['round'] += 1
             store.save(run_id, state)
         state['status'] = 'complete'

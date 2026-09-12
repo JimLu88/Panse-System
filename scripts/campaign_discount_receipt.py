@@ -76,5 +76,12 @@ def reconcile_discount(authority,job,*,output_dir):
     else:
         with target.open('x',encoding='utf-8') as stream:json.dump(doc,stream,ensure_ascii=False,indent=2)
     authority.terminal(claim_id,dict(doc,evidence_path=str(target.resolve())))
+    if partial:
+        authority.db.execute('CREATE TABLE IF NOT EXISTS verified_partial_discount_receipts(bundle_id TEXT PRIMARY KEY,path TEXT NOT NULL,sha256 TEXT NOT NULL)')
+        existing=authority.db.execute('SELECT path,sha256 FROM verified_partial_discount_receipts WHERE bundle_id=?',(first['bundle_id'],)).fetchone()
+        proof=(str(target.resolve()),file_sha(target))
+        if existing is not None and tuple(existing)!=proof:raise ValueError('partial_discount_evidence_is_immutable')
+        authority.db.execute('INSERT OR IGNORE INTO verified_partial_discount_receipts VALUES(?,?,?)',(first['bundle_id'],*proof))
     return dict(status='terminal',batch=result['offer_id'],items=outcomes,
-                evidence=str(target.resolve()),errors=errors,platform_write=False)
+                evidence=str(target.resolve()),errors=errors,platform_write=False,
+                partial_failure_report_verified=partial)

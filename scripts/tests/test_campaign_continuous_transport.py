@@ -121,6 +121,29 @@ def test_repair_reclassifies_then_consumes_once(repair):
     with pytest.raises(ValueError,match='do_not_replay'):verify_claim(a,'a'*32,consume_job='b'*64)
 
 
+@pytest.mark.parametrize('bad',[None,'amount','window','job','duplicate','source'])
+def test_amend_readback_reconciliation_never_replays(repair,tmp_path,bad):
+    from campaign_continuous_repairs import reconcile_finished_amend
+    a,body,offers=repair;cid='a'*32;jid='b'*64
+    verify_claim(a,cid,consume_job=jid)
+    row={'offer_id':'56','item':'12','values':{'34':'19'},'window':{'start':body['start'],'end':body['end']}}
+    proof={'state':'verified_saved','claim_id':cid,'job_id':jid,'rows':[row]}
+    if bad=='amount':row['values']['34']='20'
+    if bad=='window':row['window']['end']='2026-10-08 23:59:59'
+    if bad=='job':proof['job_id']='c'*64
+    if bad=='duplicate':proof['rows'].append(deepcopy(row))
+    if bad=='source':Path(body['report_path']).write_text('{}')
+    path=tmp_path/'amend-proof.json';persist(path,proof)
+    job={'job_id':jid,'operation':'discount_amend','state':'finished','result':dict(proof,evidence_path=str(path))}
+    if bad:
+        with pytest.raises(ValueError):reconcile_finished_amend(a,cid,job)
+        assert a.db.execute('SELECT state FROM continuous_discount_repairs').fetchone()[0]=='dispatched_unknown'
+    else:
+        assert reconcile_finished_amend(a,cid,job)==['12']
+        assert reconcile_finished_amend(a,cid,job)==['12']
+        assert apply_verified_amendments(a,offers)[0]['rows'][0]['deduct']=='19'
+
+
 def test_repair_rejects_old_amount_drift_and_two_yuan_excess(repair):
     a,body,offers=repair
     offers[0]['rows'][0]['deduct']='17'

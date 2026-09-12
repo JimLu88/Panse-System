@@ -47,3 +47,13 @@ class NormalizeTests(unittest.TestCase):
     def test_unexplained_stacking_not_guessed(self):
         row=self.normalize([dict(kind='coupon_price',official_cap='66',observed_final='50')])[0]
         self.assertEqual(classify(row)['action'],'manual')
+
+    def test_small_observed_difference_must_fit_both_before_and_after_bounds(self):
+        row=self.normalize([dict(kind='coupon_price',official_cap='67.4',observed_final='67.5')])[0]
+        self.assertEqual(classify(row)['action'],'repair')
+        self.assertEqual(row['proposed_deduct'],'20.6')
+        self.assertTrue(row['bounded_observation_adjustment'])
+        # Computed final is 66, but the observed post-change final would be
+        # 65.5: outside the same fixed target of 68, so no automatic repair.
+        row=self.normalize([dict(kind='coupon_price',official_cap='66',observed_final='67.5')])[0]
+        self.assertEqual(classify(row)['action'],'manual')

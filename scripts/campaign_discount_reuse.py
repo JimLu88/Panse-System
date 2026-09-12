@@ -62,7 +62,7 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
             continue
         offer,status = candidates[0]
         base = dict(item=pair[0],sku=pair[1],offer_id=offer['offer_id'],evidence_kind=offer.get('evidence_kind','registered_terminal'))
-        if status != 'success':
+        if status != 'success' and pair not in set(map(tuple,offer.get('verified_partial_skus',[]))):
             issues.append(dict(base,error='existing_discount_outcome_unknown'));continue
         if (offer['start'],offer['end']) != (start,end):
             issues.append(dict(base,error='existing_discount_window_not_exact'));continue

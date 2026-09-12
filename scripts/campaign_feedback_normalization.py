@@ -96,11 +96,22 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
                 cut = official_cut(daily, rate)
                 current_final = daily-cut-current
                 observed = [money(e['observed_final']) for e in constraints if e['kind']=='coupon_price']
-                if any(value != current_final for value in observed):
-                    raise ValueError('unexplained_stacked_price_difference')
                 needed = max([current] + [daily-cap for cap in list_caps]
-                             + [daily-cut-cap for cap in coupon_caps])
+                             + [daily-cut-cap for cap in coupon_caps]
+                             + [current+money(e['observed_final'])-money(e['official_cap'])
+                                for e in constraints if e['kind']=='coupon_price'])
                 feasible = daily-cut-needed
+                if any(value != current_final for value in observed):
+                    # Do not invent the cause of the discrepancy. A small repair
+                    # is still within the user's rule only when BOTH the ERP
+                    # calculation and every actual official observation, before
+                    # and after the exact deduction delta, remain within 2 CNY.
+                    bounds=[current_final,feasible,*observed,*[v-(needed-current) for v in observed]]
+                    if any(abs(v-target)>Decimal('2') or v<=0 for v in bounds):
+                        raise ValueError('unexplained_stacked_price_difference')
+                    base.update(official_observed_finals=[str(v) for v in observed],
+                                calculated_final_before=str(current_final),
+                                bounded_observation_adjustment=True)
                 base.update(kind='coupon_price' if coupon_caps else 'list_price',
                             erp_final_target=str(target), feasible_final_price=str(feasible),
                             current_deduct=str(current), proposed_deduct=str(needed),

@@ -1,0 +1,109 @@
+{
+  "status": "verified_partial_mapping_restored",
+  "schema": "campaign_verified_backup_merchant_alias_v1",
+  "prices_unchanged": true,
+  "database_price_write": false,
+  "platform_write": false,
+  "restored": [
+    {
+      "item": "1046992283533",
+      "sku": "6134045289446",
+      "erp_code": "PFG2521102122211",
+      "official_sku_code": "PFG2521102122211B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\1046992283533.backup-publish-installation-corrected.claim.json",
+          "sha256": "25afeefd084ed22909ee013489f62924d3213278b1bad18b26f0eacf80867289"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-1-record-331407080.xlsx",
+          "sha256": "9f34cecc5a892fdd32d65fdb81cb6331f03dad82992cbad04ac96740e1b9300c"
+        }
+      ]
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040412",
+      "erp_code": "PPS2325005020295",
+      "official_sku_code": "PPS2325005020295B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\717388593550.remaining-backups.claim.json",
+          "sha256": "c0d87602578cb004ed0377b837a540abd0817e481c72c0e177cc441d3d272d02"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-3-record-330024169.xlsx",
+          "sha256": "8f8f96cc25e082411c4df7e4f1d4017958454fe3354ac9c4630d9cda27297015"
+        }
+      ]
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040413",
+      "erp_code": "PPS2325005020296",
+      "official_sku_code": "PPS2325005020296B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\717388593550.remaining-backups.claim.json",
+          "sha256": "c0d87602578cb004ed0377b837a540abd0817e481c72c0e177cc441d3d272d02"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-3-record-330024169.xlsx",
+          "sha256": "8f8f96cc25e082411c4df7e4f1d4017958454fe3354ac9c4630d9cda27297015"
+        }
+      ]
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040414",
+      "erp_code": "PPS2325005020297",
+      "official_sku_code": "PPS2325005020297B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\717388593550.remaining-backups.claim.json",
+          "sha256": "c0d87602578cb004ed0377b837a540abd0817e481c72c0e177cc441d3d272d02"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-3-record-330024169.xlsx",
+          "sha256": "8f8f96cc25e082411c4df7e4f1d4017958454fe3354ac9c4630d9cda27297015"
+        }
+      ]
+    },
+    {
+      "item": "717388593550",
+      "sku": "6133373040415",
+      "erp_code": "PPS2325005020298",
+      "official_sku_code": "PPS2325005020298B1",
+      "alias_evidence": [
+        {
+          "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-mapping-recovery-20260906.json",
+          "sha256": "fe68e8a16411f680b5acfbe4b2b302ac8119e2c77516490af2d4bd8fbd4dceef"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\outputs\\01a03341-b2cd-7810-92f3-66fad189521d\\backup9\\717388593550.remaining-backups.claim.json",
+          "sha256": "c0d87602578cb004ed0377b837a540abd0817e481c72c0e177cc441d3d272d02"
+        },
+        {
+          "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\data\\output\\campaign-transfers\\5126548c8999926a028d17a43896a397a839622e7ac24863755f726208a5b759\\read-recovery-2\\page-3-record-330024169.xlsx",
+          "sha256": "8f8f96cc25e082411c4df7e4f1d4017958454fe3354ac9c4630d9cda27297015"
+        }
+      ]
+    }
+  ]
+}

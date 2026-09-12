@@ -253,9 +253,10 @@ class CampaignTransport:
             if (offer['start'],offer['end'])!=(body['start'],body['end']):continue
             actual_id=offer.get('platform_offer_id',offer['offer_id'])
             successful={r['item'] for r in offer['items'] if r['status']=='success'}
+            partial_skus=set(map(tuple,offer.get('verified_partial_skus',[])))
             groups=defaultdict(list)
             for r in offer['rows']:
-                if (r['item'],r['sku']) in wanted and r['item'] in successful:
+                if (r['item'],r['sku']) in wanted and (r['item'] in successful or (r['item'],r['sku']) in partial_skus):
                     groups[r['item']].append(r['sku']);expected.append(dict(r,offer_id=actual_id))
             offers.extend(dict(offer_id=actual_id,item=i,sku_ids=s) for i,s in groups.items())
         if {(r['item'],r['sku']) for r in expected}!=wanted:
@@ -274,6 +275,9 @@ class CampaignTransport:
         from campaign_feedback_normalization import normalize_errors
         from campaign_failure_remediation import report_from_download, resolve_invalid_skus
         result=load(self.root/'terminals'/(payload['failed_phase']+'-'+str(payload['batch'])+'.json'))
+        if payload['failed_phase']=='discount':
+            from campaign_partial_discount import invalid_errors
+            result=invalid_errors(result)
         if not result.get('errors'):
             result=report_from_download(self,result,payload,folder)
         body=self.authority.get_bundle(result['bundle_id']);snapshot=load(body['snapshot_path'])
