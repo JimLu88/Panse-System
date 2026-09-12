@@ -33,6 +33,25 @@ class DiscountReceiptTests(unittest.TestCase):
         with self.assertRaises(ValueError):reconcile_discount(self.auth,job,output_dir=self.root/'out')
         self.assertEqual(self.auth.db.execute('SELECT status FROM attempts').fetchone()[0],'unknown')
 
+    def test_appended_recorder_disposition_is_not_platform_observation(self):
+        job=self.job()
+        job['result'].update(failure_disposition={'action':'no_retry'},
+                             failure_disposition_path='recorder-only.json',
+                             recording={'state':'stopped'})
+        result=reconcile_discount(self.auth,job,output_dir=self.root/'out')
+        self.assertEqual(result['items'],[dict(item=entry.ITEM,outcome='success')])
+
+    def test_disposition_cannot_hide_changed_or_removed_business_fields(self):
+        from copy import deepcopy
+        job=self.job()
+        for field in ('success','failed','readbacks','offer_window_readback_required'):
+            with self.subTest(field=field):
+                changed=deepcopy(job);changed['result'].pop(field)
+                changed['result']['failure_disposition']={'action':'accept'}
+                with self.assertRaisesRegex(ValueError,'discount_observation_changed'):
+                    reconcile_discount(self.auth,changed,output_dir=self.root/'out')
+        self.assertEqual(self.auth.db.execute('SELECT status FROM attempts').fetchone()[0],'unknown')
+
     def test_changed_job_does_not_consume_another_claim(self):
         job=self.job();job['job_id']='f'*64
         with self.assertRaisesRegex(ValueError,'not_bound'):

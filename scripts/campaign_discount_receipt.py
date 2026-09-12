@@ -23,7 +23,11 @@ def reconcile_discount(authority,job,*,output_dir):
             or any(claim.get(k)!=first[k] for k in ('campaign','phase','start','end'))):
         raise ValueError('discount_claim_file_or_scope_changed')
     path=Path(result['evidence_path']).resolve(strict=True);saved=load(path)
-    if any(saved.get(k)!=v for k,v in result.items() if k not in ('evidence_path','recording')):
+    # Recorder disposition is appended after the immutable platform observation.
+    # It is transport metadata, never proof of success or permission to retry.
+    transport_fields={'evidence_path','recording','failure_disposition','failure_disposition_path'}
+    if ({k:v for k,v in saved.items() if k not in transport_fields}
+            != {k:v for k,v in result.items() if k not in transport_fields}):
         raise ValueError('discount_observation_changed')
     partial=result.get('state')=='verified_partial_offer_terminal'
     if (result.get('state') not in ('verified_offer_terminal','verified_partial_offer_terminal')
