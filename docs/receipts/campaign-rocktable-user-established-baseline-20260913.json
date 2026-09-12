@@ -1,0 +1,9 @@
+{
+  "schema":"campaign_user_established_fixed_baseline_v1",
+  "established_at":"2026-09-13",
+  "source_thread_id":"01a03341-b2cd-7810-92f3-66fad189521d",
+  "user_verbatim":"是，固定吧。然后根据最近做好的系统，重新报名最近的一次超级立减。",
+  "scope":"Only item792992319206 sku6056644376634 current1500 fixed base. Preserve all prior bases; lift desk rotation remains deferred.",
+  "first_ever_historical_record_claimed":false,
+  "rows":[{"item":"792992319206","sku":"6056644376634","erp_code":"PPS2421005051098","name":"畔色岩板餐桌-尺寸微定制","fixed_original_record":"1500.00","fixed_floor":"300.00","floor_provenance":"user_established_20260913_not_historical_first_price"}]
+}
