@@ -145,8 +145,9 @@ class CampaignTransport:
         from campaign_generate_current_files import _generate
         from campaign_failure_remediation import corrected_scope
         snapshot_path=self.root/'resolved-snapshot.json'
+        scoped_corrections={i:ds for i,ds in payload.get('corrections',{}).items() if i in payload['items']}
         exclusion_refs={d['repair']['scope_evidence']['path']:d['repair']['scope_evidence']
-                        for ds in payload.get('corrections',{}).values() for d in ds
+                        for ds in scoped_corrections.values() for d in ds
                         if d['repair']['kind']=='exclude_ineligible_sku'}
         activity_template=Path(payload['template']['path'])
         if payload['template'].get('fixed_master'):
@@ -155,13 +156,13 @@ class CampaignTransport:
             if file_sha(source)!=payload['template']['sha256']:
                 raise ValueError('fixed_template_changed_before_generation')
             scope=load(self.root/'product-scope.json')
-            scope,mapping_facts=corrected_scope(scope,payload.get('corrections',{}))
+            scope,mapping_facts=corrected_scope(scope,scoped_corrections)
             missing=set(payload['items'])-{e['facts']['item'] for e in scope['sku_facts']}
             if missing:
                 return {'input_issues':[dict(item=i,sku='',error='no_remaining_eligible_sku_after_official_export')
                     for i in sorted(missing)],'items':payload['items']}
             if mapping_facts:
-                refs={d['repair']['scope_evidence']['path'] for ds in payload['corrections'].values()
+                refs={d['repair']['scope_evidence']['path'] for ds in scoped_corrections.values()
                       for d in ds if d['repair']['kind']=='exclude_ineligible_sku'}
                 files=[]
                 for ref in sorted(refs):
@@ -170,6 +171,9 @@ class CampaignTransport:
                 unique={f['sha256']:f for f in files}
                 overlay=persist(folder/'official-mapping-overlay.json',{'facts':mapping_facts,'files':list(unique.values())})
                 snapshot=dict(load(snapshot_path),official_mapping_overlay={'path':overlay,'sha256':file_sha(overlay)})
+                from campaign_failure_remediation import mapping_conflicts
+                issues=mapping_conflicts(snapshot,mapping_facts)
+                if issues:return {'input_issues':issues,'items':payload['items']}
                 snapshot_path=Path(persist(folder/'snapshot-with-id-overlay.json',snapshot))
             projected=project(source.read_bytes(),scope,payload['items'])
             activity_template=folder/'fixed-master-current-skus.xlsx'

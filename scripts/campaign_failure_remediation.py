@@ -37,7 +37,9 @@ def report_from_download(transport, terminal, payload, folder):
     expected={(r['item'],r['sku']) for r in body['signup_rows'] if r['item'] in {g['item'] for g in parsed['groups']}}
     actual={(r['item'],r['sku']) for g in parsed['groups'] for r in g['rows']}
     if expected!=actual:raise ValueError('feedback_sku_scope_changed')
-    persist(folder/'adopted-feedback-observation.json',job)
+    # HTTP adds `ok`; disk readback does not. It is transport metadata, not
+    # a different official receipt. Preserve the original canonical evidence.
+    persist(folder/'adopted-feedback-observation.json',{k:v for k,v in job.items() if k!='ok'})
     return dict(terminal,errors=parsed['errors'],feedback=result)
 
 
@@ -139,3 +141,16 @@ def mapped_erp_rows(snapshot):
         if len(candidates)!=1:continue  # Generation isolates the precise unmatched item.
         candidates[0]['alt']=list(dict.fromkeys([*map(str,candidates[0].get('alt') or []),pair[1]]))
     return rows
+
+
+def mapping_conflicts(snapshot, facts):
+    """Isolate semantic code conflicts to their product; do not halt peers."""
+    issues=[]
+    for entry in facts:
+        f=entry['facts'];pair=f['item'],f['sku'];code=f['sku_code']
+        bound=[r for r in snapshot['all_erp_rows'] if pair[0] in {str(r.get('item')),
+            str(r.get('product_item_id')),*map(str,r.get('product_alt_item_ids') or [])}
+            and pair[1] in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
+        if len(bound)>1 or (len(bound)==1 and code and bound[0]['code']!=code):
+            issues.append(dict(item=pair[0],sku=pair[1],error='official_code_conflicts_with_erp_mapping'))
+    return issues
