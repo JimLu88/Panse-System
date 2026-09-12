@@ -1,0 +1,15 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-13",
+  "source_thread_id": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "user_verbatim": "4 件商品的 5 条定制 SKU，是否按明细中的当前价格固定首次原价：4 条为1000元、1条为900元？---允许",
+  "scope": "Only these five exact custom SKU bases; existing bases immutable. Lift desk rotation authorized but deferred, not executable this round.",
+  "first_ever_historical_record_claimed": false,
+  "rows": [
+    {"item":"1047741358718","sku":"6241061986676","erp_code":"PFG2525003122699","name":"孚格中古MCM餐边柜-尺寸微定制","fixed_original_record":"1000.00","fixed_floor":"200.00","floor_provenance":"user_established_20260913_not_historical_first_price"},
+    {"item":"1047744482178","sku":"6075967360987","erp_code":"PFG2621107012399","name":"孚格十字星圆桌-尺寸定制","fixed_original_record":"1000.00","fixed_floor":"200.00","floor_provenance":"user_established_20260913_not_historical_first_price"},
+    {"item":"792992319206","sku":"5602711422165","erp_code":"PPS2421005051099","name":"畔色岩板餐桌-定制专拍","fixed_original_record":"1000.00","fixed_floor":"200.00","floor_provenance":"user_established_20260913_not_historical_first_price"},
+    {"item":"793084818113","sku":"6075881012913","erp_code":"PPS2415003051398","name":"畔色组合柜-尺寸微定制","fixed_original_record":"1000.00","fixed_floor":"200.00","floor_provenance":"user_established_20260913_not_historical_first_price"},
+    {"item":"793084818113","sku":"5749215900249","erp_code":"PPS2415003051399","name":"畔色组合柜-其它材质定制","fixed_original_record":"900.00","fixed_floor":"180.00","floor_provenance":"user_established_20260913_not_historical_first_price"}
+  ]
+}
