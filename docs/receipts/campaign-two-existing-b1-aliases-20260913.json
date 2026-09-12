@@ -1,0 +1,52 @@
+{
+  "schema": "campaign_exact_existing_code_aliases_v1",
+  "status": "verified_partial_mapping_restored",
+  "scope": "Two existing physical SKUs already bound to ERP alt IDs and approved fixed baselines. Recognize official B1 merchant-code spelling only; no rotation, listing, price or baseline change.",
+  "user_request": "好的，那你接下来批量操作，解决所有下面的问题",
+  "restored": [
+    {
+      "item": "1036471324464",
+      "sku": "6298076182714",
+      "erp_code": "PPS2525013042099",
+      "official_sku_code": "PPS2525013042099B1",
+      "official_attributes": "颜色分类:定制尺寸备用;",
+      "proof": "Exact existing ERP alt SKU and same item; official export code is exact ERP code plus B1; approved 20260911 baseline already names this physical SKU. Baseline remains 5000.00 / floor 1000.00.",
+      "alias_evidence": [
+        {
+          "path": "D:/AI/畔色ERP系统/outputs/campaign-continuous/runs/2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110/segments/bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7/resolved-snapshot.json",
+          "sha256": "d32420ca48b84b4708097ae801d7da4233dc2ebe98c408374d32e6d1d0534e51"
+        },
+        {
+          "path": "D:/AI/畔色ERP系统/outputs/campaign-continuous/runs/2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110/segments/bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7/repairs/scope-842934471.json",
+          "sha256": "94e114ff4ad8b93fa45faaeae21a4547209a2a4e856c66c7049a2deb9dc994af"
+        },
+        {
+          "path": "D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-78-custom-user-established-baseline-20260911-v2.json",
+          "sha256": "2a1c418d6d76ac97927b0997d6fb0bd825648d9c2502e798446a5e38727eea5d"
+        }
+      ]
+    },
+    {
+      "item": "717809819543",
+      "sku": "6298312823107",
+      "erp_code": "PPS2341002020121",
+      "official_sku_code": "PPS2341002020121B1",
+      "official_attributes": "颜色分类:樱桃木插座款可选备用;",
+      "proof": "Exact existing ERP alt SKU and same item; official export code is exact ERP code plus B1; approved 20260911 baseline already names this physical SKU. Baseline remains 8841.00 / floor 1768.20.",
+      "alias_evidence": [
+        {
+          "path": "D:/AI/畔色ERP系统/outputs/campaign-continuous/runs/2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110/segments/bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7/resolved-snapshot.json",
+          "sha256": "d32420ca48b84b4708097ae801d7da4233dc2ebe98c408374d32e6d1d0534e51"
+        },
+        {
+          "path": "D:/AI/畔色ERP系统/outputs/campaign-continuous/runs/2c8df6bc7fb7e73bbf8425ef135806d21454c676e0cac437cf9fd5af32ada110/segments/bd2877766c31b1fa89ac5c095e63fbbb5a9123f298ec041e0aab8f24fe5d0fd7/repairs/scope-842934471.json",
+          "sha256": "94e114ff4ad8b93fa45faaeae21a4547209a2a4e856c66c7049a2deb9dc994af"
+        },
+        {
+          "path": "D:/AI/畔色ERP系统/ERP程序/docs/receipts/campaign-78-custom-user-established-baseline-20260911-v2.json",
+          "sha256": "2a1c418d6d76ac97927b0997d6fb0bd825648d9c2502e798446a5e38727eea5d"
+        }
+      ]
+    }
+  ]
+}
