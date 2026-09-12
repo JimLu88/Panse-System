@@ -153,6 +153,38 @@ def test_repair_rejects_old_amount_drift_and_two_yuan_excess(repair):
     with pytest.raises(ValueError,match='outside_frozen_rule'):verify_claim(a,'a'*32)
 
 
+@pytest.mark.parametrize('changed',[False,True])
+def test_saved_adjustment_does_not_chase_unchanged_official_price(repair,tmp_path,changed):
+    from campaign_continuous_repairs import reconcile_finished_amend,mark_ineffective_price_repairs
+    from campaign_entry_authority import load
+    a,body,offers=repair;report=load(body['report_path'])
+    report['errors'][0].update(observed_final='70',official_cap='69')
+    Path(body['report_path']).write_text(json.dumps(report),encoding='utf-8')
+    body['sources'][0]['sha256']=file_sha(body['report_path'])
+    a.db.execute('UPDATE continuous_discount_repairs SET body=?',(json.dumps(body),))
+    verify_claim(a,'a'*32,consume_job='b'*64)
+    proof={'state':'verified_saved','claim_id':'a'*32,'job_id':'b'*64,'rows':[
+        {'offer_id':'56','item':'12','values':{'34':'19'},'window':{'start':body['start'],'end':body['end']}}]}
+    path=tmp_path/'saved.json';persist(path,proof)
+    reconcile_finished_amend(a,'a'*32,dict(job_id='b'*64,operation='discount_amend',state='finished',result=dict(proof,evidence_path=str(path))))
+    error=dict(report['errors'][0],batch='56',current_deduct='19',proposed_deduct='20',observed_final='69.50' if changed else '70')
+    result=mark_ineffective_price_repairs(a,[error],campaign=body['campaign'],start=body['start'],end=body['end'])[0]
+    assert (result['kind']=='unknown') is (not changed)
+    assert (result.get('parse_issue')=='verified_price_adjustment_had_no_effect_on_official_price') is (not changed)
+    from campaign_continuous_repairs import close_ineffective_claim
+    fresh=deepcopy(body);fresh['rows'][0].update(old_deduct='19',new_deduct='20')
+    fresh_path=tmp_path/'next-report.json';persist(fresh_path,{'errors':[error]})
+    fresh.update(report_path=str(fresh_path),sources=[{'path':str(fresh_path),'sha256':file_sha(fresh_path)}])
+    a.db.execute('INSERT INTO continuous_discount_repairs VALUES(?,?,?,NULL,NULL)',('c'*32,json.dumps(fresh),'claimed_not_dispatched'))
+    if changed:
+        with pytest.raises(ValueError,match='verified_no_effect'):close_ineffective_claim(a,'c'*32)
+    else:
+        assert close_ineffective_claim(a,'c'*32)==['12']
+        assert close_ineffective_claim(a,'c'*32)==['12']
+        with pytest.raises(ValueError,match='do_not_replay'):verify_claim(a,'c'*32)
+    with pytest.raises(ValueError,match='unconsumed'):close_ineffective_claim(a,'a'*32)
+
+
 def test_fixed_legacy_identity_is_namespaced_not_fake_platform_number():
     from campaign_entry_authority import exact_campaign
     assert exact_campaign('legacy/itemApply/3172207691')=='legacy/itemApply/3172207691'

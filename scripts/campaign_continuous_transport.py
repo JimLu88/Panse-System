@@ -286,6 +286,8 @@ class CampaignTransport:
         actual=[dict(r,verified_readback=True,evidence=readback.get('evidence'),target=body['target']) for r in readback['rows']]
         errors=normalize_errors(result,submitted_rows=body['signup_rows'],erp_rows=snapshot['all_erp_rows'],
             fixed_bases=self.authority.bases(snapshot),actual_discounts=actual,rate=body['official_rate'],target_mode=body['target'])
+        from campaign_continuous_repairs import mark_ineffective_price_repairs
+        errors=mark_ineffective_price_repairs(self.authority,errors,campaign=body['campaign'],start=body['start'],end=body['end'])
         errors=[e for e in errors if e['item'] in payload['items']]
         try:
             errors=resolve_invalid_skus(self,errors,payload,folder)

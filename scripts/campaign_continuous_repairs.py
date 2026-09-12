@@ -14,6 +14,56 @@ def table(authority):
         id TEXT PRIMARY KEY, body TEXT NOT NULL, state TEXT NOT NULL, job_id TEXT, receipt TEXT)''')
 
 
+def mark_ineffective_price_repairs(authority,errors,*,campaign,start,end):
+    """Stop chasing an unchanged official price after a verified saved change."""
+    table(authority);blocked={}
+    def observed(error):
+        constraints=error.get('constraints') or [error]
+        return sorted((Decimal(e['observed_final']),Decimal(e['official_cap']))
+            for e in constraints if e.get('kind')=='coupon_price' and e.get('observed_final') and e.get('official_cap'))
+    for record in authority.db.execute("SELECT * FROM continuous_discount_repairs WHERE state='verified'"):
+        body=json.loads(record['body'])
+        if (body['campaign'],body['start'],body['end'])!=(campaign,start,end):continue
+        report=load(body['report_path'])
+        for ref in body['sources']:
+            if file_sha(ref['path'])!=ref['sha256']:raise ValueError('repair_source_changed')
+        ref=json.loads(record['receipt'])
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('continuous_repair_receipt_changed')
+        proof=load(ref['path'])
+        if proof.get('claim_id')!=record['id'] or proof.get('job_id')!=record['job_id']:
+            raise ValueError('continuous_repair_receipt_identity_changed')
+        for change in body['rows']:
+            pair=change['item'],change['sku']
+            prior=[e for e in report['errors'] if (e['item'],e['sku'])==pair]
+            if len(prior)!=1 or not observed(prior[0]) or Decimal(change['new_deduct'])<=Decimal(change['old_deduct']):continue
+            for error in errors:
+                if ((error['item'],error['sku'])==pair and error.get('custom') is False
+                        and error.get('batch')!=prior[0]['batch'] and observed(error)==observed(prior[0])
+                        and Decimal(error.get('current_deduct','-1'))>=Decimal(change['new_deduct'])):
+                    blocked[pair]=ref
+    return [dict(e,kind='unknown',parse_issue='verified_price_adjustment_had_no_effect_on_official_price',
+                 ineffective_repair_evidence=blocked[(e['item'],e['sku'])])
+            if (e['item'],e['sku']) in blocked else e for e in errors]
+
+
+def close_ineffective_claim(authority,cid):
+    """Close only a never-dispatched repeat with verified no-effect evidence."""
+    table(authority)
+    row=authority.db.execute('SELECT * FROM continuous_discount_repairs WHERE id=?',(cid,)).fetchone()
+    if not row or row['state'] not in ('claimed_not_dispatched','blocked_no_effect') or row['job_id'] is not None:
+        raise ValueError('only_unconsumed_no_effect_claim_can_close')
+    body=json.loads(row['body'])
+    for ref in body['sources']:
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('repair_source_changed')
+    report=load(body['report_path'])
+    checked=mark_ineffective_price_repairs(authority,report['errors'],campaign=body['campaign'],start=body['start'],end=body['end'])
+    pairs={(e['item'],e['sku']) for e in checked if e.get('ineffective_repair_evidence')}
+    if not body['rows'] or not {(r['item'],r['sku']) for r in body['rows']}.issubset(pairs):
+        raise ValueError('all_claim_rows_must_have_verified_no_effect')
+    authority.db.execute("UPDATE continuous_discount_repairs SET state='blocked_no_effect' WHERE id=? AND state='claimed_not_dispatched'",(cid,))
+    return sorted({r['item'] for r in body['rows']})
+
+
 def verify_claim(authority,cid,*,consume_job=None):
     load_rules()
     if not re.fullmatch('[0-9a-f]{32}',str(cid)):raise ValueError('invalid_repair_claim')
@@ -28,7 +78,11 @@ def verify_claim(authority,cid,*,consume_job=None):
             if file_sha(ref['path'])!=ref['sha256']:raise ValueError('repair_source_changed')
         blocked=authority.blocked(body['campaign'],'signup',body['start'],body['end'])
         if any(r['item'] in blocked for r in body['rows']):raise ValueError('repair_success_or_unknown_scope_protected')
-        report=load(body['report_path']);repairs,_=classify_items(report['errors'])
+        report=load(body['report_path'])
+        checked=mark_ineffective_price_repairs(authority,report['errors'],campaign=body['campaign'],start=body['start'],end=body['end'])
+        if any(e.get('ineffective_repair_evidence') for e in checked):
+            raise ValueError('verified_price_adjustment_had_no_effect_on_official_price')
+        repairs,_=classify_items(report['errors'])
         offers=authority.discount_offers()
         for r in body['rows']:
             errors=[e for e in report['errors'] if (e['item'],e['sku'])==(r['item'],r['sku'])]
