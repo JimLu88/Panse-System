@@ -1,0 +1,33 @@
+{
+  "schema": "campaign_data_gaps_release_v1",
+  "erp_main": "3e078cbcb1d5ddeb6ded96d0380a2c0bbd17225a",
+  "web_main_prefix": "3060f43",
+  "installed_runtime_files_verified": 19,
+  "price_version_unchanged": "53818531fe0cea6417c738ee18f930a2604fa3c173f63943b60f1109c80d194b",
+  "initial_mapping_products": 14,
+  "mapping_blockers_resolved_products": 3,
+  "mapping_still_unresolved_products": 11,
+  "mapping_still_unresolved_skus": 40,
+  "registered_retired_skus_excluded": 37,
+  "exact_catalog_aliases_added": 1,
+  "custom_unknown_false_blockers_fixed_products": 6,
+  "custom_unknown_false_blockers_fixed_skus": 21,
+  "new_baselines": [
+    {"item": "1047742974354", "sku": "6075963900521", "original": "1333.33", "minimum_yuan": "266.67"},
+    {"item": "793202812082", "sku": "5610459948672", "original": "2000.00", "minimum_yuan": "400.00"},
+    {"item": "919215369800", "sku": "6160377915155", "original": "5000.00", "minimum_yuan": "1000.00"}
+  ],
+  "original_signup_success_preserved": 20,
+  "original_discount_success_preserved": 268,
+  "new_discount_offer": "145807488351",
+  "new_discount_verified_skus": 60,
+  "new_discount_invalid_skus": 15,
+  "new_discount_read_job": "9dcd8d27aa0c659f2c6cd4c283cfc11f83c492f56ead629a5529f4284283f02e",
+  "new_discount_read_video_sha256": "62a2a8b84583bf25cd6d413d3a6bbf53683fabcf93036a9ac8d019c59a16ea44",
+  "new_signup_success_not_yet_verified": true,
+  "rotation_executed": false,
+  "all_mapping_fixed": false,
+  "unattended_acceptance": false,
+  "business_automation_status": "PAUSED",
+  "report": "活动25件缺口排查修复-20260912.md"
+}
