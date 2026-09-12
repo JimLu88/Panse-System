@@ -8,11 +8,15 @@ def collect(job, roots):
     allowed=[Path(p).resolve() for p in roots]
     records=[]
     def append(record):
+        if not isinstance(record,dict) or not isinstance(record.get('video'),str) or not record['video']:
+            raise ValueError('recording_video_missing')
+        if any(t.get('capture_gap') or not t.get('new_safe_frames') for t in record.get('failure_tails',[])):
+            raise ValueError('post_failure_recording_gap')
         video=Path(record['video']).resolve(strict=True)
         if not any(video.is_relative_to(root) for root in allowed):
             raise ValueError('recording_outside_artifact_roots')
         if (record.get('active') is not False or not record.get('frames')
-                or record.get('error') or record.get('video_error') or record.get('capture_errors')
+                or record.get('error') or record.get('video_error') or record.get('capture_errors') or record.get('duration_limit_reached')
                 or hashlib.sha256(video.read_bytes()).hexdigest()!=record.get('video_sha256')):
             raise ValueError('recording_incomplete_or_changed')
         if not any(r['recording']['video']==record['video'] for r in records):
@@ -37,3 +41,15 @@ def collect(job, roots):
         append(result['recording'])
     if not records:raise ValueError('required_job_recording_missing')
     return records
+
+
+def failure_handling(job):
+    """Carry the worker decision into the final ERP summary; no new rules."""
+    result=job.get('result') or {}
+    decision=result.get('failure_disposition')
+    recovery=result.get('report_recovery')
+    if not recovery and (not decision or decision.get('action')=='continue'):return None
+    return {'job_id':job['job_id'],'operation':job['operation'],
+            'disposition':decision,'report_recovery':recovery,
+            'evidence_path':result.get('failure_disposition_path'),
+            'recording':result.get('recording')}

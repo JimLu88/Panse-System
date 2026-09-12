@@ -92,7 +92,7 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
         result={'status':'complete' if len(results)==len(plan['segments']) and all(r['status']=='complete' for r in results) else 'blocked',
                 'all_signed_up':len(results)==len(plan['segments']) and all(r.get('all_signed_up') for r in results),
                 'segments':results,'plan_id':plan['plan_id'],'legacy_fallback':False}
-        from campaign_recording_evidence import collect
+        from campaign_recording_evidence import collect, failure_handling
         recordings=[];recording_errors=[]
         observations={}
         for p in [*root.rglob('*-observation.json'),*root.rglob('reused-product-export.json')]:
@@ -107,6 +107,8 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
                 recording_errors.append({'job_id':job.get('job_id'),'error_type':type(exc).__name__})
         result['recordings']=recordings
         result['recording_errors']=recording_errors
+        result['failure_handling']=[entry for job in observations.values()
+                                    if (entry:=failure_handling(job)) is not None]
         result['full_recording_verified']=bool(recordings) and not recording_errors
         from campaign_continuous_recovery import persist_run_outcome
         persist_run_outcome(root,result)
