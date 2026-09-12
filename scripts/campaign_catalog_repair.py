@@ -36,6 +36,9 @@ def excluded_pairs(snapshot,identities):
             pair=row['item'],row['sku']
             if row['sku'] not in registered:raise ValueError('catalog_retirement_not_registered')
             explicit.add(pair)
+        if doc.get('recorded_state'):
+            from campaign_recorded_sku_state import verified_disabled
+            explicit.update(verified_disabled(doc))
     return {(r['item'],r['sku']) for r in identities if r['sku'] in retired or (r['item'],r['sku']) in explicit}
 
 
