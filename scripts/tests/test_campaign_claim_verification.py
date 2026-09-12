@@ -55,3 +55,17 @@ class ClaimVerificationTests(unittest.TestCase):
             for job in ('b'*64,'c'*64):
                 with self.assertRaisesRegex(ValueError,'do_not_replay'):
                     consume_claim(self.authority,self.claim,job)
+
+    def test_existing_dispatch_verification_is_readonly_and_exact_job_only(self):
+        with patch('campaign_submission_gate.validated_body',return_value=(self.body,{})):
+            consume_claim(self.authority,self.claim,'b'*64)
+            before=tuple(self.db.execute('SELECT * FROM claim_transports').fetchone())
+            result=verify_claim(self.authority,self.claim,dispatched_job='b'*64)
+            self.assertTrue(result['verified_claim'])
+            self.assertFalse(result['platform_write'])
+            self.assertEqual(tuple(self.db.execute('SELECT * FROM claim_transports').fetchone()),before)
+            for job in ('c'*64,'invalid'):
+                with self.assertRaises(ValueError):verify_claim(self.authority,self.claim,dispatched_job=job)
+            with self.assertRaises(ValueError):verify_claim(self.authority,self.claim)
+            self.db.execute("UPDATE attempts SET status='success'")
+            with self.assertRaises(ValueError):verify_claim(self.authority,self.claim,dispatched_job='b'*64)

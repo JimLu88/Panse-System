@@ -79,13 +79,18 @@ def run_once(bundle_id, phase, submit_callback, *, authority=None):
         if owned:authority.close()
 
 
-def verify_claim(authority, claim_id):
+def verify_claim(authority, claim_id, *, dispatched_job=None):
     """Revalidate a previously claimed exact file; never claim or submit again."""
     import re
     if not re.fullmatch('[0-9a-f]{32}', str(claim_id)):
         raise ValueError('invalid_claim_id')
-    binding=authority.db.execute('SELECT transport,state FROM claim_transports WHERE claim_id=?',(claim_id,)).fetchone()
-    if not binding or tuple(binding)!=('dedicated_edge_v1','claimed_not_dispatched'):
+    binding=authority.db.execute('SELECT transport,state,job_id FROM claim_transports WHERE claim_id=?',(claim_id,)).fetchone()
+    expected=('dedicated_edge_v1','claimed_not_dispatched',None)
+    if dispatched_job is not None:
+        if not re.fullmatch('[0-9a-f]{64}',str(dispatched_job)):
+            raise ValueError('invalid_existing_dispatch_job')
+        expected=('dedicated_edge_v1','dispatched_unknown',dispatched_job)
+    if not binding or tuple(binding)!=expected:
         raise ValueError('claim_not_freshly_bound_or_already_dispatched_do_not_replay')
     rows = list(authority.db.execute('SELECT * FROM attempts WHERE id LIKE ?', (claim_id+':%',)))
     if not rows or any(r['status'] != 'unknown' for r in rows):
@@ -140,6 +145,9 @@ def main():
     record.add_argument('--receipt',type=Path,required=True)
     verify=sub.add_parser('verify-claim')
     verify.add_argument('--claim',required=True)
+    existing=sub.add_parser('verify-dispatched-claim')
+    existing.add_argument('--claim',required=True)
+    existing.add_argument('--job',required=True)
     consume=sub.add_parser('consume-claim')
     consume.add_argument('--claim',required=True)
     consume.add_argument('--job',required=True)
@@ -153,6 +161,8 @@ def main():
                                   platform_write=False,automatic_retry=False),ensure_ascii=False))
         elif args.command=='verify-claim':
             print(json.dumps(verify_claim(authority,args.claim),ensure_ascii=False))
+        elif args.command=='verify-dispatched-claim':
+            print(json.dumps(verify_claim(authority,args.claim,dispatched_job=args.job),ensure_ascii=False))
         elif args.command=='consume-claim':
             print(json.dumps(consume_claim(authority,args.claim,args.job),ensure_ascii=False))
         else:
