@@ -190,6 +190,47 @@ def reconcile_finished_amend(authority,cid,job):
     return sorted({r['item'] for r in body['rows']})
 
 
+def verified_saved_custom_items(authority,cid,payload,folder):
+    """Verify the already-generated custom half of an interrupted mixed repair.
+
+    Read-only: never regenerate authorization, rebase a floor, or save prices.
+    The ordinary claim pins the original report shared by both repair kinds.
+    """
+    decisions=payload['decisions'];custom=[]
+    for item,rows in decisions.items():
+        for d in rows:
+            repair=d['repair']
+            if repair['kind']=='custom_price':
+                custom.append(dict(item=item,sku=d['sku'],activity_price=repair['price']))
+            elif repair['kind']!='ordinary_discount':
+                raise ValueError('unsupported_mixed_repair_reconciliation')
+    if not custom:return []
+    folder=Path(folder)
+    binding=authority.db.execute('SELECT body FROM continuous_discount_repairs WHERE id=?',(cid,)).fetchone()
+    if not binding:raise ValueError('mixed_repair_claim_missing')
+    claim=json.loads(binding['body']);report_path=Path(claim['report_path'])
+    for ref in claim['sources']:
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('mixed_repair_source_changed')
+    if str(report_path) not in {ref['path'] for ref in claim['sources']}:
+        raise ValueError('mixed_repair_report_not_pinned')
+    report=load(report_path);classified,_=classify_items(report['errors'])
+    if set(decisions)!=set(payload['items']) or any(classified.get(i)!=decisions[i] for i in payload['items']):
+        raise ValueError('mixed_repair_original_decisions_changed')
+    expected={'campaign':claim['campaign'],'continuous_rule_sha':RULE_SHA,'authorized_custom_prices':custom,
+              'source_report':str(report_path),'source_report_sha256':file_sha(report_path)}
+    ap=folder/'custom-authorization.json';fp=folder/'failed-custom-rows.json'
+    failure={'campaign':claim['campaign'],'terminal':True,'batch_id':payload['failed_batch'],
+             'rows':[dict(item=r['item'],sku=r['sku'],status='failed') for r in custom],
+             'source_terminal':report['source_terminal']}
+    if load(ap)!=expected or load(fp)!=failure:
+        raise ValueError('mixed_repair_saved_custom_authority_changed')
+    entries=[dict(r,authorization_path=str(ap.resolve()),authorization_sha256=file_sha(ap),
+                  failure_path=str(fp.resolve()),failure_sha256=file_sha(fp)) for r in custom]
+    if load(folder.parent.parent/'repairs'/('custom-'+folder.name+'.json'))!={'rows':entries}:
+        raise ValueError('mixed_repair_saved_custom_overlay_changed')
+    return sorted({r['item'] for r in custom})
+
+
 def execute_repairs(transport,action_id,payload,folder):
     from campaign_continuous_transport import persist
     a=transport.authority;table(a)
