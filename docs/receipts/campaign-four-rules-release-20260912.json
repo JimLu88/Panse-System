@@ -1,0 +1,177 @@
+{
+  "schema": "campaign_four_failure_rules_release_v1",
+  "date": "2026-09-12",
+  "program_rules_installed": true,
+  "business_complete": false,
+  "full_recording_acceptance": false,
+  "code_versions": {
+    "erp": "edffe01",
+    "web_agent": "8466c5d"
+  },
+  "tests": {
+    "erp_campaign_full": {
+      "passed": 319,
+      "subtests": 107
+    },
+    "web_agent_campaign_regression": {
+      "passed": 362
+    },
+    "web_agent_subsequent_input_and_claim_recovery": {
+      "passed": 32
+    },
+    "web_agent_no_effect_and_alias_guards": {
+      "passed": 10
+    }
+  },
+  "runtime_file_checks": [
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_continuous_flow.py",
+      "sha256": "5e222f6a51a23e0383d2f8b176934e3475d32f3a107265daad155a070b63c5a3",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_continuous_repairs.py",
+      "sha256": "468138a135f8acffa84a90531f90b7802e64d190299927ad7d175aeb402b5af5",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_continuous_transport.py",
+      "sha256": "d911b7c0818adeb5977933a2a69385bd3ea124ec967fc32c5d1e560aadd64f82",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_discount_receipt.py",
+      "sha256": "f64541d1f5315daebf986f31d5eec8863e9dbcd2665e7cc072ba1545b73bb10c",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_discount_reuse.py",
+      "sha256": "dfb6132efcabb7339c3a3ebd2deca32c3de1ed23df8163d7556d1a53d266bee1",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_entry_authority.py",
+      "sha256": "acd9cf4b24630a103e448bff2e6d21708b2a8ed5a8e0a55283a9796ea1d25a1a",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_feedback_normalization.py",
+      "sha256": "fe795b260b9740400fb38000c555a61d2739edd4c9a4c4ad4b2383fcab2077af",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_partial_discount.py",
+      "sha256": "1186aa8c8d0032ff296917a81d32d7a86f58e14d2aa87c9b0441bafb51879570",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\ERP程序\\\\scripts\\\\campaign_price_report_recovery.py",
+      "sha256": "382748640be5c66818a8df103c8c5c74749eec7bdaac90db3037c3fb9f667a5b",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\api\\\\routes.py",
+      "sha256": "f1a350708b6ade4c9dd56a385d8f2a86c1bdbf7393b2bf88a5605ad6e90ed42a",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\browser\\\\campaign_edge_actions.py",
+      "sha256": "ab6e995db53a1efc57a5d8e53fe54e345172cc1bd19354bbe008decd51049613",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_bound_transfers.py",
+      "sha256": "f78d35b79d87f0d3bc7529094b66c02037790621ae2f25945db6f5783dff7f43",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_discount_page.py",
+      "sha256": "204fec9ee5a26cc688c1f30e73d4bba789b8159ca81d0194e6d2141ecfa8a9ff",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_mapping_alias_recovery.py",
+      "sha256": "b1d302cb1de7ccb96218bd99c74ce5f474b1e477923c3169127d55673549938d",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_transfer_jobs.py",
+      "sha256": "989dc2573bfec1d2c1306162d6b65cbb24204ea5f932e3531de22b8b3f005985",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_amend_readback_recovery.py",
+      "sha256": "1559a0d499f52517aab06bb449827683849eaea24ccbc3eb32f8c248e36ace0c",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_partial_discount_recovery.py",
+      "sha256": "e158d3da72678e92d4b2decca536cea5546e23a0bafed90e873eb9584ac17d52",
+      "matches": true
+    },
+    {
+      "file": "D:\\\\AI\\\\畔色ERP系统\\\\Web-Agent程序\\\\app\\\\engine\\\\campaign_price_report_recovery.py",
+      "sha256": "1e2ce9dda0650e88e9903cf26e544c5d32ebd685592169f4a2c58a8979c055f0",
+      "matches": true
+    },
+    {
+      "file": "D:/AI/畔色ERP系统/Web-Agent程序/app/engine/campaign_no_effect_recovery.py",
+      "sha256": "c4561a2f3bb0c7dd2f2ec7e1f204417d319e5fbba1f203eb87a8946bfa957064",
+      "matches": true
+    }
+  ],
+  "verified_alias_registration": {
+    "items": [
+      "1046992283533",
+      "717388593550"
+    ],
+    "aliases": 5,
+    "registered": true,
+    "price_version_unchanged": true,
+    "price_version": "53818531fe0cea6417c738ee18f930a2604fa3c173f63943b60f1109c80d194b",
+    "receipt": {
+      "path": "D:\\AI\\畔色ERP系统\\ERP程序\\docs\\receipts\\campaign-verified-partial-backup-aliases-20260912.json",
+      "sha256": "30b70e8f1be1430ce70610a3957afebb71afacbe8c34441f9875e75cc3c5f72e"
+    },
+    "platform_write": false
+  },
+  "business_receipt": {
+    "path": "D:/AI/畔色ERP系统/outputs/01a067c6-7e83-7483-9a21-84b44ed7299b/campaign-scope57-final-checkpoint-20260912.json",
+    "sha256": "f40e8a8e70a83d91dabb5e7760537ed521a55ed28a53a7c730d55371ddbdaab6"
+  },
+  "counts": {
+    "initial_scope": 57,
+    "success": 20,
+    "erp_mapping": 14,
+    "baseline_missing": 3,
+    "price_difference": 1,
+    "no_sales": 12,
+    "discount_unknown": 6,
+    "price_adjustment_no_effect": 1
+  },
+  "verification": {
+    "success_official_hashes_checked": 20,
+    "success_hash_failures": 0,
+    "video_files_checked": 46,
+    "video_hash_failures": 0,
+    "all_19_runtime_sources_match_main": true
+  },
+  "protected": {
+    "original_discount_success_rows": 268,
+    "signup_success_items": 20,
+    "no_rotation_performed": true,
+    "price_version_unchanged": "53818531fe0cea6417c738ee18f930a2604fa3c173f63943b60f1109c80d194b",
+    "no_direct_ai_browser_control": true,
+    "recurring_task_remains_paused": true
+  },
+  "no_effect": {
+    "item": "1007407909979",
+    "sku": "6228006543290",
+    "last_verified_deduct": "3102.13",
+    "proposed_3102_23_not_dispatched": true,
+    "original_claim_not_released": true
+  },
+  "controller_state": "complete_with_exceptions",
+  "pending": [],
+  "next_action": "Only resolve the exact remaining evidence/price blockers; do not replay successes or auto-rotate."
+}
