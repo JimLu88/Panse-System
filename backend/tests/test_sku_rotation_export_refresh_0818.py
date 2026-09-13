@@ -157,3 +157,30 @@ def test_export_refresh_can_limit_to_user_confirmed_sku_codes(db_session):
     assert result["ok"] is True
     assert result["requested_sku_codes"] == ["PFG2525003122611"]
     assert result["explicit_mapping_rows"] == 1
+
+
+def test_scoped_refresh_does_not_retire_unrelated_blank_code_row(db_session):
+    _seed(db_session)
+    db_session.add(PricingSku(product_code="PFG25250031226", sku_code="PFG2525003122612",
+                             sku="未授权款", daily_price=Decimal("9000")))
+    db_session.add(PricingSkuPromo(sku_code="PFG2525003122612", taobao_item_id="1047741358718",
+                                  taobao_sku_id="UNRELATED-OLD", alt_taobao_sku_ids=["KEEP-ALT"],
+                                  coupon_floor_price=Decimal("77")))
+    db_session.commit()
+    file_bytes = _workbook([
+        ["1047741358718", "NEW-SID", "MCM", "PFG25250031226", "PFG2525003122611", "1.2米"],
+        ["1047741358718", "OLD-SID", "MCM", "PFG25250031226", "", "旧1.2米"],
+        ["1047741358718", "UNRELATED-OLD", "MCM", "PFG25250031226", "", "未授权款"],
+    ])
+    kwargs = dict(item_ids=["1047741358718"], sku_codes=["PFG2525003122611"])
+    preview = svc.apply_export_mapping_refresh(db_session, [file_bytes], **kwargs)
+    assert preview["ok"] and preview["retired_mapping_rows"] == 1
+    assert preview["retired_rows"][0]["taobao_sku_id"] == "OLD-SID"
+    result = svc.apply_export_mapping_refresh(db_session, [file_bytes], dry_run=False, **kwargs)
+    assert result["retired_sku_ids"] == ["OLD-SID"]
+    assert "UNRELATED-OLD" not in delisted_sku_service.get_delisted(db_session)
+    untouched = db_session.execute(select(PricingSkuPromo).where(
+        PricingSkuPromo.sku_code == "PFG2525003122612")).scalar_one()
+    assert untouched.taobao_sku_id == "UNRELATED-OLD"
+    assert untouched.alt_taobao_sku_ids == ["KEEP-ALT"]
+    assert untouched.coupon_floor_price == Decimal("77")
