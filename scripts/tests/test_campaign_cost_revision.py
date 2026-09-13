@@ -103,6 +103,25 @@ def test_verified_overlay_changes_only_five_original_amounts(tmp_path):
     a.db.close()
 
 
+@pytest.mark.parametrize('same_segment',[True,False])
+def test_no_sales_is_same_segment_not_three_year_blacklist(tmp_path,same_segment):
+    a=authority()
+    a.db.execute('CREATE TABLE bundles(id TEXT,body TEXT)')
+    a.db.execute('CREATE TABLE attempts(id TEXT,bundle_id TEXT,campaign TEXT,phase TEXT,item TEXT,status TEXT,evidence TEXT)')
+    feedback=tmp_path/'report';feedback.write_bytes(b'isolated test feedback')
+    terminal=dict(claim_id='a'*32,campaign=c.CAMPAIGN,phase='signup',terminal=True,
+        items=[dict(item=c.ITEM,status='failed')],errors=[dict(item=c.ITEM,kind='no_sales')],
+        feedback=dict(path=str(feedback),sha256=c.file_sha(feedback)))
+    path=tmp_path/'terminal.json';path.write_text(json.dumps(terminal))
+    window=c.WINDOW if same_segment else dict(start='2026-09-28 00:00:00',end='2026-09-30 23:59:59')
+    a.db.execute('INSERT INTO bundles VALUES(?,?)',('b',json.dumps(window)))
+    a.db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?)',('a'*32+':'+c.ITEM,'b',c.CAMPAIGN,'signup',c.ITEM,'failed',json.dumps(dict(path=str(path),sha256=c.file_sha(path)))))
+    if same_segment:
+        with pytest.raises(ValueError,match='same_segment_no_sales_skip'):c.check_same_segment_failures(a)
+    else:c.check_same_segment_failures(a)
+    a.db.close()
+
+
 def saved(b):
     return dict(state='verified_saved',claim_id='a'*32,job_id='b'*64,rows=[dict(
         item=c.ITEM,offer_id=c.OFFER,state='verified_saved',window=dict(c.WINDOW,offer_id=c.OFFER),

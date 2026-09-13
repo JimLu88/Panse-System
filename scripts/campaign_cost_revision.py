@@ -82,6 +82,7 @@ def derive():
 
 
 def check_current(a,body):
+    check_same_segment_failures(a)
     # Prior successful enrollment is never unblocked here. Only its explicitly
     # authorized existing discount is amended; unknown enrollment still blocks.
     blocked=a.blocked(CAMPAIGN,'signup',**WINDOW)
@@ -109,6 +110,34 @@ def check_current(a,body):
             if pending['start']<=WINDOW['end'] and WINDOW['start']<=pending['end'] and any(
                     x['item']==ITEM for x in pending['rows']):
                 raise ValueError('cost_revision_pending_amendment_protected')
+
+
+def check_same_segment_failures(a):
+    """Reuse existing reports, not a browser preflight or historical blacklist.
+
+    Super-reduce's three-year official validity is not a price segment. A prior
+    run for another segment is risk evidence, not this segment's new result.
+    """
+    if not a.db.execute("SELECT 1 FROM sqlite_master WHERE name='attempts'").fetchone():return
+    records=a.db.execute('''SELECT a.id,a.evidence,b.body FROM attempts a
+      JOIN bundles b ON b.id=a.bundle_id WHERE a.campaign=? AND a.phase='signup'
+      AND a.item=? AND a.status='failed' ''',(CAMPAIGN,ITEM))
+    for row in records:
+        bundle=json.loads(row['body'])
+        if any(bundle.get(k)!=v for k,v in WINDOW.items()):continue
+        if not row['evidence']:raise ValueError('cost_revision_same_segment_failure_evidence_missing')
+        ref=json.loads(row['evidence'])
+        if file_sha(ref['path'])!=ref['sha256']:raise ValueError('cost_revision_failure_evidence_changed')
+        terminal=load(ref['path'])
+        if (terminal.get('claim_id')!=row['id'].split(':')[0] or terminal.get('campaign')!=CAMPAIGN
+                or terminal.get('phase')!='signup' or terminal.get('terminal') is not True
+                or not any(i['item']==ITEM and i['status']=='failed' for i in terminal.get('items',[]))):
+            raise ValueError('cost_revision_failure_identity_changed')
+        if any(e.get('item')==ITEM and e.get('kind')=='no_sales' for e in terminal.get('errors',[])):
+            feedback=terminal['feedback']
+            if file_sha(feedback['path'])!=feedback['sha256']:
+                raise ValueError('cost_revision_failure_report_changed')
+            raise ValueError('cost_revision_same_segment_no_sales_skip')
 
 
 def claim(a):
