@@ -296,6 +296,8 @@ class Authority:
         from campaign_discount_amend import apply_confirmed
         result=apply_confirmed(self,list(offers.values()))
         from campaign_continuous_repairs import apply_verified_amendments
+        from campaign_cost_revision import overlay
+        result=overlay(self,result)
         return apply_verified_amendments(self,result)
 
     def blocked(self, campaign, phase, start, end):
