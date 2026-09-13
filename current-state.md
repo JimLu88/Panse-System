@@ -1,5 +1,11 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 岩板本次成本版本入口交付
+
+- af6a1f5推送并安装本机权威CLI：独立campaign_cost_revision，用户本次指定792992319206五普通SKU，原优惠144881379873/09-14至09-16 19:59:59、新ERP版本c82cf…bdd；不放宽既有±2/20%规则，不轮换、不解除signup成功/未知，不动岛台或未来优惠。
+- 80项+6子测试通过，真实源文件/原优惠金额只读校验通过；plan无平台写入、无claim。03已收到固定discount_reprice→真实保存回读→record→原signup门继续的指令。实际平台结果待03，代码发布不是报名成功。
+- 这是本机CLI与保留Edge程序的安装，NAS API/Web仍为038bd0e的正式版本，不冒称本次又部署了NAS镜像。详细界限见docs/campaign-cost-revision-20260914.md。
+
 ## 2026-09-13 业务验收通过，原72小时定时已启用
 
 - round51原57件=33成功+18无动销+1新基线待确认+1暂缓轮换+4价格例外；无pending/owner/unknown，200 action全done。
