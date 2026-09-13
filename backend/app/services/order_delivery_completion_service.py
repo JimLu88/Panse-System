@@ -129,10 +129,13 @@ def complete_recovered_order_delivery(
         db.commit()
         return result
 
-    pushed = int(delivery.get("images_pushed") or 0)
+    parent_pushed = int(delivery.get("images_pushed") or 0)
+    line_pushed = int(delivery.get("line_images_pushed") or 0)
+    pushed = parent_pushed + line_pushed
     deferred = int(delivery.get("images_deferred_no_address") or 0)
     detail = (
-        f"恢复来源={source}；下单图送达{pushed}张；"
+        f"恢复来源={source}；下单图送达{pushed}张"
+        f"（主单{parent_pushed}张、子单{line_pushed}张）；"
         f"地址脱敏暂缓{deferred}张；工厂下单表已同步"
     )
     if is_current_business_day:
@@ -166,6 +169,8 @@ def complete_recovered_order_delivery(
             "order_batch_id": order_batch_id,
             "order_business_date": order_business_date,
             "images_pushed": pushed,
+            "parent_images_pushed": parent_pushed,
+            "line_images_pushed": line_pushed,
             "images_deferred_no_address": deferred,
             "factory_dispatch": {
                 "ok": bool((factory_dispatch or {}).get("ok")),

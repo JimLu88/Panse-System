@@ -45,6 +45,8 @@ def line_is_factory_eligible(db: Session, line: OrderDetail, order: Order | None
         return False
     if line_is_refunded(line):
         return False
+    if is_master_summary_line(db, line):
+        return False
     text = f"{line.product_name or ''} {line.sku_name or ''}"
     if any(key in text for key in ("样块", "样品", "小样", "样木")):
         return False
@@ -53,6 +55,24 @@ def line_is_factory_eligible(db: Session, line: OrderDetail, order: Order | None
         return False
     topup, _reason = order_sheet_archive_service._is_parts_topup(db, order)
     return not topup
+
+
+def is_master_summary_line(db: Session, line: OrderDetail) -> bool:
+    """A parent-ID fallback without SKU is not another item beside real children.
+
+    Keep historical rows and sent receipts intact. Single-item legacy imports
+    without a distinct child identifier remain supported.
+    """
+    if (not line.order_no or line.sub_order_no != line.order_no
+            or line.sku_code or line.sku_name):
+        return False
+    return db.execute(select(OrderDetail.id).where(
+        OrderDetail.order_no == line.order_no,
+        OrderDetail.source == "import",
+        OrderDetail.sub_order_no.isnot(None),
+        OrderDetail.sub_order_no != "",
+        OrderDetail.sub_order_no != line.order_no,
+    ).limit(1)).scalar_one_or_none() is not None
 
 
 def active_lines(db: Session, order_no: str | None = None) -> list[OrderDetail]:
@@ -139,13 +159,20 @@ def delivery_count_gate(db: Session) -> dict:
     }
     unvoided_refunds = sorted(refunded_sent - set(voided))
     extra = sorted(set(sent) - active_ids - refunded_sent)
-    ok = len(active_ids) == len(sent_ids) and not missing and not unvoided_refunds
+    summary_sent = sorted(
+        str(line.sub_order_no) for line in physical_lines(db, required_only=False)
+        if is_master_summary_line(db, line)
+        and str(line.sub_order_no) in sent and str(line.sub_order_no) not in voided
+    )
+    ok = (len(active_ids) == len(sent_ids) and not missing
+          and not unvoided_refunds and not summary_sent)
     return {
         "ok": ok,
         "active_product_count": len(active_ids),
         "sent_factory_sheet_count": len(sent_ids),
         "missing_sub_order_nos": missing,
         "extra_sent_sub_order_nos": extra,
+        "master_summary_sent_sub_order_nos": summary_sent,
         "unvoided_refunded_sub_order_nos": unvoided_refunds,
     }
 

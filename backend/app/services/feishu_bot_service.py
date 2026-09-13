@@ -1109,7 +1109,8 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
             delivery_error = str(delivery.get("_error") or "")
             silent_address_release = (
                 bool(repushed)
-                and not int(delivery.get("images_pushed") or 0)
+                and not (int(delivery.get("images_pushed") or 0)
+                         + int(delivery.get("line_images_pushed") or 0))
                 and (not delivery_error or delivery_error.startswith("freshness_gate:"))
             )
             if not silent_address_release:
@@ -1117,7 +1118,8 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                        f"收货地址已入库")
                 if repushed:
                     msg += f", 并已自动重推 {repushed} 张此前缺地址的下单图"
-                pushed = int(delivery.get("images_pushed") or 0)
+                pushed = (int(delivery.get("images_pushed") or 0)
+                          + int(delivery.get("line_images_pushed") or 0))
                 if pushed:
                     msg += f", 自动续推 {pushed} 张新下单图到工厂群"
                 if delivery.get("_run_status") == "fail":

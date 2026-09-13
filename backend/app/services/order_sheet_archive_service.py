@@ -1479,6 +1479,11 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     unexplained_line_missing = sorted(gate_missing - address_deferred)
     result["line_delivery_gate"]["deferred_no_address"] = sorted(address_deferred)
     result["line_delivery_gate"]["unexplained_missing_sub_order_nos"] = unexplained_line_missing
+    if line_gate.get("master_summary_sent_sub_order_nos"):
+        errors.append(
+            "主订单汇总被作为子订单发送，需人工确认处理；未自动作废或重发: "
+            + ",".join(line_gate["master_summary_sent_sub_order_nos"])
+        )
     if unexplained_line_missing or line_gate.get("unvoided_refunded_sub_order_nos"):
         errors.append(
             "子订单送达数量不一致: 有效商品 "

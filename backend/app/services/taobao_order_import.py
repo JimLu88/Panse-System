@@ -754,7 +754,23 @@ def _persist_order_lines(
 
     sku_code 经对应表 resolve 成 PPS 编码(否则匹配不到定价/成本); 服务行(送货/安装)不写; 幂等(按 sync_key)。
     """
+    distinct_children = {
+        _clean(ln.get("sub_order_no")) for ln in lines
+        if _clean(ln.get("sub_order_no")) not in (None, "", order_no)
+    }
+    has_children = bool(distinct_children) or db.execute(
+        select(OrderDetail.id).where(
+            OrderDetail.order_no == order_no, OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None),
+            OrderDetail.sub_order_no != "", OrderDetail.sub_order_no != order_no,
+        ).limit(1)
+    ).scalar_one_or_none() is not None
     for idx, ln in enumerate(lines):
+        if (has_children and _clean(ln.get("sub_order_no")) == order_no
+                and not any(_clean(ln.get(k)) for k in ("sku_code", "sku", "sku_id"))):
+            # A master report can arrive before or after sales-detail rows.
+            # It must not manufacture an extra factory item using the parent ID.
+            continue
         if _is_service_line_name(ln.get("product_name")):
             continue
         scode = _norm_pps_code(ln.get("sku_code"))
