@@ -76,6 +76,12 @@ def verify_claim(authority,cid,*,consume_job=None):
         if body['rule_sha']!=RULE_SHA:raise ValueError('repair_rule_changed')
         for ref in body['sources']:
             if file_sha(ref['path'])!=ref['sha256']:raise ValueError('repair_source_changed')
+        if body.get('segment_bridge'):
+            from campaign_segment_repair import derive, pinned
+            recalculated=derive(authority,pinned(body['segment_bridge']))
+            if (recalculated['rows']!=body['rows'] or
+                    recalculated['errors']!=load(body['report_path'])['errors']):
+                raise ValueError('segment_repair_bridge_changed')
         blocked=authority.blocked(body['campaign'],'signup',body['start'],body['end'])
         if any(r['item'] in blocked for r in body['rows']):raise ValueError('repair_success_or_unknown_scope_protected')
         report=load(body['report_path'])
