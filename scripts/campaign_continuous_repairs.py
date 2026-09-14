@@ -260,8 +260,12 @@ def execute_repairs(transport,action_id,payload,folder):
                 errors=[e for e in report['errors'] if (e['item'],e['sku'])==pair]
                 rows=[r for r in actual['rows'] if (r['item'],r['sku'])==pair]
                 if len(errors)!=1 or len(rows)!=1:raise ValueError('exact_repair_discount_evidence_missing')
-                e=errors[0];ordinary.append(dict(item=item,sku=d['sku'],offer_id=rows[0]['offer_id'],
-                    old_deduct=e['current_deduct'],new_deduct=e['proposed_deduct']))
+                e=errors[0]
+                # An unchanged deduction cannot justify a save or a new signup.
+                # Another genuinely changed SKU/custom row may still advance
+                # this product; a wholly unchanged product remains unresolved.
+                change=ordinary_change(item,d['sku'],rows[0]['offer_id'],e)
+                if change is not None:ordinary.append(change)
             elif repair['kind']=='custom_price':
                 custom.append(dict(item=item,sku=d['sku'],activity_price=repair['price']))
                 local_items.add(item)
@@ -301,6 +305,15 @@ def execute_repairs(transport,action_id,payload,folder):
         local_items.update(reconcile_finished_amend(a,cid,job))
     return dict(batch=payload['failed_batch'],items=[dict(item=i,outcome='success' if i in local_items else 'failed',
                changed=i in local_items) for i in payload['items']],rotation_performed=False)
+
+
+def ordinary_change(item,sku,offer_id,error):
+    old,new=Decimal(error['current_deduct']),Decimal(error['proposed_deduct'])
+    if not old.is_finite() or not new.is_finite() or old<0 or new<old:
+        raise ValueError('ordinary_repair_must_not_reduce_or_invent_deduction')
+    if old==new:return None
+    return dict(item=item,sku=sku,offer_id=offer_id,
+                old_deduct=error['current_deduct'],new_deduct=error['proposed_deduct'])
 
 
 if __name__=='__main__':
