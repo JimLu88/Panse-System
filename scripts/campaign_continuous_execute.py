@@ -135,9 +135,10 @@ def main():
     recovery_mode=p.add_mutually_exclusive_group()
     recovery_mode.add_argument('--reconcile-discount',action='store_true')
     recovery_mode.add_argument('--reconcile-scope',action='store_true')
+    recovery_mode.add_argument('--reconcile-signup',action='store_true')
     args=p.parse_args()
     if args.register_discovery:
-        if args.reconcile_discount or args.reconcile_scope:raise ValueError('recovery_requires_existing_request')
+        if args.reconcile_discount or args.reconcile_scope or args.reconcile_signup:raise ValueError('recovery_requires_existing_request')
         print(json.dumps(register_request(json.load(sys.stdin)),ensure_ascii=False));return
     import re
     if not re.fullmatch('[0-9a-f]{64}',args.request_id):raise ValueError('invalid_request_id')
@@ -146,6 +147,10 @@ def main():
     secret=json.loads(sys.stdin.readline());edge=EdgeClient(secret.pop('token'))
     a=Authority()
     try:
+        if args.reconcile_signup:
+            from campaign_continuous_recovery import recover_finished_signup
+            recovery=recover_finished_signup(ROOT/'runs'/args.request_id,a,edge)
+            print(json.dumps({'signup_reconciliation':recovery},ensure_ascii=False),flush=True)
         if args.reconcile_scope:
             from campaign_continuous_recovery import recover_finished_scope
             recovery=recover_finished_scope(ROOT/'runs'/args.request_id,a,edge,artifact_roots=secret['artifact_roots'])
