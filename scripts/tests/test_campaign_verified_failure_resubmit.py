@@ -61,3 +61,26 @@ def test_explicit_dom_switch_not_stock(aria,cls,enabled,wanted):
 ])
 def test_ambiguous_switch_never_silently_excludes(switch):
     with pytest.raises(ValueError):r.switch_state({'enabled':None,'switches':[switch]})
+
+
+def test_fixed_execute_uses_valid_read_id_and_cached_terminal(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import campaign_final_audit
+    snap=r.persist(tmp_path/'snapshot.json',{})
+    p={'bundle_id':'a'*64,'identity':{},'items':[r.ITEM],'time_binding':{'segment':{'segment_id':'b'*64}}}
+    r.persist(tmp_path/'prepared.json',p)
+    calls=[]
+    class T:
+        def __init__(self,*a,root,**kw):self.root=root
+        def step_verify_discount_window(self,key,*a):
+            assert len(key)==64 and all(c in '0123456789abcdef' for c in key)
+            calls.append('read');return {'all_correct':True}
+        def submit_phase(self,*a):
+            calls.append('signup');return {'items':[{'item':r.ITEM,'outcome':'success'}],'batch':'123'}
+    a=SimpleNamespace(db=SimpleNamespace(execute=lambda *a:SimpleNamespace(fetchone=lambda:{'status':'failed','evidence':'{"batch":"843589003"}'})))
+    monkeypatch.setattr(r,'verify_prepared',lambda *a:{'snapshot_path':snap})
+    monkeypatch.setattr(r,'CampaignTransport',T)
+    monkeypatch.setattr(campaign_final_audit,'finalize',lambda request,result,**kw:result)
+    r.execute(r.REQUEST,root=tmp_path,authority=a,edge=None,artifact_roots=[])
+    r.execute(r.REQUEST,root=tmp_path,authority=a,edge=None,artifact_roots=[])
+    assert calls==['read','signup']

@@ -239,7 +239,7 @@ def execute(request,*,root,authority,edge,artifact_roots):
         # mandatory time/amount readback, not a price change or a new preflight.
         verified=root/'discount-window-verified.json'
         if not verified.exists():
-            checked=t.step_verify_discount_window('reuse-window',payload,root/'execution'/'reuse-window')
+            checked=t.step_verify_discount_window(fingerprint([request,'reuse-window']),payload,root/'execution'/'reuse-window')
             if checked.get('all_correct') is not True:raise ValueError('resubmit_discount_window_not_verified')
             persist(verified,checked)
         terminal=t.submit_phase('signup',payload,root/'execution'/'signup')
@@ -257,3 +257,51 @@ def execute(request,*,root,authority,edge,artifact_roots):
         'signup_terminal':terminal}
     from campaign_final_audit import finalize
     return finalize(request,result,root=root,authority=authority,edge=edge,artifact_roots=artifact_roots)
+
+
+def check_read_validation_recovery(output,authority):
+    output=Path(output);p=load(output/'prepared.json')
+    verify_prepared(p,authority)
+    log=(output/'process.log').read_text(encoding='utf-8')
+    if ("checked=t.step_verify_discount_window('reuse-window',payload" not in log
+            or not log.rstrip().endswith('campaign_edge_client.EdgeJobError: SurfaceError')
+            or list(output.rglob('*-job.json')) or list(output.rglob('claim.json'))
+            or (output/'signup-terminal.json').exists()
+            or authority.db.execute('SELECT 1 FROM attempts WHERE bundle_id=? LIMIT 1',(p['bundle_id'],)).fetchone()):
+        raise ValueError('read_validation_recovery_requires_proven_no_jobs_or_claims')
+    return {'log_sha256':file_sha(output/'process.log'),'no_browser_job_created':True,
+            'no_claim_created':True,'write_claims_released':False}
+
+
+async def recover_read_validation():
+    """Maintenance recovery CLI: same persistent worker/request, once only."""
+    from campaign_entry_authority import Authority
+    import sys
+    sys.path.insert(0,str(WA.parents[2]))
+    from app.engine.campaign_continuous_worker import ContinuousWorker
+    rid=fingerprint(REQUEST);output=ROOT/'runs'/rid
+    a=Authority();worker=ContinuousWorker()
+    try:
+        proof=check_read_validation_recovery(output,a)
+        worker.db.execute('BEGIN IMMEDIATE')
+        old=worker.status(rid)
+        if old['state']!='unknown' or worker.db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():
+            raise ValueError('read_validation_recovery_requires_idle_original_unknown')
+        marker=output/'read-validation-recovery.json'
+        if marker.exists():raise ValueError('read_validation_recovery_already_consumed')
+        persist(marker,dict(proof,request_id=rid,previous_controller=old))
+        worker.db.execute("UPDATE continuous_jobs SET state='running',result=NULL WHERE id=?",(rid,))
+        worker.db.execute('COMMIT')
+        await worker.execute(rid,log_name='process-read-validation-recovery.log')
+        return worker.status(rid)
+    finally:
+        if worker.db.in_transaction:worker.db.execute('ROLLBACK')
+        worker.db.close();a.close()
+
+
+if __name__=='__main__':
+    import argparse,asyncio
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--recover-read-validation',action='store_true',required=True)
+    parser.parse_args()
+    print(json.dumps(asyncio.run(recover_read_validation()),ensure_ascii=False))
