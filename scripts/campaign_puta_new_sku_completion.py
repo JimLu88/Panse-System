@@ -84,8 +84,17 @@ def prepare(request,authority,root):
 class PutaTransport(CampaignTransport):
     def step_scope(self,action_id,payload,folder):
         scope=load(self.root/'product-scope.json');snapshot=load(self.root/'resolved-snapshot.json')
+        latest=self.authority.db.execute("SELECT id,status,evidence FROM attempts WHERE item=? AND campaign=? AND phase='signup' ORDER BY rowid DESC LIMIT 1",(ITEM,CAMPAIGN)).fetchone()
+        identity=payload['identity']
+        if (not latest or latest['id']!='ce7be145a079482badeee181010b3792:'+ITEM or latest['status']!='failed'
+                or ITEM in self.authority.blocked(CAMPAIGN,'signup',identity['start'],identity['end'])):
+            raise ValueError('puta_changed_scope_requires_original_failed_not_success_or_unknown')
+        evidence=persist(folder/'prior-outcomes.json',dict(campaign=CAMPAIGN,
+            historical_attempt=dict(latest),current_changed_scope_outcomes={},
+            reason='existing_replacement_and_verified_missing_discount_repaired',
+            original_authority_unchanged=True))
         return dict(scope,erp_sellable=[ITEM],price_version=snapshot['resolved_price_version_sha256'],
-            prior_outcomes={},changed_existing_sku_scope=True,
+            prior_outcomes={},prior_outcomes_evidence=evidence,changed_existing_sku_scope=True,
             previous_failed_attempt='ce7be145a079482badeee181010b3792:'+ITEM)
 
     def execute(self,step,action_id,payload):
@@ -175,9 +184,47 @@ async def recover_include_window():
     finally:worker.db.close();a.close()
 
 
+async def recover_scope_projection():
+    """Correct only the malformed local read projection; no business replay."""
+    import sys,sqlite3
+    sys.path.insert(0,str(proof.WA.parents[2]))
+    from app.engine.campaign_continuous_worker import ContinuousWorker
+    from campaign_entry_authority import Authority
+    rid=fingerprint(REQUEST);root=proof.ROOT/'runs'/rid
+    worker=ContinuousWorker();a=Authority();db=sqlite3.connect(root/'controller.sqlite3',isolation_level=None);db.row_factory=sqlite3.Row
+    try:
+        marker=root/'scope-projection-recovery.json';old=worker.status(rid)
+        if marker.exists() or old['state']!='blocked' or worker.db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():raise ValueError('scope_recovery_not_idle_or_already_used')
+        segment=old['result']['segments'][0]
+        if segment.get('blocker')!={'step':'scope','reason':'historical_authority_reconciliation_missing'}:raise ValueError('scope_recovery_reason_changed')
+        rows=db.execute('SELECT * FROM continuous_campaign_actions').fetchall()
+        if len(rows)!=1 or rows[0]['step']!='scope' or rows[0]['status']!='done':raise ValueError('scope_recovery_after_business_progress_forbidden')
+        action=rows[0];value=json.loads(action['result']);original=Path(value['evidence'])
+        if value.get('prior_outcomes_evidence'):raise ValueError('scope_projection_already_complete')
+        payload=load(original.parent/'request.json')['payload'];folder=root/'scope-projection-correction'
+        t=PutaTransport(None,a,root=root/'execution',request={},artifact_roots=[])
+        fixed=dict(t.step_scope(action['id'],payload,folder),action_id=action['id'],request_sha=action['payload_sha'],status='terminal')
+        persist(folder/'request.json',{'step':'scope','payload':payload})
+        source=persist(folder/'result.json',fixed);fixed['evidence']=source
+        persist(marker,dict(previous_controller=old,previous_action=dict(action),original_file_sha=file_sha(original),new_source=source,new_sha=file_sha(source),business_authority_changed=False))
+        db.execute('BEGIN IMMEDIATE')
+        current=db.execute('SELECT result FROM continuous_campaign_actions WHERE id=?',(action['id'],)).fetchone()[0]
+        if current!=action['result']:raise ValueError('scope_projection_raced')
+        db.execute('UPDATE continuous_campaign_actions SET result=? WHERE id=?',(json.dumps(fixed,ensure_ascii=False),action['id']))
+        db.execute('COMMIT')
+        worker.db.execute("UPDATE continuous_jobs SET state='running',result=NULL WHERE id=? AND state='blocked'",(rid,))
+        await worker.execute(rid,log_name='process-scope-projection-recovery.log')
+        return worker.status(rid)
+    finally:
+        if db.in_transaction:db.execute('ROLLBACK')
+        db.close();worker.db.close();a.close()
+
+
 if __name__=='__main__':
     import argparse,asyncio
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--recover-include-window',required=True,action='store_true')
-    parser.parse_args()
-    print(json.dumps(asyncio.run(recover_include_window()),ensure_ascii=False))
+    mode=parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--recover-include-window',action='store_true')
+    mode.add_argument('--recover-scope-projection',action='store_true')
+    args=parser.parse_args()
+    print(json.dumps(asyncio.run(recover_scope_projection() if args.recover_scope_projection else recover_include_window()),ensure_ascii=False))

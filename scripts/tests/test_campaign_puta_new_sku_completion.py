@@ -32,12 +32,22 @@ def test_no_whole_product_discount_upload_even_after_new_sku_include(tmp_path):
 
 
 def test_current_scope_keeps_full_export_and_previous_failure(tmp_path):
-    transport=p.PutaTransport(None,None,root=tmp_path,request={},artifact_roots=[])
+    import sqlite3
+    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+    db.execute('CREATE TABLE attempts(id,item,campaign,phase,status,evidence)')
+    db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)',('ce7be145a079482badeee181010b3792:'+p.ITEM,p.ITEM,p.CAMPAIGN,'signup','failed','{}'))
+    authority=SimpleNamespace(db=db,blocked=lambda *args:{})
+    transport=p.PutaTransport(None,authority,root=tmp_path,request={},artifact_roots=[])
     scope={'complete':True,'sku_facts':[{'facts':{'item':p.ITEM,'sku':p.NEW}}],
            'observed_item_count':59,'page_count':3,'platform_rows':[{'item':p.ITEM,'on_sale':True}]}
     p.persist(tmp_path/'product-scope.json',scope)
     p.persist(tmp_path/'resolved-snapshot.json',{'resolved_price_version_sha256':'a'*64})
-    value=transport.step_scope('b'*64,{},tmp_path)
+    value=transport.step_scope('b'*64,{'identity':{'start':'a','end':'b'}},tmp_path)
     assert value['observed_item_count']==59 and value['page_count']==3
     assert value['erp_sellable']==[p.ITEM] and value['changed_existing_sku_scope'] is True
     assert value['previous_failed_attempt'].endswith(':'+p.ITEM)
+    assert Path(value['prior_outcomes_evidence']).is_file()
+    authority.blocked=lambda *args:{p.ITEM:'unknown'}
+    with pytest.raises(ValueError,match='not_success_or_unknown'):
+        transport.step_scope('b'*64,{'identity':{'start':'a','end':'b'}},tmp_path)
+    db.close()
