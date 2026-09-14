@@ -184,6 +184,7 @@ def overlay(a,offers):
                 if item['item'] in items:item['status']='unknown'
             continue
         ref=json.loads(claim['receipt']);pinned(ref);pinned(ref['original'])
+        offer.setdefault('verified_include_evidence',[]).append(dict(rows=body['rows'],receipt=ref))
         index={(r['item'],r['sku']):r for r in offer['rows']}
         for row in body['rows']:
             pair=row['item'],row['sku']

@@ -32,6 +32,34 @@ def historical_offer(document):
                 evidence_kind='historical_official_import_receipt_not_fresh_readback')
 
 
+def verify_partial_added_scope(offer,original):
+    """Only independently saved inclusions may extend an original partial import."""
+    from campaign_discount_include import pinned
+    old={(r['item'],r['sku']) for r in original}
+    current={(r['item'],r['sku']) for r in offer['rows']}
+    if len(current)!=len(offer['rows']) or not old.issubset(current):raise ValueError('partial_discount_amendment_scope_changed')
+    extra=current-old
+    if not extra:return
+    verified=set()
+    for inclusion in offer.get('verified_include_evidence',[]):
+        ref=inclusion['receipt'];job=pinned(ref);raw=pinned(ref['original'])
+        result=job.get('result') or {}
+        if (job.get('operation')!='discount_include' or job.get('state')!='finished'
+                or raw.get('state')!='verified_saved' or any(result.get(k)!=raw.get(k) for k in ('claim_id','rows','state'))):raise ValueError('partial_include_receipt_changed')
+        values={}
+        for row in raw['rows']:
+            if (row.get('state')!='verified_saved' or row['window'].get('offer_id')!=offer.get('platform_offer_id',offer['offer_id'])
+                    or any(row['window'].get(k)!=offer[k] for k in ('start','end'))):raise ValueError('partial_include_window_changed')
+            for sku,amount in row['values'].items():values[row['item'],sku]=Decimal(str(amount))
+        wanted={(r['item'],r['sku']):Decimal(str(r['deduct'])) for r in inclusion['rows']}
+        if values!=wanted:raise ValueError('partial_include_amount_changed')
+        for pair,amount in values.items():
+            matches=[r for r in offer['rows'] if (r['item'],r['sku'])==pair]
+            if len(matches)!=1 or Decimal(str(matches[0]['deduct']))!=amount:raise ValueError('partial_include_projection_changed')
+        verified.update(values)
+    if not extra.issubset(verified):raise ValueError('partial_discount_amendment_scope_changed')
+
+
 def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=None, campaign=None, target=None, continuous_rule_sha=None):
     """Partition new/reused rows; report unknown, overlap and actual final errors."""
     from campaign_generate_current_files import official_cut
@@ -72,8 +100,7 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
             # were absent from the original import. Verify original amounts
             # against the original receipt, never against the amended values.
             original=offer.get('verified_partial_original_rows',offer['rows'])
-            if {(r['item'],r['sku']) for r in original}!={(r['item'],r['sku']) for r in offer['rows']}:
-                raise ValueError('partial_discount_amendment_scope_changed')
+            verify_partial_added_scope(offer,original)
             verified_rows(dict(offer,rows=original),offer['partial_terminal_evidence'])
             continue
         if status != 'success' and pair not in set(map(tuple,offer.get('verified_partial_skus',[]))):
