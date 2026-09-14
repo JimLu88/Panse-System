@@ -139,6 +139,7 @@ def main():
     mode.add_argument('--request-id')
     mode.add_argument('--register-discovery',action='store_true')
     p.add_argument('--diagnostic-progress',action='store_true',help='Maintenance logs only; daily AI must not poll intermediate jobs')
+    p.add_argument('--audit-existing',action='store_true',help='Only the mandatory read-only final audit of an existing completed run; never execute enrollment')
     recovery_mode=p.add_mutually_exclusive_group()
     recovery_mode.add_argument('--reconcile-discount',action='store_true')
     recovery_mode.add_argument('--reconcile-scope',action='store_true')
@@ -155,19 +156,29 @@ def main():
     if fingerprint(request)!=args.request_id:raise ValueError('request_identity_changed')
     secret=json.loads(sys.stdin.readline());edge=EdgeClient(secret.pop('token'))
     a=Authority()
+    def finish(value):
+        from campaign_final_audit import finalize
+        return finalize(request,value,root=ROOT/'runs'/args.request_id,authority=a,
+                        edge=edge,artifact_roots=secret['artifact_roots'])
     try:
+        if args.audit_existing:
+            if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
+                raise ValueError('audit_cannot_resume_business_actions')
+            saved=load(ROOT/'runs'/args.request_id/'result.json')
+            if saved.get('status')!='complete':raise ValueError('audit_requires_settled_execution')
+            print(json.dumps(finish(saved),ensure_ascii=False));return
         if request.get('schema')=='continuous_campaign_autumn_cost_v1':
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
                 raise ValueError('cost_request_cannot_reconcile_other_claims')
             from campaign_autumn_cost_revision import execute
             result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
-            print(json.dumps(result,ensure_ascii=False));return
+            print(json.dumps(finish(result),ensure_ascii=False));return
         if request.get('schema')=='continuous_campaign_residual_v1':
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
                 raise ValueError('residual_request_cannot_reconcile_old_claims')
             from campaign_residual_completion import execute
             result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
-            print(json.dumps(result,ensure_ascii=False));return
+            print(json.dumps(finish(result),ensure_ascii=False));return
         if args.reconcile_discount_window:
             from campaign_continuous_recovery import recover_finished_discount_window
             recovery=recover_finished_discount_window(ROOT/'runs'/args.request_id,a,edge,artifact_roots=secret['artifact_roots'])
@@ -188,7 +199,7 @@ def main():
         result=execute_owned(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,execute=execute_request,
             artifact_roots=secret['artifact_roots'],
             progress=(lambda job: print(json.dumps({'progress':job['state'],'job_id':job['job_id']},ensure_ascii=False),flush=True)) if args.diagnostic_progress else None)
-        print(json.dumps(result,ensure_ascii=False))
+        print(json.dumps(finish(result),ensure_ascii=False))
     finally:a.close()
 
 

@@ -1,5 +1,12 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 每场必须执行商品/SKU收尾核对
+
+- 已增加强制 `campaign_final_audit.finalize`，正常报名、失败续报、精确改价续报全部接入；缺当前全量证据时禁止称全部完成。仍是两表流程的收尾，不是预检，不改变±2元/首次原价20%/轮换审批。
+- 固定 Web Agent `final_inventory` 已在秋季家装节、超级立减真实只读导出和录屏验证。57件逐商品/SKU匹配；已报名、待生效、异常、草稿、未知范围分开，备用/下架未证实的缺项不算失败。官方长期窗口与本场 `price_window` 分开。
+- 8500后台服务已更新并健康（PID59572），专用Edge8502/PID38752未重启。capabilities ready=true；新版原双阶段证据+新收尾检查验收 f52e448c1ab67c58b1ca76441e2955f6297b712e045c426860f79f704d330bda。没有借测试新报名/改价/轮换，也没有实际飞书发送测试；旧录屏缺帧仍如实保留。
+- 日常任务应读 `result.json.final_audit`，不能凭历史成功保护/旧报错作当前结论。详细规则与现场任务ID：`docs/campaign-final-sku-audit-20260914.md`。
+
 ## 2026-09-14 用户启动后服务卡点解除
 
 - 8500健康、报名能力ready=true、running=0、最终结果接口正常events空，02一次只读验收完成，无新报名/通知发送测试。WA明文启动令牌打印已移除，15项关联测试通过，下次正常启动生效，未重启服务或Edge。下文服务启动受阻为历史记录；详见Web-Agent程序/docs/campaign-service-readonly-acceptance-20260914.md。
