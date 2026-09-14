@@ -218,6 +218,30 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(result['all_signed_up'])
         self.assertEqual([p['items'] for s,p in driver.calls if s=='signup'],[['1']])
 
+    def test_verified_missing_inputs_resume_only_failed_product(self):
+        driver=FakeWebAgent();original=driver.execute
+        def execute(step,action,payload):
+            value=original(step,action,payload)
+            if step=='generate' and '2' in payload['items']:
+                value['input_issues']=[dict(item='2',sku='22',error='existing_discount_sku_missing_or_duplicate')]
+            return value
+        driver.execute=execute
+        first=self.run_flow(driver)
+        self.assertEqual(set(first['success']),{'1'})
+        self.assertEqual(set(first['exceptions']),{'2'})
+        resumed=FakeWebAgent();resumed.signup_count=1
+        seen=[]
+        def recover(payload,items):
+            seen.append(items)
+            return {'2':dict(path='verified-inclusion',sha256='test-proof')}
+        resumed.recover_missing_inputs=recover
+        result=self.run_flow(resumed)
+        self.assertTrue(result['all_signed_up'])
+        self.assertEqual(set(seen[0]),{'2'})
+        self.assertEqual([p['items'] for s,p in resumed.calls if s=='signup'],[['2']])
+        self.assertFalse(any(s in ('scope','template') for s,p in resumed.calls))
+        self.assertIn('2',result['resolved_input_issues'])
+
     def test_unknown_persists_across_restart_no_resubmit(self):
         driver = FakeWebAgent(timeout_at='signup')
         first = self.run_flow(driver)

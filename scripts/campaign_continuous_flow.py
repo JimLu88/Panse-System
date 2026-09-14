@@ -327,9 +327,28 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             for item in imported:state['exceptions'].pop(item)
             state['status']='ready';store.save(run_id,state)
 
+    def recover_inputs():
+        if state.get('pending') or state.get('legacy_failures'):return
+        if store.db.execute('SELECT 1 FROM continuous_campaign_actions WHERE run_id=? AND status<>? LIMIT 1',
+                            (run_id,'done')).fetchone():return
+        wanted={i:ds for i,ds in state['exceptions'].items() if ds and all(d.get('reason') in
+            ('erp_mapping_missing_or_not_unique','existing_discount_sku_missing_or_duplicate') for d in ds)}
+        recover=getattr(transport,'recover_missing_inputs',None)
+        if not wanted or recover is None:return
+        restored=recover(base,wanted)
+        if not set(restored).issubset(wanted) or set(restored).intersection(state['success']):
+            raise ValueError('input_recovery_scope_changed')
+        if restored:
+            for item,receipt in restored.items():
+                state.setdefault('resolved_input_issues',{})[item]=dict(issues=state['exceptions'].pop(item),receipt=receipt)
+            state['pending']=sorted(restored)
+            state['round']+=1
+            state['status']='ready';store.save(run_id,state)
+
     try:
         recover_prior()
         recover_price_gaps()
+        recover_inputs()
         if state['status'] == 'complete':
             return dict(state, run_id=run_id, all_signed_up=not state['exceptions'])
         if state['pending'] is None:

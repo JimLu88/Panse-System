@@ -298,7 +298,9 @@ class Authority:
         from campaign_continuous_repairs import apply_verified_amendments
         from campaign_cost_revision import overlay
         result=overlay(self,result)
-        return apply_verified_amendments(self,result)
+        result=apply_verified_amendments(self,result)
+        from campaign_discount_include import overlay as include_overlay
+        return include_overlay(self,result)
 
     def blocked(self, campaign, phase, start, end):
         exact_campaign(campaign);result={}
