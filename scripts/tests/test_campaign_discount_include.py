@@ -9,6 +9,18 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import campaign_discount_include as module
 
 
+def test_partial_parent_allows_only_new_physical_rows():
+    offer={'items':[{'item':'1','status':'unknown'}],'rows':[{'item':'1','sku':'2'}],
+           'verified_partial_skus':[['1','2']],'partial_terminal_evidence':{'path':'verified-original'}}
+    module.validate_parent_for_new_rows(offer,'1',{'3'})
+    with pytest.raises(ValueError):module.validate_parent_for_new_rows(offer,'1',{'2'})
+    with pytest.raises(ValueError):module.validate_parent_for_new_rows(offer,'1',{'2','3'})
+    for key in ['verified_partial_skus','partial_terminal_evidence']:
+        changed=deepcopy(offer);changed.pop(key)
+        with pytest.raises(ValueError):module.validate_parent_for_new_rows(changed,'1',{'3'})
+    assert offer['items'][0]['status']=='unknown'
+
+
 def test_claim_is_single_use_and_unknown_locks_exact_item(tmp_path,monkeypatch):
     db=sqlite3.connect(tmp_path/'test.sqlite',isolation_level=None);db.row_factory=sqlite3.Row
     a=SimpleNamespace(db=db)

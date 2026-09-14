@@ -95,9 +95,21 @@ def derive(a,request):
             and (o['start'],o['end'])==(request['start'],request['end'])]
     if len(offers)!=1:raise ValueError('include_registered_parent_offer_not_unique')
     for item in items:
-        statuses=[r['status'] for r in offers[0]['items'] if r['item']==item]
-        if statuses!=['success']:raise ValueError('include_parent_item_not_confirmed')
+        validate_parent_for_new_rows(offers[0],item,{r['sku'] for r in changes if r['item']==item})
     return dict(request=request,rows=changes,campaign=request['campaign'],start=request['start'],end=request['end'],shop=request['shop'])
+
+
+def validate_parent_for_new_rows(offer,item,skus):
+    statuses=[r['status'] for r in offer['items'] if r['item']==item]
+    if statuses==['success']:return
+    original={r['sku'] for r in offer['rows'] if r['item']==item}
+    partial={s for i,s in offer.get('verified_partial_skus',[]) if i==item}
+    # The original partial batch stays unknown at product level. Only a NEW
+    # physical SKU, absent from every original attempted row, may be included.
+    # derive() separately proves current absence and complete offer coverage.
+    if (statuses!=['unknown'] or not partial or not offer.get('partial_terminal_evidence')
+            or not skus or skus & original):
+        raise ValueError('include_parent_item_not_confirmed')
 
 
 def prepare(a,request):
@@ -177,6 +189,12 @@ def overlay(a,offers):
             pair=row['item'],row['sku']
             if pair in index:index[pair]['deduct']=row['deduct']
             else:offer['rows'].append(dict(item=row['item'],sku=row['sku'],deduct=row['deduct'],erp_code=row['erp_code']))
+        # Do not promote the parent item from unknown. The separately saved
+        # inclusion proves only these exact new physical rows for reuse.
+        if offer.get('partial_terminal_evidence'):
+            partial=set(map(tuple,offer.get('verified_partial_skus',[])))
+            partial.update((r['item'],r['sku']) for r in body['rows'])
+            offer['verified_partial_skus']=[list(p) for p in sorted(partial)]
     return result
 
 
