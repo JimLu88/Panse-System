@@ -1,5 +1,13 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 程序全段执行已交付，本机服务启动待解除
+
+- ERP05c779f与WA6d21951已push main并安装；ERP API/Web正式发布同一05c779f，health/ready、DB0154head和四容器验收通过。报名457项+119子测试、WA关联14项、后端10项通过。旧WA广覆盖4项夹具失败未冒充修好。
+- AI开头确认并continuous/start一次，程序处理中间，终态outbox/飞书提醒群；不再逐job AI轮询或高频唤醒。72小时任务3已更新，erp-10仍暂停；原价格、±2、固定20%、轮换审批、防重传不变。
+- 历史真实双阶段/录屏哈希重新核验，acceptance c8c1eda60a74ee56b0a92ea467747966b8629caa2e48a88558a1c4501a789ed5、离线ready=true；不代表新版新一轮无人值守测试。秋季本轮43成功/10动销失败/3价格例外/1历史异常，共57件已收口。
+- 8500服务未运行，本次Start-Process被执行策略拒绝，未绕过；专用Edge8502/PID38752保留。用户需手动运行Web-Agent程序/run.ps1，然后做服务健康和终态接口验收；不得声称后台通知已经实测送达，不再启动新报名代验收。
+- 回执：ERP程序/docs/receipts/campaign-program-owned-release-20260914.md。
+
 ## 2026-09-14 秋季缺失9条优惠补齐及本轮终态
 
 - 原request 1bd5fc2953379e383bc1203c6d36c26541922eccee9561c06c68cf7d0efa97f8现为round12 complete、pending空、all_signed_up=false。43件有官方发布成功依据；10件本场动销失败；3件未完成价格例外；另1件升降桌历史异常。controller success44含升降桌历史保护，不能称44当前成功。
