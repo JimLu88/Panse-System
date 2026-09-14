@@ -1,5 +1,9 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 用户启动后服务卡点解除
+
+- 8500健康、报名能力ready=true、running=0、最终结果接口正常events空，02一次只读验收完成，无新报名/通知发送测试。WA明文启动令牌打印已移除，15项关联测试通过，下次正常启动生效，未重启服务或Edge。下文服务启动受阻为历史记录；详见Web-Agent程序/docs/campaign-service-readonly-acceptance-20260914.md。
+
 ## 2026-09-14 程序全段执行已交付，本机服务启动待解除
 
 - ERP05c779f与WA6d21951已push main并安装；ERP API/Web正式发布同一05c779f，health/ready、DB0154head和四容器验收通过。报名457项+119子测试、WA关联14项、后端10项通过。旧WA广覆盖4项夹具失败未冒充修好。

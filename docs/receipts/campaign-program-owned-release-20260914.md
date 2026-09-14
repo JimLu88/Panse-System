@@ -1,5 +1,7 @@
 # 程序全段执行交付回执（2026-09-14）
 
+后续更新：用户手动运行run.ps1后，02一次只读验收8500健康、continuous/activity空闲、outcomes正常events空、capabilities ready=true/missing空。下文“本机后台启动被拒绝”为历史状态，现已解除；没有新报名或真实通知发送测试。明文启动令牌打印已移除并安装，15项关联回归通过，下一次正常启动生效，不重启当前服务或Edge。详见Web-Agent程序/docs/campaign-service-readonly-acceptance-20260914.md。
+
 ## 已完成
 
 - ERP代码05c779f88e554d3da9a63376d56cfb11af3da39b、Web-Agent代码6d21951已推GitHub main；指定运行文件已原位安装，保留无关脏改动。erp_notify的历史注释/文档字符串差异保留，新函数AST一致。
