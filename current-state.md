@@ -1,5 +1,11 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 秋季家装节原scope接续
+
+- ad17849已push main并安装本地CLI，41项关联测试通过。新增--reconcile-scope只GET原固定product_export job，验证完整文件/各页/SKU/原snapshot及ERP映射，独立保存reconciled观察，再经Store.recover原action收口；原unknown observation/请求/claim不改，不清锁，不重新导出，之后继续原request。
+- 当前原request1bd5fc2953379e383bc1203c6d36c26541922eccee9561c06c68cf7d0efa97f8，仅秋季09-16 20至09-27 23:59:59。原全在售job d73b3d…76be4恢复finished：3页20+20+19=59，原第一页记录330825645只回收，后两页329425877/329925661；02读盘验3文件SHA、59唯一商品和94帧12事件录像SHA一致。03接原唯一CLI验收，不把导出成功称报名成功。
+- 本改动仅本机CLI，无NAS镜像部署；此前日常优惠/成功保护/价格基线与轮换规则不变。
+
 ## 2026-09-14 本次新报名正式终态
 
 - 岩板5优惠新目标修正已verified；当前09-14至09-16新报名批853501156正式0成功1失败，仅动销0件，原claim3d1006ea6e7b40a1bc146b0fb7aba131已failed，无未知提交待重试。岛台17优惠成功保持，岩板不再改价/轮换/重报，不自动回滚。
