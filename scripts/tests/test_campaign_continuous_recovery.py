@@ -50,3 +50,40 @@ def test_discount_recovery_only_reads_original_finished_job(tmp_path,monkeypatch
         check.close()
         assert (folder/'reconciled-discount-observation.json').exists()
     edge.submit.assert_not_called();edge._action.assert_not_called()
+
+
+@pytest.mark.parametrize('bad',[None,'running_job','wrong_job','active_owner','wrong_payload','wrong_step','invalid_export'])
+def test_scope_recovery_reuses_original_receipt_without_browser_actions(tmp_path,monkeypatch,bad):
+    from campaign_continuous_transport import CampaignTransport
+    payload={'identity':{'shop_id':'测试店'},'rule_sha':'rules'}
+    action='d'*64;sha=fingerprint(payload);jid=fingerprint(['product_export','测试店',action])
+    store=Store(tmp_path/'controller.sqlite3');run=store.start('fixture','rules')
+    store.db.execute('INSERT INTO continuous_campaign_actions VALUES(?,?,?,?,?,NULL)',
+        (action,run,'signup' if bad=='wrong_step' else 'scope',sha,'interrupted_read'))
+    if bad=='active_owner':store.db.execute("UPDATE continuous_campaign_runs SET owner='active'")
+    store.close()
+    folder=tmp_path/'shared'/'actions'/action
+    persist(folder/'request.json',{'step':'scope','payload':{} if bad=='wrong_payload' else payload})
+    persist(folder/'product_export-job.json',{'step':'product_export','job_id':jid})
+    previous={'state':'unknown','error':'TimeoutError'}
+    persist(folder/'product_export-observation.json',previous)
+    persist(tmp_path/'request.json',{'original':True})
+    persist(tmp_path/'shared'/'snapshot.json',{'version':'original'})
+    edge=Mock();edge.status.return_value={'job_id':jid if bad!='wrong_job' else 'e'*64,
+        'operation':'product_export','state':'running' if bad=='running_job' else 'finished'}
+    normalize=Mock(side_effect=ValueError('bad file hash')) if bad=='invalid_export' else Mock(return_value={
+        'complete':True,'erp_sellable':['1'],'price_version':'fixed','platform_rows':[{'item':'1'}]})
+    monkeypatch.setattr(CampaignTransport,'finish_exported_scope',normalize)
+    if bad:
+        with pytest.raises(ValueError):recovery.recover_finished_scope(tmp_path,object(),edge,artifact_roots=[tmp_path])
+    else:
+        result=recovery.recover_finished_scope(tmp_path,object(),edge,artifact_roots=[tmp_path])
+        assert result['job_id']==jid
+        check=Store(tmp_path/'controller.sqlite3')
+        row=check.db.execute('SELECT status,result FROM continuous_campaign_actions').fetchone()
+        assert row[0]=='done' and json.loads(row[1])['reconciled_readonly'] is True
+        check.close()
+        assert normalize.call_args.args[0]=={'version':'original'}
+        assert normalize.call_args.args[2]==action
+    assert json.loads((folder/'product_export-observation.json').read_text())==previous
+    edge.submit.assert_not_called();edge._action.assert_not_called()

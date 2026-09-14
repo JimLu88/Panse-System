@@ -75,7 +75,6 @@ class CampaignTransport:
             persist(self.root/'product-scope.json',scope)
             return self.with_prior(dict(scope),payload,folder)
         from campaign_price_snapshot import build_snapshot,load_rows
-        from campaign_product_scope import from_edge_job,unique_mappings
         snapshot_path=self.root/'snapshot.json'
         if snapshot_path.exists():snapshot=load(snapshot_path)
         else:
@@ -95,6 +94,11 @@ class CampaignTransport:
             export_request_id=action_id
             self.edge._action('inspect_product_export_setup',{})
             job=self.job('product_export',{'identity':self.identity(payload),'snapshot_request_id':action_id},folder)
+        return self.finish_exported_scope(snapshot,job,export_request_id,payload,folder)
+
+    def finish_exported_scope(self,snapshot,job,export_request_id,payload,folder):
+        """Normalize a verified original export; no browser calls in this path."""
+        from campaign_product_scope import from_edge_job,unique_mappings
         scope=from_edge_job(job,expected_request_id=export_request_id,expected_shop=payload['identity']['shop_id'],roots=self.roots)
         persist(self.root/'product-scope.json',scope)
         mapping=unique_mappings(scope,snapshot['all_erp_rows'])
