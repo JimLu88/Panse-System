@@ -140,3 +140,44 @@ def execute(request,*,root,authority,edge,artifact_roots):
         original_partial_claim_preserved=True,rotation_performed=False,coworker_item_touched=False,autumn_retried=False)
     from campaign_final_audit import finalize
     return finalize(request,result,root=root,authority=authority,edge=edge,artifact_roots=artifact_roots)
+
+
+async def recover_include_window():
+    """Resume the original unconsumed include and then its whole controller."""
+    import sys
+    sys.path.insert(0,str(proof.WA.parents[2]))
+    from app.vault.store import get_or_create_api_token
+    from app.engine.campaign_continuous_worker import ContinuousWorker
+    from campaign_entry_authority import Authority
+    from campaign_edge_client import EdgeClient
+    from campaign_discount_include import verify,record
+    rid=fingerprint(REQUEST);root=proof.ROOT/'runs'/rid
+    a=Authority();worker=ContinuousWorker();edge=EdgeClient(get_or_create_api_token())
+    try:
+        marker=root/'include-window-program-recovery.json'
+        if marker.exists():raise ValueError('include_window_recovery_already_consumed')
+        old=worker.status(rid)
+        if old['state']!='unknown' or worker.db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():raise ValueError('original_puta_controller_not_idle')
+        folder=root/'inclusion/save';ref=load(folder/'discount_include-job.json');jid=ref['job_id']
+        if jid!='7045027ef0d5f12deb156d77de5521f22da40b3251647744df480333c8a0cfdf':raise ValueError('exact_original_include_job_required')
+        claim=load(root/'inclusion/claim.json')['claim_id'];verify(a,claim)
+        prior=edge.status(jid)
+        if prior['state']!='unknown' or prior.get('result',{}).get('reason')!='include_claim_identity_mismatch':raise ValueError('original_include_failure_changed')
+        persist(marker,dict(previous_controller=old,previous_job=prior,claim_id=claim,claim_released=False))
+        edge._action('program_resume_include_before_window_binding',{'job_id':jid})
+        job=edge.wait(jid)
+        path=root/'inclusion/window-recovery/discount_include-observation.json';persist(path,job)
+        if job['state']!='finished':return dict(state='unknown',job_id=jid,result=job.get('result'),automatic_retry=False)
+        persist(root/'inclusion/verified.json',record(a,claim,path))
+        worker.db.execute("UPDATE continuous_jobs SET state='running',result=NULL WHERE id=? AND state='unknown'",(rid,))
+        await worker.execute(rid,log_name='process-include-window-recovery.log')
+        return worker.status(rid)
+    finally:worker.db.close();a.close()
+
+
+if __name__=='__main__':
+    import argparse,asyncio
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--recover-include-window',required=True,action='store_true')
+    parser.parse_args()
+    print(json.dumps(asyncio.run(recover_include_window()),ensure_ascii=False))
