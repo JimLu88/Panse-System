@@ -292,7 +292,27 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             raise Blocked('report', 'failure_report_scope_or_batch_mismatch')
         return errors
 
+    def recover_prior():
+        if store.db.execute('SELECT 1 FROM continuous_campaign_actions WHERE run_id=? AND status<>? LIMIT 1',
+                            (run_id,'done')).fetchone():return
+        wanted=[i for i,ds in state['exceptions'].items() if ds and all(
+            d.get('reason')=='legacy_failure_needs_exact_report_import' for d in ds)]
+        recover=getattr(transport,'recover_prior_failures',None)
+        if not wanted or recover is None:return
+        imported=recover(base,wanted)
+        if not set(imported).issubset(wanted):raise ValueError('prior_report_outside_failed_scope')
+        for item,legacy in imported.items():
+            if (not legacy.get('batch') or not legacy.get('errors') or any(
+                    e.get('item')!=item or e.get('batch')!=legacy['batch'] or e.get('terminal')!='failed'
+                    or not e.get('official_evidence') for e in legacy['errors'])):
+                raise ValueError('prior_report_evidence_invalid')
+        if imported:
+            state.setdefault('legacy_failures',{}).update(imported)
+            for item in imported:state['exceptions'].pop(item)
+            state['status']='ready';store.save(run_id,state)
+
     try:
+        recover_prior()
         if state['status'] == 'complete':
             return dict(state, run_id=run_id, all_signed_up=not state['exceptions'])
         if state['pending'] is None:
@@ -337,10 +357,15 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
                         hold([item], 'legacy_failure_needs_exact_report_import')
                     state['pending'].remove(item)
             store.save(run_id, state)
-        for item, legacy in list(state.get('legacy_failures', {}).items()):
-            fixed = repair_failed(legacy['errors'], legacy['batch'], 'signup')
+        recover_prior()
+        batches={}
+        for item,legacy in state.get('legacy_failures',{}).items():
+            batches.setdefault(legacy['batch'],[]).append(item)
+        for batch,items in batches.items():
+            errors=[e for item in items for e in state['legacy_failures'][item]['errors']]
+            fixed = repair_failed(errors, batch, 'signup')
             state['pending'] = sorted(set(state['pending']) | set(fixed))
-            del state['legacy_failures'][item]
+            for item in items:del state['legacy_failures'][item]
             store.save(run_id, state)
         while state['pending']:
             pending, round_no = sorted(state['pending']), state['round']

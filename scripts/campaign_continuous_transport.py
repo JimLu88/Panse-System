@@ -307,3 +307,7 @@ class CampaignTransport:
     def step_repair(self,action_id,payload,folder):
         from campaign_continuous_repairs import execute_repairs
         return execute_repairs(self,action_id,payload,folder)
+
+    def recover_prior_failures(self,payload,items):
+        from campaign_prior_failure_import import import_prior
+        return import_prior(self,payload,items)

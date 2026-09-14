@@ -344,6 +344,26 @@ class FlowTests(unittest.TestCase):
             other.close()
         self.store.unlock(run_id, token)
 
+    def test_completed_missing_history_reopens_only_proven_failures_as_one_batch(self):
+        driver=FakeWebAgent();execute=driver.execute
+        def historical(step,action,payload):
+            out=execute(step,action,payload)
+            if step=='scope':out['prior_outcomes']={'1':'failed','2':'failed'}
+            return out
+        driver.execute=historical
+        first=self.run_flow(driver)
+        self.assertEqual(first['status'],'complete')
+        self.assertEqual(set(first['exceptions']),{'1','2'})
+        resumed=FakeWebAgent();resumed.signup_count=1
+        resumed.recover_prior_failures=lambda p,items:{i:{'batch':'OLD','errors':[
+            error(item=i,sku=i+'0',batch='OLD')]} for i in items}
+        second=self.run_flow(resumed)
+        self.assertTrue(second['all_signed_up'])
+        self.assertEqual([p['items'] for s,p in resumed.calls if s=='repair'],[['1','2']])
+        self.assertEqual([p['items'] for s,p in resumed.calls if s=='signup'],[['1','2']])
+        count=len(resumed.calls);self.run_flow(resumed)
+        self.assertEqual(count,len(resumed.calls))
+
     def test_same_shop_different_campaign_still_single_writer(self):
         first = self.store.start('first', 'rule')
         second = self.store.start('second', 'rule')
