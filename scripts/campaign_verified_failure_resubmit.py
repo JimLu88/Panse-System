@@ -25,7 +25,8 @@ EXPORT=WA/'c31c668689a058c29e14767808b364c67027d86c9510b975c7a0f0e78cdb745a/已�
 EXPORT_SHA='51d28d02f7f79567bebc30db17a0db38326bab82cde12145cc77bd30bd6537b9'
 SCOPE=Path('D:/AI/畔色ERP系统/outputs/campaign-remainder-20260914/product-scope.json')
 REQUEST={'schema':'continuous_verified_failure_resubmit_v1','rule_sha':RULE_SHA,
-         'parent_request_id':PARENT,'items':[ITEM],'price_change':False,'discount_change':False}
+         'parent_request_id':PARENT,'items':[ITEM],'price_change':False,'discount_change':False,
+         'prewrite_predecessor':'60263186196c81016114a1acf5d61aa6933ccbe084af1773ba8c9887e44dcc87'}
 
 
 def validate_request(request):
@@ -109,6 +110,7 @@ def prepare(request,authority,root):
     from campaign_generate_current_files import _generate
     from campaign_segmented_time import build_plan,bind_request
     validate_request(request);root=Path(root)
+    verify_prewrite_predecessor(authority)
     previous=load(ROOT/'requests'/(PARENT+'.json'))
     if fingerprint(previous)!=PARENT or load(ROOT/'runs'/PARENT/'result.json')['status']!='complete':
         raise ValueError('resubmit_parent_not_settled')
@@ -149,6 +151,20 @@ def prepare(request,authority,root):
         official_constraint_evidence={'path':str(EXPORT),'sha256':EXPORT_SHA},price_change=False,discount_change=False)
     persist(root/'prepared.json',value)
     return value
+
+
+def verify_prewrite_predecessor(authority):
+    """The old local source-path failure occurred before creating any job/claim."""
+    old=ROOT/'runs'/REQUEST['prewrite_predecessor']
+    prepared=load(old/'prepared.json')
+    log=(old/'process.log').read_text(encoding='utf-8')
+    if ('body=verify_prepared(p,authority)' not in log
+            or not log.rstrip().endswith('ValueError: mapping_or_price_authority_changed_regenerate_local_files')
+            or (old/'execution').exists() or (old/'signup-terminal.json').exists()
+            or authority.db.execute('SELECT 1 FROM attempts WHERE bundle_id=? LIMIT 1',(prepared['bundle_id'],)).fetchone()):
+        raise ValueError('resubmit_predecessor_not_proven_before_actions')
+    return {'request_id':REQUEST['prewrite_predecessor'],'log_sha256':file_sha(old/'process.log'),
+            'old_claim_released':False,'old_request_restarted':False}
 
 
 def audit_manifest(root,segment):
