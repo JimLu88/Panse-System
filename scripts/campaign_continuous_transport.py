@@ -29,6 +29,8 @@ class CampaignTransport:
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
         self.request=request;self.roots=[Path(p) for p in artifact_roots]
         self.progress=progress
+        from campaign_execution_release import ReleaseGuard
+        self.release_guard=ReleaseGuard()
 
     def capabilities(self):
         # Implementation availability, not production/business acceptance.
@@ -40,6 +42,8 @@ class CampaignTransport:
             'shop_name':p['shop_id'],'rate_label':format((Decimal(str(p['official_rate']))*100).normalize(),'f')+'%'}
 
     def execute(self,step,action_id,payload):
+        self.release_guard.verify()
+        persist(self.root/'releases'/(self.release_guard.release_id+'.json'),self.release_guard.evidence())
         if payload.get('rule_sha')!=RULE_SHA:raise ValueError('continuous_rule_not_approved')
         folder=self.root/'actions'/action_id
         persist(folder/'request.json',{'step':step,'payload':payload})
@@ -54,6 +58,7 @@ class CampaignTransport:
         return dict(result,evidence=evidence)
 
     def job(self,step,payload,folder):
+        self.release_guard.verify()
         ref=folder/(step+'-job.json')
         if ref.exists():
             job=self.edge.status(load(ref)['job_id'])
@@ -222,7 +227,8 @@ class CampaignTransport:
             sku_exclusion_receipts=list(exclusion_refs.values()),
             time_request=Path(self.request['time_request']) if timing else None,
             time_segment=segment['segment_id'] if segment else None)
-        result=_generate(args,self.authority)
+        from campaign_artifact_recovery import ensure_generated
+        result=ensure_generated(args,self.authority,generator=_generate)
         if result['issues']:
             return {'input_issues':result['issues'],'items':payload['items'],'source_evidence':str(args.output_dir/'receipt.json')}
         body=self.authority.get_bundle(result['entry_bundle_id'])
@@ -230,6 +236,16 @@ class CampaignTransport:
                     price_version=result['price_version'],file_sha=fingerprint(result['files']),full_active_skus=True,
                     discount_items=sorted({r['item'] for r in body['discount_rows']}),
                     time_binding=timing,source_evidence=str(args.output_dir/'receipt.json'))
+
+    def reconcile_generation(self, action_id, payload):
+        """Only adopt a completed local file stage. Never call a browser job."""
+        folder=self.root/'actions'/action_id
+        if load(folder/'request.json')!={'step':'generate','payload':payload}:
+            raise ValueError('generation_recovery_request_changed')
+        if not (folder/'files/receipt.json').is_file():
+            raise ValueError('artifact_incomplete_preserve_effect_claims')
+        result=self.execute('generate',action_id,payload)
+        return dict(result,reconciled_readonly=True)
 
     def submit_phase(self,phase,payload,folder):
         from campaign_submission_gate import validated_body

@@ -221,32 +221,11 @@ async def recover_scope_projection():
 
 
 async def recover_local_generation():
-    """Reconcile the exact failed local generation, not any platform write."""
+    """Compatibility entry; use the generic service-owned artifact recovery."""
     import sys
     sys.path.insert(0,str(proof.WA.parents[2]))
-    from app.engine.campaign_continuous_worker import ContinuousWorker
-    from campaign_entry_authority import Authority
-    from campaign_continuous_flow import Store
-    rid=fingerprint(REQUEST);root=proof.ROOT/'runs'/rid
-    worker=ContinuousWorker();a=Authority();store=Store(root/'controller.sqlite3')
-    try:
-        marker=root/'local-generation-recovery.json';old=worker.status(rid)
-        if marker.exists() or old['state']!='blocked' or worker.db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():raise ValueError('generation_recovery_not_idle_or_already_used')
-        if old['result']['segments'][0].get('blocker')!={'step':'generate','reason':'ValueError'}:raise ValueError('generation_failure_changed')
-        aid='34f22ff69e5cb8479e7ec9bb4b22ac7a2f93419ba6a64897767ec7b5ce3ed2b0'
-        row=store.db.execute('SELECT step,status FROM continuous_campaign_actions WHERE id=?',(aid,)).fetchone()
-        if row!=('generate','interrupted_read') or store.db.execute("SELECT 1 FROM continuous_campaign_actions WHERE step IN ('signup','discount','repair')").fetchone():raise ValueError('generation_recovery_after_write_forbidden')
-        p=load(root/'prepared.json');folder=root/'execution/actions'/aid
-        t=PutaTransport(None,a,root=root/'execution',request={'target':'medium','time_request':p['time_binding']['request_path'],'fixed_signup_template':p['fixed_signup_template']},artifact_roots=[proof.ROOT.parents[1]])
-        receipt=t.execute('generate',aid,load(folder/'request.json')['payload'])
-        if receipt.get('discount_items') or receipt.get('items')!=[ITEM] or not receipt.get('bundle_id'):raise ValueError('generation_recovery_not_exact_saved_discount_reuse')
-        receipt=dict(receipt,reconciled_readonly=True)
-        persist(marker,dict(previous_controller=old,receipt=receipt,platform_write=False))
-        store.recover(aid,receipt)
-        worker.db.execute("UPDATE continuous_jobs SET state='running',result=NULL WHERE id=? AND state='blocked'",(rid,))
-        await worker.execute(rid,log_name='process-local-generation-recovery.log')
-        return worker.status(rid)
-    finally:store.close();worker.db.close();a.close()
+    from app.engine.campaign_continuous_client import resume_artifact
+    return resume_artifact(fingerprint(REQUEST))
 
 
 if __name__=='__main__':

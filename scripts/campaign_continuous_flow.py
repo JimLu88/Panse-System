@@ -9,6 +9,8 @@ from decimal import Decimal
 import json
 import sqlite3
 import uuid
+import re
+import time
 
 from campaign_continuous_policy import (
     activity_identity, classify_items, fingerprint, load_rules, signup_scope,
@@ -44,6 +46,9 @@ class Store:
             shop TEXT PRIMARY KEY, run_id TEXT NOT NULL, owner TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS continuous_campaign_recoveries(
             action_id TEXT PRIMARY KEY, receipt_sha TEXT NOT NULL, receipt TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS continuous_campaign_diagnostics(
+            event_id INTEGER PRIMARY KEY, action_id TEXT NOT NULL, step TEXT NOT NULL,
+            kind TEXT NOT NULL, code TEXT NOT NULL, elapsed_ms INTEGER NOT NULL);
         ''')
 
     def close(self):
@@ -147,18 +152,28 @@ class Store:
         cached = self.db.execute('SELECT status,result FROM continuous_campaign_actions WHERE id=?',
                                  (action_id,)).fetchone()
         if cached:
-            if cached[0] != 'done':
+            if cached[0] == 'done':
+                return json.loads(cached[1])
+            if not (step == 'generate' and cached[0] == 'interrupted_read'
+                    and callable(getattr(transport, 'reconcile_generation', None))):
                 raise Blocked(step, f'previous_{cached[0]}_do_not_replay:{action_id}')
-            return json.loads(cached[1])
         # Commit unknown BEFORE calling a transport that might write to Taobao.
         status = 'unknown' if step in WRITE_STEPS else 'interrupted_read'
-        self.db.execute('INSERT INTO continuous_campaign_actions VALUES(?,?,?,?,?,NULL)',
-                        (action_id, run_id, step, sha, status))
+        if not cached:
+            self.db.execute('INSERT INTO continuous_campaign_actions VALUES(?,?,?,?,?,NULL)',
+                            (action_id, run_id, step, sha, status))
+        started=time.monotonic()
         try:
-            result = transport.execute(step, action_id, deepcopy(payload))
+            result = (transport.reconcile_generation(action_id, deepcopy(payload)) if cached
+                      else transport.execute(step, action_id, deepcopy(payload)))
         except Exception as exc:
             # No blind retry, including an exception after a successful save.
-            raise Blocked(step, type(exc).__name__) from exc
+            # Keep the stable program code, not URLs, tokens, or customer text.
+            raw=str(exc).split(':',1)[0]
+            code=raw if re.fullmatch('[a-z][a-z0-9_]{2,100}',raw) else type(exc).__name__
+            self.db.execute('INSERT INTO continuous_campaign_diagnostics VALUES(NULL,?,?,?,?,?)',
+                (action_id,step,type(exc).__name__,code,int((time.monotonic()-started)*1000)))
+            raise Blocked(step, code) from exc
         if not isinstance(result, dict) or result.get('human_gate'):
             raise Blocked(step, str((result or {}).get('human_gate') if isinstance(result, dict)
                                     else 'malformed_transport_result'))
@@ -168,8 +183,15 @@ class Store:
             raise Blocked(step, 'receipt_action_mismatch')
         if step in WRITE_STEPS and result.get('request_sha') != sha:
             raise Blocked(step, 'receipt_payload_mismatch')
+        if cached:
+            if result.get('reconciled_readonly') is not True or result.get('request_sha') != sha:
+                raise Blocked(step, 'local_generation_reconciliation_missing')
+            self.db.execute('INSERT OR IGNORE INTO continuous_campaign_recoveries VALUES(?,?,?)',
+                (action_id,fingerprint(result),json.dumps(result,ensure_ascii=False)))
         self.db.execute('UPDATE continuous_campaign_actions SET status=?,result=? WHERE id=?',
                         ('done', json.dumps(result, ensure_ascii=False), action_id))
+        self.db.execute('INSERT INTO continuous_campaign_diagnostics VALUES(NULL,?,?,?,?,?)',
+            (action_id,step,'adopted' if cached else 'terminal','ok',int((time.monotonic()-started)*1000)))
         return result
 
 
