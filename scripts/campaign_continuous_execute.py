@@ -132,6 +132,7 @@ def main():
     mode=p.add_mutually_exclusive_group(required=True)
     mode.add_argument('--request-id')
     mode.add_argument('--register-discovery',action='store_true')
+    p.add_argument('--diagnostic-progress',action='store_true',help='Maintenance logs only; daily AI must not poll intermediate jobs')
     recovery_mode=p.add_mutually_exclusive_group()
     recovery_mode.add_argument('--reconcile-discount',action='store_true')
     recovery_mode.add_argument('--reconcile-scope',action='store_true')
@@ -165,9 +166,10 @@ def main():
             from campaign_continuous_recovery import recover_finished_discount
             recovery=recover_finished_discount(ROOT/'runs'/args.request_id,a,edge)
             print(json.dumps({'discount_reconciliation':recovery},ensure_ascii=False),flush=True)
-        result=execute_request(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,
+        from campaign_owned_execution import execute_owned
+        result=execute_owned(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,execute=execute_request,
             artifact_roots=secret['artifact_roots'],
-            progress=lambda job: print(json.dumps({'progress':job['state'],'job_id':job['job_id']},ensure_ascii=False),flush=True))
+            progress=(lambda job: print(json.dumps({'progress':job['state'],'job_id':job['job_id']},ensure_ascii=False),flush=True)) if args.diagnostic_progress else None)
         print(json.dumps(result,ensure_ascii=False))
     finally:a.close()
 

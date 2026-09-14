@@ -1,5 +1,12 @@
 # Panse-System agent instructions
 
+## Program-owned campaign execution (2026-09-14)
+
+Read `docs/campaign-program-owned-execution-20260914.md`. AI confirms identity and
+starts once, then consumes terminal results only. No per-job AI polling,
+stepwise dispatch or repeated maintenance wakeups. The fixed controller owns
+the middle; frozen prices, human rotation gate and no-replay rules are unchanged.
+
 ## User operational acceptance amendment (2026-09-13)
 
 Read `docs/campaign-automation-amendment-20260913.md` for the five newly approved
