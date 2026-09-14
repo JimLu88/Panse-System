@@ -33,8 +33,8 @@ def derive(a,request):
     window=dict(start=request['start'],end=request['end'])
     if (coverage.get('filtered_offer_list_coverage_verified') is not True or coverage.get('price_window')!=window
             or coverage.get('platform_write') is not False):raise ValueError('include_offer_coverage_not_proven')
-    seen=set();items=set(coverage['items'])
-    if not 0<len(items)<=2:raise ValueError('include_item_scope_invalid')
+    seen=set();covered_items=set(coverage['items'])
+    if not 0<len(covered_items)<=2:raise ValueError('include_item_scope_invalid')
     for result in coverage['results']:
         source=pinned(dict(path=result['source_path'],sha256=result['source_sha256']))
         import importlib.util
@@ -52,7 +52,7 @@ def derive(a,request):
         if result['mode']=='SKU级' and (len(overlaps)!=1 or overlaps[0]['offer_id']!=request['offer_id']
                 or (overlaps[0]['start'],overlaps[0]['end'])!=(request['start'],request['end'])):
             raise ValueError('include_other_offer_overlap')
-    if seen!={(i,m) for i in items for m in ('商品级','SKU级')}:raise ValueError('include_both_offer_modes_required')
+    if seen!={(i,m) for i in covered_items for m in ('商品级','SKU级')}:raise ValueError('include_both_offer_modes_required')
     result=read.get('result') or {}
     from campaign_continuous_policy import fingerprint
     if read.get('job_id')!=fingerprint(['discount_readback',request['shop'],result.get('read_request_id')]):
@@ -67,7 +67,8 @@ def derive(a,request):
     if rate not in (Decimal('.10'),Decimal('.12'),Decimal('.15')):raise ValueError('include_rate_outside_price_system')
     target_key='medium_target' if rate==Decimal('.10') else 'big_target'
     rows=mapped_erp_rows(snapshot);changes=[];pairs=set()
-    if {r['item'] for r in result['rows']}!=items:raise ValueError('include_absence_item_scope_changed')
+    items={r['item'] for r in result['rows']}
+    if not items or not items.issubset(covered_items):raise ValueError('include_absence_item_scope_changed')
     protected=a.blocked(request['campaign'],'signup',request['start'],request['end'])
     for r in result['rows']:
         if (r['item'] in protected or r.get('requested_scope_verified') is not True
