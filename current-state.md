@@ -1,5 +1,14 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-14 秋季家装节继续报名（未全部完成）
+
+- 当前业务只有49557/49560/3538210379，09-16 20:00至09-27 23:59:59。原request 1bd5fc2953379e383bc1203c6d36c26541922eccee9561c06c68cf7d0efa97f8由03唯一执行，02维护；不新建request、不重传已成功或未知。
+- 新批855884614为9件0成功9失败；修正2件后新批855886229（11:34:01）1成功1失败：793084818113成功，919215369800本场无动销。因此新9件最终1成功+8本场无动销，已接回原控制器，不代表全活动完成。
+- 5f7fffd只读恢复已finished原signup；cecf95c导入同活动同窗口原失败报告831931699（SHA19537ad5d0bf46dcfc13bf326717be37162c999b5e0dd5f8b2071b971dbd54e8），核对claim/文件/283SKU价格，31件一次分类，28件定制修正整批继续，另外3件隔离。
+- 原28 bundle f9fb1e429956d78af4fc847db9014e9606c5450b538c3fafc0d04fab283d23e4，discount_readback beab986f5a45db3e81d13c63ca4c7d9789d285cd962f1c344fbaf6b39a92685d在后台逐件推进，外层300秒已超时。f7727e6补--reconcile-discount-window，只接受原job finished和精确金额/时间全部匹配，再接原signup；当前尚不能声称28件新报名成功。
+- d0f17de在前一批收口后固定只读斗柜793052650673与岛台717418169535的9条普通优惠缺口，再按±2元处理。805268708396官方报告末尾确实截断于“颜色定制（咨询客服） 在管”，保留未知，不假装修复。
+- 最新关联85测试+14子测试通过；读回缺口修复93测试+14子测试通过。仅本机CLI安装与GitHub main推送，不涉及NAS生产部署、库存、开关、轮换授权或基线更改。
+
 ## 2026-09-14 秋季家装节原scope接续
 
 - ad17849已push main并安装本地CLI，41项关联测试通过。新增--reconcile-scope只GET原固定product_export job，验证完整文件/各页/SKU/原snapshot及ERP映射，独立保存reconciled观察，再经Store.recover原action收口；原unknown observation/请求/claim不改，不清锁，不重新导出，之后继续原request。
