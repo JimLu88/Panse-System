@@ -22,6 +22,9 @@ ROOT=Path('D:/AI/畔色ERP系统/outputs/campaign-continuous')
 
 def validate_request(request):
     load_rules()
+    if request.get('schema')=='continuous_campaign_residual_v1':
+        from campaign_residual_completion import validate_request as validate_residual
+        return validate_residual(request)
     if request.get('rule_sha')!=RULE_SHA or request.get('schema')!='continuous_campaign_request_v1':
         raise ValueError('approved_continuous_request_required')
     existing=request.get('existing_product_export')
@@ -150,6 +153,12 @@ def main():
     secret=json.loads(sys.stdin.readline());edge=EdgeClient(secret.pop('token'))
     a=Authority()
     try:
+        if request.get('schema')=='continuous_campaign_residual_v1':
+            if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
+                raise ValueError('residual_request_cannot_reconcile_old_claims')
+            from campaign_residual_completion import execute
+            result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
+            print(json.dumps(result,ensure_ascii=False));return
         if args.reconcile_discount_window:
             from campaign_continuous_recovery import recover_finished_discount_window
             recovery=recover_finished_discount_window(ROOT/'runs'/args.request_id,a,edge,artifact_roots=secret['artifact_roots'])
