@@ -110,6 +110,9 @@ def reconcile(expected, rows, *, identity, window, observed_at, coverage_complet
 
 
 def manifest(root, segment):
+    if segment.get('completion_kind')=='continuous_verified_failure_resubmit_v1':
+        from campaign_verified_failure_resubmit import audit_manifest
+        return audit_manifest(root,segment)
     run_id = segment.get('run_id')
     if not run_id: raise ValueError('final_audit_segment_scope_missing')
     matches=[]

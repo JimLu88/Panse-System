@@ -22,6 +22,9 @@ ROOT=Path('D:/AI/畔色ERP系统/outputs/campaign-continuous')
 
 def validate_request(request):
     load_rules()
+    if request.get('schema')=='continuous_verified_failure_resubmit_v1':
+        from campaign_verified_failure_resubmit import validate_request as validate_resubmit
+        return validate_resubmit(request)
     if request.get('schema')=='continuous_campaign_autumn_cost_v1':
         from campaign_autumn_cost_revision import validate_request as validate_autumn_cost
         return validate_autumn_cost(request)
@@ -161,6 +164,12 @@ def main():
         return finalize(request,value,root=ROOT/'runs'/args.request_id,authority=a,
                         edge=edge,artifact_roots=secret['artifact_roots'])
     try:
+        if request.get('schema')=='continuous_verified_failure_resubmit_v1':
+            if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window,args.audit_existing)):
+                raise ValueError('unchanged_resubmit_cannot_reconcile_other_claims')
+            from campaign_verified_failure_resubmit import execute
+            result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
+            print(json.dumps(result,ensure_ascii=False));return
         if args.audit_existing:
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
                 raise ValueError('audit_cannot_resume_business_actions')
