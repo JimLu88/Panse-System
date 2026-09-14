@@ -58,3 +58,26 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
         assert result['batch']=='99'
         assert norm.call_args.kwargs['erp_rows']==['current']
         assert norm.call_args.kwargs['actual_discounts']==[]
+
+
+@pytest.mark.parametrize('bad',[None,'duplicate','missing','mismatch'])
+def test_gap_readback_only_missing_pairs_and_no_edits(tmp_path,monkeypatch,bad):
+    errors=[{'item':'1','sku':'10','parse_issue':'exact_existing_discount_readback_missing'},
+            {'item':'2','sku':'20','kind':'custom_price'}]
+    offer={'offer_id':'123','start':'start','end':'end','items':[{'item':'1','status':'success'}],
+           'rows':[{'item':'1','sku':'10','deduct':'10'},{'item':'1','sku':'11','deduct':'20'}]}
+    offers=[] if bad=='missing' else [offer,offer] if bad=='duplicate' else [offer]
+    a=SimpleNamespace(discount_offers=lambda:offers)
+    job=Mock(return_value={'state':'finished'})
+    t=SimpleNamespace(authority=a,job=job,root=tmp_path,roots=[tmp_path],identity=lambda p:{'official':True})
+    verify=Mock(return_value={'all_correct':bad!='mismatch','evidence':{'sha256':'proof'}})
+    import campaign_discount_readback
+    monkeypatch.setattr(campaign_discount_readback,'verify',verify)
+    body={'campaign':'1/2/3','start':'start','end':'end'}
+    if bad:
+        with pytest.raises(ValueError):importer.read_discount_gaps(t,{'identity':{'shop_id':'shop'}},errors,body,tmp_path/'saved.json')
+    else:
+        result=importer.read_discount_gaps(t,{'identity':{'shop_id':'shop'}},errors,body,tmp_path/'saved.json')
+        assert result['rows']==[{'item':'1','sku':'10','deduct':'10','offer_id':'123'}]
+        assert job.call_args.args[0]=='discount_readback'
+        assert job.call_args.args[1]['offers']==[{'offer_id':'123','item':'1','sku_ids':['10']}]

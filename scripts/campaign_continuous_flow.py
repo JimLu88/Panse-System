@@ -311,8 +311,25 @@ def run(store, transport, page, *, expected_shop, observed_links, time_binding=N
             for item in imported:state['exceptions'].pop(item)
             state['status']='ready';store.save(run_id,state)
 
+    def recover_price_gaps():
+        # Only after earlier uploads have terminal receipts; never delay peers.
+        if state.get('pending') or state.get('legacy_failures'):return
+        if store.db.execute('SELECT 1 FROM continuous_campaign_actions WHERE run_id=? AND status<>? LIMIT 1',
+                            (run_id,'done')).fetchone():return
+        wanted=[i for i,ds in state['exceptions'].items() if any(
+            d.get('reason')=='exact_existing_discount_readback_missing' for d in ds)]
+        recover=getattr(transport,'recover_prior_price_gaps',None)
+        if not wanted or recover is None:return
+        imported=recover(base,wanted)
+        if not set(imported).issubset(wanted):raise ValueError('price_report_outside_failed_scope')
+        if imported:
+            state.setdefault('legacy_failures',{}).update(imported)
+            for item in imported:state['exceptions'].pop(item)
+            state['status']='ready';store.save(run_id,state)
+
     try:
         recover_prior()
+        recover_price_gaps()
         if state['status'] == 'complete':
             return dict(state, run_id=run_id, all_signed_up=not state['exceptions'])
         if state['pending'] is None:

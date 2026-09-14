@@ -311,3 +311,7 @@ class CampaignTransport:
     def recover_prior_failures(self,payload,items):
         from campaign_prior_failure_import import import_prior
         return import_prior(self,payload,items)
+
+    def recover_prior_price_gaps(self,payload,items):
+        from campaign_prior_failure_import import import_prior
+        return import_prior(self,payload,items,readback=True)
