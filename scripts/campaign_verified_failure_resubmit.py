@@ -167,6 +167,28 @@ def verify_prewrite_predecessor(authority):
             'old_claim_released':False,'old_request_restarted':False}
 
 
+def settle_prewrite_predecessor(authority):
+    """Close a proven local rejection, never an unknown external write."""
+    proof=verify_prewrite_predecessor(authority);rid=proof['request_id']
+    db=sqlite3.connect(ROOT/'jobs.sqlite3',isolation_level=None)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT state,result FROM continuous_jobs WHERE id=?',(rid,)).fetchone()
+        if not row or row[0]!='unknown' or json.loads(row[1]).get('reason')!='controller_did_not_produce_terminal_receipt':
+            raise ValueError('prewrite_controller_not_original_local_rejection')
+        result=dict(status='complete',all_signed_up=False,platform_write=False,
+            reason='local_preparation_rejected_before_any_external_action',prior_state=row[0],
+            prior_result=json.loads(row[1]),evidence=proof,automatic_retry=False,
+            completion_scope='local_attempt_only_not_campaign_completion')
+        persist(ROOT/'runs'/rid/'prewrite-local-rejection.json',result)
+        db.execute("UPDATE continuous_jobs SET state='finished',result=? WHERE id=? AND state='unknown'",(json.dumps(result,ensure_ascii=False),rid))
+        db.execute('COMMIT');return result
+    except BaseException:
+        if db.in_transaction:db.execute('ROLLBACK')
+        raise
+    finally:db.close()
+
+
 def audit_manifest(root,segment):
     path=Path(root)/'prepared.json';p=load(path)
     if (segment.get('completion_kind')!=REQUEST['schema'] or p['items']!=[ITEM]
