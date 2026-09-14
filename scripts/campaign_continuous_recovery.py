@@ -93,7 +93,7 @@ def _recover_finished_phase(root,authority,edge,phase,reconcile):
         if len(rows)!=1 or rows[0][1]!=phase or rows[0][3:]!=('unknown',None):
             raise ValueError('only_one_idle_unknown_'+phase+'_can_reconcile')
         action,_,sha,_,_=rows[0]
-        folders=list((root/'segments').glob('*/actions/'+action))
+        folders=list((root/'segments').glob('*/actions/'+action))+list(root.glob('execution/actions/'+action))
         if len(folders)!=1:raise ValueError('discount_action_source_not_unique')
         folder=folders[0];saved=load(folder/'request.json');payload=saved['payload']
         if saved['step']!=phase or fingerprint(payload)!=sha:

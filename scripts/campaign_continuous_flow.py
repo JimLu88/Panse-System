@@ -171,6 +171,9 @@ class Store:
             # Keep the stable program code, not URLs, tokens, or customer text.
             raw=str(exc).split(':',1)[0]
             code=raw if re.fullmatch('[a-z][a-z0-9_]{2,100}',raw) else type(exc).__name__
+            if raw=='edge_stage_not_terminal':
+                detail=str(exc).split(':',1)[-1]
+                if re.fullmatch('[a-z][a-z0-9_]{2,100}',detail):code+=':'+detail
             self.db.execute('INSERT INTO continuous_campaign_diagnostics VALUES(NULL,?,?,?,?,?)',
                 (action_id,step,type(exc).__name__,code,int((time.monotonic()-started)*1000)))
             raise Blocked(step, code) from exc

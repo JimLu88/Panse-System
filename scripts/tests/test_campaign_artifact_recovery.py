@@ -207,3 +207,36 @@ def test_release_guard_blocks_mixed_code_without_changing_business_identity(tmp_
     with pytest.raises(ValueError,match='release_changed'):guard.verify()
     assert ReleaseGuard(tmp_path).release_id!=before
     assert guard.evidence()['business_identity_changed'] is False
+
+
+def test_finished_original_signup_receipt_reconciles_execution_layout_without_replay(case):
+    from campaign_submission_gate import verify_claim
+    from campaign_continuous_recovery import recover_finished_signup
+    from campaign_owned_execution import checkpoint
+    transport=OfflineTransport(case,unknown=True);store=Store(case.root/'controller.sqlite3')
+    try:
+        first=run(store,transport,PAGE,expected_shop='test-shop',observed_links=[PAGE['url']])
+        assert first['blocker']['step']=='signup'
+        action=store.db.execute("SELECT id FROM continuous_campaign_actions WHERE step='signup'").fetchone()[0]
+        folder=case.root/'execution/actions'/action
+        cid=load(folder/'claim.json')['claim_id'];jid=fingerprint(['offline_signup',cid])
+        # Production job ID is canonical signup+claim (the offline emulator
+        # above uses a separate identity); keep this fixture's ledger coherent.
+        original_jid=fingerprint(['signup',cid])
+        case.a.db.execute('UPDATE claim_transports SET job_id=? WHERE claim_id=?',(original_jid,cid))
+        persist(folder/'signup-job.json',dict(step='signup',job_id=original_jid))
+        claim=verify_claim(case.a,cid,dispatched_job=original_jid)
+        raw=dict(state='terminal',batch='992',claim=claim,
+            record={'历史记录ID':'992','执行操作':'商品批量导入','数据来源':'活动报名.xlsx','执行状态':'成功'},
+            counts=dict(total=1,success=1,failed=0,pending=0))
+        source=persist(folder/'finished-original-response.json',raw)
+        job=dict(operation='signup',state='finished',job_id=original_jid,result=dict(raw,evidence_path=source))
+        edge=Mock();edge.status.return_value=job
+        assert checkpoint(case.root)['action_id']==action
+        result=recover_finished_signup(case.root,case.a,edge)
+        assert result['platform_write'] is False
+        before=list(transport.operations)
+        final=run(store,transport,PAGE,expected_shop='test-shop',observed_links=[PAGE['url']])
+        assert final['all_signed_up'] and transport.operations==before
+        edge.submit.assert_not_called()
+    finally:store.close()

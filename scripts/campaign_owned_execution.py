@@ -23,7 +23,8 @@ def checkpoint(root):
              'verify_discount_window':('discount_readback',{'interrupted_read'})}
     if step not in allowed or state not in allowed[step][1]:return None
     operation=allowed[step][0]
-    folders=[root/'shared'/'actions'/action] if step=='scope' else list((root/'segments').glob('*/actions/'+action))
+    folders=[root/'shared'/'actions'/action] if step=='scope' else (
+        list((root/'segments').glob('*/actions/'+action))+list(root.glob('execution/actions/'+action)))
     if len(folders)!=1:return None
     ref=folders[0]/(operation+'-job.json')
     if not ref.exists():return None
@@ -65,6 +66,18 @@ def execute_owned(request,*,root,authority,edge,artifact_roots,execute,progress=
             job=edge.status(point['job_id'])
             if job.get('job_id')!=point['job_id'] or job.get('operation')!=point['operation']:
                 raise ValueError('owned_original_job_identity_changed')
+            failure=job.get('result') or {}
+            before_binding=(point['step']=='signup' and job.get('state')=='unknown'
+                and failure.get('reason') in ('legacy_campaign_page_not_unique','fixed_campaign_entry_not_unique')
+                and (failure.get('recording') or {}).get('state')=='unavailable_before_page_binding'
+                and any(f.get('file')=='campaign_bound_transfers.py' and f.get('function') in
+                    ('page','legacy_entry_page') for f in failure.get('program_location',[])))
+            if before_binding:
+                # Existing fixed recovery re-verifies the canonical unconsumed
+                # ERP claim AND no upload/batch evidence before continuing.
+                # Error text or zero video events alone never permits a retry.
+                edge._action('program_resume_signup_before_page_binding',{'job_id':point['job_id']})
+                job=edge.status(point['job_id'])
             if job.get('state')=='running':
                 job=edge.wait(point['job_id'],timeout=300,progress=progress)
             if (job.get('state')!='finished' or job.get('job_id')!=point['job_id']
@@ -72,7 +85,8 @@ def execute_owned(request,*,root,authority,edge,artifact_roots,execute,progress=
                 persist_run_outcome(root,result);return result
             receipt=reconcile(root,authority,edge,artifact_roots,point)
             persist(root/'owned-reconciliation'/(point['action_id']+'.json'),dict(
-                checkpoint=point,receipt=receipt,platform_write=False,write_replayed=False))
+                checkpoint=point,receipt=receipt,platform_write=False,write_replayed=False,
+                prebinding_continuation=before_binding))
             recovered.add(point['action_id'])
         except (ValueError,KeyError,OSError,EdgeJobError) as exc:
             # No free-browser fallback, process restart, claim reset or second

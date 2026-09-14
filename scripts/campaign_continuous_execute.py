@@ -171,7 +171,12 @@ def main():
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window,args.audit_existing)):
                 raise ValueError('puta_continuation_cannot_reconcile_other_claims')
             from campaign_puta_new_sku_completion import execute
-            result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
+            from campaign_owned_execution import execute_owned
+            def existing_execute(req,**kw):
+                kw.pop('progress',None)
+                return execute(req,**kw)
+            result=execute_owned(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,
+                artifact_roots=secret['artifact_roots'],execute=existing_execute)
             print(json.dumps(result,ensure_ascii=False));return
         if request.get('schema')=='continuous_verified_failure_resubmit_v1':
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window,args.audit_existing)):
