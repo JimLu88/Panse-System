@@ -58,12 +58,13 @@ def test_final_test_reuses_exact_verified_prefetch_without_second_download(tmp_p
     edge=Mock();edge.status.return_value={'job_id':existing['job_id'],'state':'finished'}
     a=Mock();a.resolve_snapshot.return_value={'all_erp_rows':[],
         'current_sellable_item_ids':['1'],'resolved_price_version_sha256':'same'}
+    a.sources.return_value=[]
     t=CampaignTransport(edge,a,root=tmp_path,request={'existing_product_export':existing},artifact_roots=[tmp_path])
     t.with_prior=lambda value,*args:value
     p={'identity':{'shop_id':'test-shop'}}
     with patch('campaign_price_snapshot.load_rows',return_value=[]),patch(
             'campaign_price_snapshot.build_snapshot',return_value={}),patch(
-            'campaign_product_scope.from_edge_job',return_value={'complete':True,'page_evidence':'proof'}) as verify,patch(
+            'campaign_product_scope.from_edge_job',return_value={'complete':True,'page_evidence':'proof','sku_facts':[]}) as verify,patch(
             'campaign_product_scope.unique_mappings',return_value={'matches':[],'unknown':[]}):
         result=t.step_scope('c'*64,p,tmp_path/'action')
     assert result['complete']

@@ -111,6 +111,11 @@ class CampaignTransport:
             path=persist(folder/'mapping.json',doc)
             self.authority.register_source(path,'mapping',file_sha(path))
             snapshot=self.authority.resolve_snapshot(snapshot)
+        from campaign_catalog_alias_refresh import refresh
+        snapshot,alias_receipt=refresh(self.authority,snapshot,scope,folder/'catalog-aliases')
+        if alias_receipt:
+            restored=set(map(tuple,alias_receipt['mapped_pairs']))
+            mapping['unknown']=[r for r in mapping['unknown'] if (r['item'],r['sku']) not in restored]
         persist(self.root/'resolved-snapshot.json',snapshot)
         return self.with_prior(dict(scope,erp_sellable=snapshot['current_sellable_item_ids'],
             price_version=snapshot['resolved_price_version_sha256'],mapping_issues=mapping['unknown']),payload,folder)
