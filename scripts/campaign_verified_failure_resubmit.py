@@ -299,9 +299,53 @@ async def recover_read_validation():
         worker.db.close();a.close()
 
 
+async def recover_signup_binding():
+    """Resume the same unconsumed signup job, then finish its controller."""
+    from campaign_entry_authority import Authority
+    from campaign_edge_client import EdgeClient
+    from campaign_edge_receipt import reconcile_signup
+    import sys
+    sys.path.insert(0,str(WA.parents[2]))
+    from app.vault.store import get_or_create_api_token
+    from app.engine.campaign_continuous_worker import ContinuousWorker
+    rid=fingerprint(REQUEST);root=ROOT/'runs'/rid
+    a=Authority();worker=ContinuousWorker();edge=EdgeClient(get_or_create_api_token())
+    try:
+        p=load(root/'prepared.json');verify_prepared(p,a)
+        ref=load(root/'execution/signup/signup-job.json');jid=ref['job_id']
+        if jid!='35175825acb6b72ce9da579d908708baa07a5decfb40e59c44b800ea62c151ce':
+            raise ValueError('resubmit_exact_original_binding_job_required')
+        marker=root/'signup-binding-program-recovery.json'
+        if marker.exists():raise ValueError('resubmit_binding_recovery_already_consumed')
+        old=worker.status(rid)
+        if old['state']!='unknown' or worker.db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():
+            raise ValueError('resubmit_binding_controller_not_idle')
+        job=edge.status(jid)
+        if job['state']!='unknown' or job.get('result',{}).get('reason')!='fixed_campaign_entry_not_unique':
+            raise ValueError('resubmit_binding_failure_not_exact')
+        from campaign_submission_gate import verify_claim
+        claim=load(root/'execution/signup/claim.json')['claim_id']
+        verify_claim(a,claim)
+        persist(marker,dict(previous_controller=old,previous_job=job,claim_id=claim,claim_released=False))
+        edge._action('program_resume_signup_before_page_binding',{'job_id':jid})
+        job=edge.wait(jid)
+        folder=root/'binding-recovery-result'
+        persist(folder/'signup-observation.json',job)
+        if job['state']!='finished':return dict(state='unknown',job_id=jid,result=job.get('result'),automatic_retry=False)
+        terminal=reconcile_signup(a,job,output_dir=folder)
+        persist(root/'signup-terminal.json',terminal)
+        persist(root/'execution/terminals'/('signup-'+str(terminal['batch'])+'.json'),dict(terminal,bundle_id=p['bundle_id']))
+        worker.db.execute("UPDATE continuous_jobs SET state='running',result=NULL WHERE id=? AND state='unknown'",(rid,))
+        await worker.execute(rid,log_name='process-signup-binding-recovery.log')
+        return worker.status(rid)
+    finally:worker.db.close();a.close()
+
+
 if __name__=='__main__':
     import argparse,asyncio
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--recover-read-validation',action='store_true',required=True)
-    parser.parse_args()
-    print(json.dumps(asyncio.run(recover_read_validation()),ensure_ascii=False))
+    mode=parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--recover-read-validation',action='store_true')
+    mode.add_argument('--recover-signup-binding',action='store_true')
+    args=parser.parse_args()
+    print(json.dumps(asyncio.run(recover_signup_binding() if args.recover_signup_binding else recover_read_validation()),ensure_ascii=False))
