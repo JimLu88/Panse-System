@@ -155,5 +155,6 @@ def execute(request,*,root,authority,edge,artifact_roots):
             'all_signed_up':False,'segments':terminal_segments,'remaining':unresolved,
             'excluded_items':EXCLUDED,'execution_mode':'program_owned_terminal_only',
             'parent_request_id':PARENT,'original_claims_reset':False,'automatic_rotation':False}
-    persist(root/'result.json',result)
+    from campaign_continuous_recovery import persist_run_outcome
+    persist_run_outcome(root,result)
     return result

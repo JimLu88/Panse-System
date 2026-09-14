@@ -22,6 +22,9 @@ ROOT=Path('D:/AI/畔色ERP系统/outputs/campaign-continuous')
 
 def validate_request(request):
     load_rules()
+    if request.get('schema')=='continuous_campaign_autumn_cost_v1':
+        from campaign_autumn_cost_revision import validate_request as validate_autumn_cost
+        return validate_autumn_cost(request)
     if request.get('schema')=='continuous_campaign_residual_v1':
         from campaign_residual_completion import validate_request as validate_residual
         return validate_residual(request)
@@ -153,6 +156,12 @@ def main():
     secret=json.loads(sys.stdin.readline());edge=EdgeClient(secret.pop('token'))
     a=Authority()
     try:
+        if request.get('schema')=='continuous_campaign_autumn_cost_v1':
+            if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
+                raise ValueError('cost_request_cannot_reconcile_other_claims')
+            from campaign_autumn_cost_revision import execute
+            result=execute(request,root=ROOT/'runs'/args.request_id,authority=a,edge=edge,artifact_roots=secret['artifact_roots'])
+            print(json.dumps(result,ensure_ascii=False));return
         if request.get('schema')=='continuous_campaign_residual_v1':
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window)):
                 raise ValueError('residual_request_cannot_reconcile_old_claims')
