@@ -21,6 +21,34 @@ def test_latest_outcome_keeps_every_previous_summary(tmp_path):
     assert {p.stem for p in (tmp_path/'result-history').glob('*.json')}=={fingerprint(before),fingerprint(after)}
 
 
+@pytest.mark.parametrize('bad',[None,'running','owner','mismatch','wrong_step','wrong_job'])
+def test_window_recovery_never_repeats_original_read(tmp_path,monkeypatch,bad):
+    from campaign_continuous_transport import CampaignTransport
+    payload={'identity':{'shop_id':'shop'},'bundle':{'bundle_id':'b'}}
+    action='a'*64;sha=fingerprint(payload);jid=fingerprint(['discount_readback','shop',action])
+    store=Store(tmp_path/'controller.sqlite3');run=store.start('fixture','rules')
+    store.db.execute('INSERT INTO continuous_campaign_actions VALUES(?,?,?,?,?,NULL)',
+        (action,run,'signup' if bad=='wrong_step' else 'verify_discount_window',sha,'interrupted_read'))
+    if bad=='owner':store.db.execute("UPDATE continuous_campaign_runs SET owner='active'")
+    store.close();folder=tmp_path/'segments'/'segment'/'actions'/action
+    persist(folder/'request.json',{'step':'verify_discount_window','payload':payload})
+    persist(folder/'discount_readback-job.json',{'step':'discount_readback','job_id':jid})
+    edge=Mock();edge.status.return_value={'job_id':'wrong' if bad=='wrong_job' else jid,
+        'operation':'discount_readback','state':'running' if bad=='running' else 'finished'}
+    normalize=Mock(return_value={'all_correct':bad!='mismatch','items':['1'],'platform_write':False})
+    monkeypatch.setattr(CampaignTransport,'step_verify_discount_window',normalize)
+    if bad:
+        with pytest.raises(ValueError):recovery.recover_finished_discount_window(tmp_path,object(),edge,artifact_roots=[tmp_path])
+    else:
+        result=recovery.recover_finished_discount_window(tmp_path,object(),edge,artifact_roots=[tmp_path])
+        assert result['job_id']==jid and result['platform_write'] is False
+        assert normalize.call_args.kwargs['finished_job']==edge.status.return_value
+        check=Store(tmp_path/'controller.sqlite3')
+        assert check.db.execute('SELECT status FROM continuous_campaign_actions').fetchone()[0]=='done'
+        check.close()
+    edge.submit.assert_not_called();edge._action.assert_not_called();edge.wait.assert_not_called()
+
+
 @pytest.mark.parametrize('bad',[None,'running_job','wrong_job','active_owner','wrong_payload'])
 @pytest.mark.parametrize('phase',['discount','signup'])
 def test_discount_recovery_only_reads_original_finished_job(tmp_path,monkeypatch,bad,phase):

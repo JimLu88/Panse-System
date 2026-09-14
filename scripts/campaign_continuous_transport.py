@@ -61,7 +61,9 @@ class CampaignTransport:
             job=self.edge.submit(step,payload)
             persist(ref,{'job_id':job['job_id'],'step':step})
         if job['state']=='running':
-            job=self.edge.wait(job['job_id'],timeout=1800 if step=='product_export' else 300,progress=self.progress)
+            timeout=1800 if step=='product_export' else 300
+            if step=='discount_readback':timeout=min(1800,max(300,30+20*len(payload.get('offers',[]))))
+            job=self.edge.wait(job['job_id'],timeout=timeout,progress=self.progress)
         persist(folder/(step+'-observation.json'),job)
         if job.get('state')!='finished':
             reason=(job.get('result') or {}).get('reason') or job['state']
@@ -248,7 +250,7 @@ class CampaignTransport:
     def step_signup(self,action_id,payload,folder):
         return self.submit_phase('signup',payload,folder)
 
-    def step_verify_discount_window(self,action_id,payload,folder):
+    def step_verify_discount_window(self,action_id,payload,folder,*,finished_job=None):
         from campaign_discount_readback import verify
         body=self.authority.get_bundle(payload['bundle']['bundle_id'])
         wanted={(r['item'],r['sku']) for r in body['planned_discount_rows']}
@@ -268,7 +270,8 @@ class CampaignTransport:
         if not wanted:
             return dict(all_correct=True,items=payload['items'],start=body['start'],end=body['end'],
                         no_single_discount_required=True)
-        job=self.job('discount_readback',{'identity':self.identity(payload),'read_request_id':action_id,
+        job=finished_job if finished_job is not None else self.job('discount_readback',{
+            'identity':self.identity(payload),'read_request_id':action_id,
             'price_window':{k:body[k] for k in ('start','end')},'offers':offers},folder)
         result=verify(job,read_request_id=action_id,shop=payload['identity']['shop_id'],start=body['start'],end=body['end'],
                       expected_rows=expected,roots=self.roots)

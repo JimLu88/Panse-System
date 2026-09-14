@@ -55,6 +55,36 @@ def recover_finished_signup(root,authority,edge):
     return _recover_finished_phase(root,authority,edge,'signup',reconcile_signup)
 
 
+def recover_finished_discount_window(root,authority,edge,*,artifact_roots):
+    from campaign_continuous_transport import CampaignTransport
+    root=Path(root);store=Store(root/'controller.sqlite3')
+    try:
+        rows=store.db.execute('SELECT a.id,a.step,a.payload_sha,a.status,r.owner FROM continuous_campaign_actions a '
+            'JOIN continuous_campaign_runs r ON r.id=a.run_id WHERE a.status<>?',('done',)).fetchall()
+        if (len(rows)!=1 or rows[0][1]!='verify_discount_window' or rows[0][3]!='interrupted_read'
+                or rows[0][4] is not None):raise ValueError('only_one_idle_discount_window_read_can_reconcile')
+        action,_,sha,_,_=rows[0];folders=list((root/'segments').glob('*/actions/'+action))
+        if len(folders)!=1:raise ValueError('discount_window_action_not_unique')
+        folder=folders[0];saved=load(folder/'request.json');payload=saved['payload']
+        if saved['step']!='verify_discount_window' or fingerprint(payload)!=sha:
+            raise ValueError('discount_window_original_payload_changed')
+        ref=load(folder/'discount_readback-job.json')
+        if (ref.get('step')!='discount_readback' or ref['job_id']!=fingerprint(
+                ['discount_readback',payload['identity']['shop_id'],action])):
+            raise ValueError('discount_window_not_original_job')
+        job=edge.status(ref['job_id'])
+        if (job.get('state')!='finished' or job.get('operation')!='discount_readback'
+                or job.get('job_id')!=ref['job_id']):raise ValueError('discount_window_original_job_not_finished')
+        observation=persist(folder/'reconciled-discount_readback-observation.json',job)
+        transport=CampaignTransport(edge,authority,root=folder.parent.parent,request={},artifact_roots=artifact_roots)
+        result=transport.step_verify_discount_window(action,payload,folder,finished_job=job)
+        if result.get('all_correct') is not True:raise ValueError('discount_window_readback_not_matching')
+        result=dict(result,status='terminal',action_id=action,request_sha=sha,reconciled_readonly=True,observation=observation)
+        evidence=persist(folder/'reconciled-result.json',result);store.recover(action,dict(result,evidence=evidence))
+        return dict(action_id=action,job_id=ref['job_id'],platform_write=False,evidence=evidence)
+    finally:store.close()
+
+
 def _recover_finished_phase(root,authority,edge,phase,reconcile):
     root=Path(root);store=Store(root/'controller.sqlite3')
     try:
