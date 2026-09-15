@@ -56,6 +56,9 @@ def validate_request(request):
     plan=build_plan(dict(calendar,price_version='resolved_after_single_scope_export'))
     from campaign_authorized_item_scope import validate as validate_item_scope
     validate_item_scope(request.get('authorized_item_scope'),plan)
+    if request.get('existing_custom_replacement') is not None:
+        from campaign_existing_custom_replacement import validate
+        validate(request['existing_custom_replacement'],request.get('authorized_item_scope'))
     return shop
 
 
@@ -90,6 +93,8 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
             options={'target':segment['target'],'time_request':time_path}
             if request.get('authorized_item_scope') is not None:
                 options['authorized_item_scope']=request['authorized_item_scope']
+            if request.get('existing_custom_replacement') is not None:
+                options['existing_custom_replacement']=request['existing_custom_replacement']
             if segment['kind']=='daily':
                 options['fixed_signup_template']=request.get('fixed_signup_template')
                 if not options['fixed_signup_template']:

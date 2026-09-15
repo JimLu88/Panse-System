@@ -128,6 +128,9 @@ class CampaignTransport:
     def with_prior(self,scope,payload,folder):
         from campaign_authorized_item_scope import apply as apply_item_scope
         scope=apply_item_scope(scope,self.request.get('authorized_item_scope'))
+        if self.request.get('existing_custom_replacement') is not None:
+            from campaign_existing_custom_replacement import apply
+            return apply(self,scope,payload,folder)
         p=payload['identity'];campaign='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id'))
         prior=self.authority.blocked(campaign,'signup',p['start'],p['end'])
         # Preserve explicit old failures as exceptions until their original
