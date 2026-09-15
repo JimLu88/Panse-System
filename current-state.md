@@ -1,5 +1,10 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-15 升降本轮真实失败，不能用旧在报记录称新报名成功
+
+- cee981...606f已finished/complete、all_signed_up=false，官方861805325失败。3配件定制分别1000→上限750、2000→1500、1500→1125，缺固定首次原价，未降价。6条首次原价、家具包邮、九斗库存已集中询问用户，不编造授权。
+- 最后官方导出秋季12SKU全异常；超级12SKU虽显示旧活动中记录，但不覆盖本批失败。最终汇总新增execution_export_conflicts，阻止这种旧状态把all_signed_up变为true，不重下导出，不重放上传。
+
 ## 2026-09-15 13:19 三件续办：旧报告恢复、升降桌独立程序启动
 
 - ERP0f38d68已push/install，660测试+119子测试通过；旧报告同SHA回接、JSON重复准备与包邮明确分类已修。程序安装不等于报名成功。

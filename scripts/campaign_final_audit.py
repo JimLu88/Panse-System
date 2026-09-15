@@ -134,6 +134,25 @@ def manifest(root, segment):
                 scope_sha256=file_sha(source), scope_path=str(source))
 
 
+def execution_export_conflicts(result,audit):
+    """A standing marketing record is not proof a rejected new batch passed."""
+    execution={s.get('segment_id'):s for s in result.get('segments',[])}
+    conflicts=[]
+    for segment in audit.get('segments',[]):
+        original=execution.get(segment.get('segment_id'),{})
+        for product in segment.get('products',[]):
+            item=product['item'];exceptions=original.get('exceptions',{}).get(item) or []
+            registered=product.get('status')=='registered'
+            if exceptions and registered:
+                conflicts.append(dict(segment_id=segment.get('segment_id'),item=item,
+                    reason='standing_registration_does_not_resolve_current_failed_attempt',
+                    execution_exceptions=exceptions))
+            elif item in original.get('success',{}) and not registered:
+                conflicts.append(dict(segment_id=segment.get('segment_id'),item=item,
+                    reason='prior_success_not_confirmed_by_current_sku_export'))
+    return conflicts
+
+
 def finalize(request, result, *, root, authority, edge, artifact_roots):
     """Called by every CLI execution branch before publishing its final result.
 
@@ -142,7 +161,7 @@ def finalize(request, result, *, root, authority, edge, artifact_roots):
     """
     root=Path(root)
     raw={k:v for k,v in result.items() if k not in ('final_audit','all_signed_up','all_currently_effective',
-        'recordings','recording_errors','full_recording_verified','failure_handling')}
+        'recordings','recording_errors','full_recording_verified','failure_handling','execution_export_conflicts')}
     revision=3 if any(p.get('campaign_id')=='legacy' for p in request.get('pages',{}).values()) else READ_REVISION
     key=fingerprint([POLICY,revision,raw]); folder=root/'final-audit'/key
     target=folder/'audit-v3.json'  # Reproject the same export against the verified price window.
@@ -204,8 +223,10 @@ def finalize(request, result, *, root, authority, edge, artifact_roots):
                 audit['verified']=False; gaps.append(dict(reason='final_audit_unvisited_calendar_segments',items=[]))
         persist(target,audit)
     final=dict(result,final_audit=dict(audit,evidence=str(target),sha256=file_sha(target)))
+    conflicts=execution_export_conflicts(result,audit)
+    final['execution_export_conflicts']=conflicts
     final['all_signed_up']=bool(audit['verified'] and all(s['all_registered'] for s in audit['segments'])
-                                and not result.get('remaining') and not result.get('excluded_items'))
+                                and not result.get('remaining') and not result.get('excluded_items') and not conflicts)
     final['all_currently_effective']=bool(final['all_signed_up'] and all(s['all_currently_effective'] for s in audit['segments']))
     from campaign_continuous_recovery import persist_run_outcome
     persist_run_outcome(root,final)
