@@ -69,7 +69,18 @@ class CampaignTransport:
             timeout=1800 if step=='product_export' else 300
             if step=='discount_readback':timeout=min(1800,max(300,30+20*len(payload.get('offers',[]))))
             job=self.edge.wait(job['job_id'],timeout=timeout,progress=self.progress)
-        persist(folder/(step+'-observation.json'),job)
+        observation=folder/(step+'-observation.json')
+        if observation.exists() and load(observation)!=job:
+            previous=load(observation)
+            read_steps={'product_export','discount_readback','final_inventory','product_sku_batch_read','product_final_audit_read','discount_item_discovery'}
+            if (step in read_steps and previous.get('job_id')==job.get('job_id')
+                and previous.get('operation')==job.get('operation')==step
+                and previous.get('state') in ('unknown','interrupted_read','running') and job.get('state')=='finished'):
+                # A maintenance-recovered READ has a newer observation, not a
+                # replacement for its immutable failed observation. Never use
+                # this path to replay or reconcile an uncertain business write.
+                observation=folder/(step+'-observation-'+fingerprint(job)+'.json')
+        persist(observation,job)
         if job.get('state')!='finished':
             reason=(job.get('result') or {}).get('reason') or job['state']
             raise ValueError('edge_stage_not_terminal:'+str(reason))
