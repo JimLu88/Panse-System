@@ -5,13 +5,16 @@ from campaign_feedback_normalization import normalize_errors
 
 def reclassify(transport,report,payload,folder):
     if report.get('prior_terminal_sha256'):
-        from campaign_prior_failure_import import import_prior
+        from campaign_prior_failure_import import adopt_report
         from campaign_entry_authority import file_sha
         ref=transport.root/'prior-import'/(str(report['batch'])+'-readback-report.json')
-        if not ref.exists():return report  # Initial custom-only batch needs no new read.
-        imported=import_prior(transport,payload,payload['items'],readback=True)
-        if set(imported)!=set(payload['items']):raise ValueError('prior_price_readback_scope_not_verified')
-        value=load(ref)
+        terminal=load(report['source_terminal']);claim=terminal['claim_id']
+        rows=[dict(r) for r in transport.authority.db.execute('SELECT * FROM attempts WHERE id LIKE ?',(claim+':%',))
+              if r['item'] in payload['items'] and r['status']=='failed']
+        if {r['item'] for r in rows}!=set(payload['items']):raise ValueError('prior_price_readback_scope_not_verified')
+        # Custom-only reclassification uses approved stored bases; no new
+        # browser/export is introduced. adopt_report keeps old bytes intact.
+        value=adopt_report(transport,payload,claim,rows,readback=ref.exists())
         if (value['source_terminal']!=report['source_terminal'] or value['bundle_id']!=report['bundle_id']
                 or file_sha(value['source_terminal'])!=report['prior_terminal_sha256']):
             raise ValueError('prior_price_report_binding_changed')

@@ -80,6 +80,9 @@ class CampaignTransport:
             scope,source=self.shared_scope
             persist(self.root/'resolved-snapshot.json',load(source/'resolved-snapshot.json'))
             persist(self.root/'product-scope.json',scope)
+            if self.request.get('approved_cabinet_rotation'):
+                for name in ('cabinet-publication.json','cabinet-active.json'):
+                    persist(self.root/name,load(source/name))
             return self.with_prior(dict(scope),payload,folder)
         from campaign_price_snapshot import build_snapshot,load_rows
         snapshot_path=self.root/'snapshot.json'
@@ -87,6 +90,9 @@ class CampaignTransport:
         else:
             snapshot=self.authority.resolve_snapshot(build_snapshot(load_rows()))
             persist(snapshot_path,snapshot)
+        if self.request.get('approved_cabinet_rotation'):
+            from campaign_cabinet_closeout import prepare
+            prepare(self,folder)
         existing=self.request.get('existing_product_export')
         if existing:
             # The daily task may have completed this same final test's export
@@ -108,6 +114,9 @@ class CampaignTransport:
         from campaign_product_scope import from_edge_job,unique_mappings
         scope=from_edge_job(job,expected_request_id=export_request_id,expected_shop=payload['identity']['shop_id'],roots=self.roots)
         persist(self.root/'product-scope.json',scope)
+        if self.request.get('approved_cabinet_rotation'):
+            from campaign_cabinet_closeout import bind_export
+            snapshot=bind_export(self,scope,snapshot,folder)
         mapping=unique_mappings(scope,snapshot['all_erp_rows'])
         # This is a local, proven ID mapping overlay only; no business DB change.
         if mapping['matches']:
@@ -128,6 +137,9 @@ class CampaignTransport:
     def with_prior(self,scope,payload,folder):
         from campaign_authorized_item_scope import apply as apply_item_scope
         scope=apply_item_scope(scope,self.request.get('authorized_item_scope'))
+        if self.request.get('approved_cabinet_rotation'):
+            from campaign_cabinet_closeout import apply
+            return apply(self,scope,payload,folder)
         if self.request.get('existing_custom_replacement') is not None:
             from campaign_existing_custom_replacement import apply
             return apply(self,scope,payload,folder)

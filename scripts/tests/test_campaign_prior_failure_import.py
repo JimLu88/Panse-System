@@ -71,6 +71,13 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
         assert file_sha(source)==ref['sha256']
         assert t.edge.status.call_count==int(restored)
         assert importer.adopt_report(t,payload,'c',rows)==result
+        initial=Path(tmp_path/'reports/99.json').read_bytes()
+        norm.return_value=[{'item':'1','kind':'custom_price','fixed_original':'1000','floor':'200'}]
+        revised=importer.adopt_report(t,payload,'c',rows)
+        assert revised['errors']!=result['errors']
+        assert Path(tmp_path/'reports/99.json').read_bytes()==initial
+        assert importer.adopt_report(t,payload,'c',rows)==revised
+        assert len(list((tmp_path/'reports').glob('99-classification-*.json')))==1
 
 
 @pytest.mark.parametrize('doc',[

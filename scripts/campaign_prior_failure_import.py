@@ -128,6 +128,15 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
             'current_snapshot_sha256':file_sha(transport.root/'resolved-snapshot.json')}
     target=(transport.root/'prior-import'/(str(ref['batch'])+'-readback-report.json') if readback
             else transport.root/'reports'/(str(ref['batch'])+'.json'))
+    # Approved first-price evidence may arrive after the initial report import.
+    # Keep the original normalization immutable, save a content-addressed new
+    # interpretation of the SAME verified official terminal/file/price scope.
+    if target.exists() and load(target)!=report:
+        old=load(target)
+        for key in ('batch','bundle_id','source_terminal','prior_terminal_sha256','current_snapshot_sha256'):
+            if old.get(key)!=report.get(key):raise ValueError('prior_reclassification_source_changed')
+        from campaign_continuous_policy import fingerprint
+        target=target.parent/(target.stem+'-classification-'+fingerprint(report)+'.json')
     persist(target,report)
     return report
 

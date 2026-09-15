@@ -59,6 +59,9 @@ def validate_request(request):
     if request.get('existing_custom_replacement') is not None:
         from campaign_existing_custom_replacement import validate
         validate(request['existing_custom_replacement'],request.get('authorized_item_scope'))
+    if request.get('approved_cabinet_rotation') is not None:
+        from campaign_cabinet_closeout import validate
+        validate(request)
     return shop
 
 
@@ -95,6 +98,8 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
                 options['authorized_item_scope']=request['authorized_item_scope']
             if request.get('existing_custom_replacement') is not None:
                 options['existing_custom_replacement']=request['existing_custom_replacement']
+            if request.get('approved_cabinet_rotation') is not None:
+                options['approved_cabinet_rotation']=request['approved_cabinet_rotation']
             if segment['kind']=='daily':
                 options['fixed_signup_template']=request.get('fixed_signup_template')
                 if not options['fixed_signup_template']:
