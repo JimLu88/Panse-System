@@ -61,6 +61,13 @@ class ReportTests(unittest.TestCase):
                              ['', '12', '定制', '100', '', '']])
         self.assertEqual(result['errors'][0]['sku'], '')
 
+    def test_down_only_keeps_exact_sku_but_never_invents_missing_cap(self):
+        result=self.parse([['1','11','追加桌腿','1500','失败','当前商品活动价可下调不可上调，skuId：11']])
+        error=result['errors'][0]
+        self.assertEqual(error['sku'],'11')
+        self.assertEqual(error['parse_issue'],'current_approved_price_readback_required')
+        self.assertNotIn('official_cap',error)
+
     def test_full_file_not_first_thousand_or_bad_dimension(self):
         rows = [[str(i), str(i+10000), '定制', '100', '失败', '未知错误'] for i in range(1, 1102)]
         result = self.parse(rows, tuple(str(i) for i in range(1, 1102)))

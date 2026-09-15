@@ -17,6 +17,7 @@ COUPON = re.compile(r'\[([^\[\]]+?)（活动普惠券后价：([\d.]+)元，最�
 LIST = re.compile(r'您的sku[：:]\s*(.*?)\s+在管控期标价为([\d.]+)元')
 APPROVED = re.compile(r'需小于审核通过值[（(]([\d.]+)[）)].*?skuId[：:]\s*(\d+)', re.I)
 INVALID = re.compile(r'SKUID\s*=\s*(\d+)不属于当前商品或已下架', re.I)
+DOWN_ONLY = re.compile(r'当前商品活动价可下调不可上调[，,\s]*skuId[：:]\s*(\d+)',re.I)
 
 
 def attributes(name):
@@ -136,6 +137,8 @@ def parse_feedback(raw, *, expected_sha, batch, expected_items, official_counts=
                       for m in APPROVED.finditer(message)]
             direct += [(m[1], 'mapping', {'official_invalid_or_disabled':True})
                        for m in INVALID.finditer(message)]
+            direct += [(m[1], 'unknown', {'parse_issue':'current_approved_price_readback_required',
+                         'price_direction':'down_only'}) for m in DOWN_ONLY.finditer(message)]
             if direct:
                 for sku,kind,limits in direct:
                     matches=[r for r in group['rows'] if r['sku']==sku]
