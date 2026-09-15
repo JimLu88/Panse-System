@@ -32,8 +32,17 @@ def prepare(transport,folder):
     if not latest or tuple(latest)!=(LAST,'failed'):
         raise ValueError('cabinet_original_failed_attempt_changed')
     page=transport.request['pages'][AUTUMN]
-    job=transport.job('existing_reserve_publish',{'identity':transport.identity({'identity':page}),
-        'authorization':AUTH},folder/'cabinet-publication')
+    original=folder/'cabinet-publication'/'existing_reserve_publish-observation.json'
+    if original.exists() and load(original).get('result',{}).get('state')=='blocked_before_publish':
+        previous=load(original)
+        job=transport.edge.status(previous['job_id'])
+        if (job.get('job_id')!=previous['job_id'] or job.get('operation')!='existing_reserve_publish'
+                or job.get('state')!='finished'):
+            raise ValueError('cabinet_original_publication_recovery_not_finished')
+        persist(folder/'cabinet-publication'/'recovered-observation.json',job)
+    else:
+        job=transport.job('existing_reserve_publish',{'identity':transport.identity({'identity':page}),
+            'authorization':AUTH},folder/'cabinet-publication')
     result=job.get('result') or {}
     if result.get('state')!='published_verified' or result.get('authorization')!=AUTH or result.get('item')!=ITEM:
         raise ValueError('cabinet_publication_not_verified_no_signup')
