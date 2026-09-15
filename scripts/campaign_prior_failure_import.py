@@ -110,7 +110,7 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
     if recovery is not None:
         persist(transport.root/'prior-import'/(str(ref['batch'])+'-restored-report.json'),
                 {'source_terminal':str(source),'source_terminal_sha256':ref['sha256'],
-                 'original_report_reference':report_reference(terminal),'recovered':recovery,
+                 'original_report_reference':list(report_reference(terminal)),'recovered':recovery,
                  'report_sha256':report_sha,'claims_changed':False,'platform_write':False})
     snapshot=load(transport.root/'resolved-snapshot.json')
     # Current frozen ERP version/bases, original submitted price and official

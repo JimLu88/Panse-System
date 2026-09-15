@@ -70,6 +70,7 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
         assert norm.call_args.kwargs['actual_discounts']==[]
         assert file_sha(source)==ref['sha256']
         assert t.edge.status.call_count==int(restored)
+        assert importer.adopt_report(t,payload,'c',rows)==result
 
 
 @pytest.mark.parametrize('doc',[
