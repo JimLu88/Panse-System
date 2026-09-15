@@ -93,7 +93,7 @@ BEGIN
      JOIN approved_custom_rows t ON s.sku_code=t.code AND p.taobao_sku_id=t.sku
      WHERE s.product_code={literal(CODE)} AND p.taobao_item_id={literal(ITEM)}
        AND s.is_custom_placeholder=true
-       AND coalesce(p.alt_taobao_sku_ids::jsonb,'[]'::jsonb)='[]'::jsonb) <> 5
+       AND coalesce(nullif(p.alt_taobao_sku_ids::jsonb,'null'::jsonb),'[]'::jsonb)='[]'::jsonb) <> 5
  OR (SELECT count(*) FROM pricing_sku_promo WHERE taobao_sku_id IN
      (SELECT sku FROM approved_custom_rows)) <> 5
  THEN RAISE EXCEPTION 'exact_existing_five_sku_mapping_changed'; END IF;
@@ -188,13 +188,23 @@ def main():
                         raise ValueError('fixed_original_floor_conflict:'+r['sku'])
             finally: authority.close()
         sql=build_sql(rows,hashlib.sha256(raw).hexdigest()) if a.apply else 'BEGIN READ ONLY;'+state_sql()+'COMMIT;'
-        state=run_sql(sql)
-        result=dict(status='erp_reconciled' if readback_verified(state) else 'readback_not_verified',
-                    item=ITEM,platform_write=False,baseline_rebased=False,state=state)
+        try:
+            state=run_sql(sql)
+            result=dict(status='erp_reconciled' if readback_verified(state) else 'readback_not_verified',
+                        item=ITEM,platform_write=False,baseline_rebased=False,state=state)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+            # PostgreSQL may commit before a readback/transport failure. Preserve
+            # diagnostics, but never infer rollback or retry permission here.
+            detail=getattr(exc,'stderr',None) or str(exc)
+            if isinstance(detail,bytes):detail=detail.decode('utf-8',errors='replace')
+            result=dict(status='write_outcome_unconfirmed' if a.apply else 'readback_failed',
+                item=ITEM,error_type=type(exc).__name__,returncode=getattr(exc,'returncode',None),
+                diagnostic=str(detail)[:8000],readback_required=True,
+                automatic_retry=False,platform_write=False,baseline_rebased=False)
     a.output.parent.mkdir(parents=True,exist_ok=True)
     with a.output.open('x',encoding='utf-8') as f: json.dump(result,f,ensure_ascii=False,indent=2)
     print(json.dumps({k:v for k,v in result.items() if k not in ('state','rows')},ensure_ascii=False))
-    if result['status']=='readback_not_verified':raise SystemExit(2)
+    if result['status'] not in ('erp_reconciled','prepared_not_executed'):raise SystemExit(2)
 
 
 if __name__=='__main__': main()

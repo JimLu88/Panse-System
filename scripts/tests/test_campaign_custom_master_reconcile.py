@@ -80,5 +80,26 @@ class CustomMasterRepairTests(unittest.TestCase):
     def test_sql_literals_escaped(self):
         self.assertEqual(repair.literal("a'b"),"'a''b'")
 
+    def test_sql_null_and_json_null_are_empty_but_real_aliases_not(self):
+        sql=repair.build_sql(repair.validate_scope(self.scope()),'abc')
+        self.assertIn("coalesce(nullif(p.alt_taobao_sku_ids::jsonb,'null'::jsonb),'[]'::jsonb)='[]'::jsonb",sql)
+        self.assertNotIn("jsonb_array_length",sql)
+
+    def test_failure_artifact_preserves_stderr_no_retry(self):
+        from unittest.mock import patch
+        import tempfile
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            scope=Path(tmp)/'scope.json';out=Path(tmp)/'out.json'
+            scope.write_text(json.dumps(self.scope()),encoding='utf-8')
+            err=subprocess.CalledProcessError(3,'psql',stderr='ERROR: exact_existing_five_sku_mapping_changed')
+            with patch.object(sys,'argv',['repair','--readback','--scope',str(scope),'--output',str(out)]), \
+                 patch.object(repair,'run_sql',side_effect=err) as call:
+                with self.assertRaises(SystemExit):repair.main()
+            data=json.loads(out.read_text(encoding='utf-8'))
+            self.assertIn('exact_existing_five_sku_mapping_changed',data['diagnostic'])
+            self.assertFalse(data['automatic_retry']);self.assertTrue(data['readback_required'])
+            self.assertEqual(call.call_count,1)
+
 
 if __name__=='__main__':unittest.main()
