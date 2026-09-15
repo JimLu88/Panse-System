@@ -126,6 +126,12 @@ def parse_feedback(raw, *, expected_sha, batch, expected_items, official_counts=
             base = {'item': item, 'batch': str(batch), 'terminal': 'failed', 'message': message,
                     'official_evidence': {'sha256': actual_sha, 'sheet': '商品SKU导入列表',
                                           'product_row': group['rows'][0]['row']}}
+            if re.fullmatch(r'该商品需要包邮[。！!\s]*',message):
+                # Known product-level requirement, not missing price text.
+                # Classification never grants a new shipping commitment.
+                errors.append(dict(base,sku='',kind='unknown',
+                                   parse_issue='free_shipping_commitment_required'))
+                continue
             direct = [(m[2], 'approved_price', {'official_cap':amount(m[1]),'strict_cap':True})
                       for m in APPROVED.finditer(message)]
             direct += [(m[1], 'mapping', {'official_invalid_or_disabled':True})

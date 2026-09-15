@@ -48,6 +48,14 @@ class ReportTests(unittest.TestCase):
             result = self.parse([['1', '11', '定制', '100', '失败', message]])
             self.assertEqual(result['errors'][0]['kind'], 'unknown')
 
+    def test_shipping_requirement_is_not_truncated_price_or_permission(self):
+        from campaign_continuous_policy import classify
+        result=self.parse([['1','11','定制','100','失败','该商品需要包邮']])
+        error=result['errors'][0]
+        self.assertEqual(error['parse_issue'],'free_shipping_commitment_required')
+        self.assertEqual(classify(error)['action'],'manual')
+        self.assertIsNone(classify(error)['repair'])
+
     def test_ambiguous_names_no_guess(self):
         result = self.parse([['1', '11', '定制', '100', '失败', '您的sku：定制 在管控期标价为20.00元；'],
                              ['', '12', '定制', '100', '', '']])

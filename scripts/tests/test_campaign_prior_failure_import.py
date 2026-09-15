@@ -27,8 +27,10 @@ def test_import_only_latest_exact_window_failed_unprotected(tmp_path,monkeypatch
     assert adopt.call_count==1
 
 
-@pytest.mark.parametrize('bad',[None,'hash','window','claim','price','scope','outside'])
-def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeypatch,bad):
+@pytest.mark.parametrize('legacy',[False,True])
+@pytest.mark.parametrize('restored',[False,True])
+@pytest.mark.parametrize('bad',[None,'hash','window','claim','price','scope','outside','report_hash'])
+def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeypatch,bad,legacy,restored):
     db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
     db.execute('CREATE TABLE attempts(id,item,status,bundle_id)')
     db.execute('INSERT INTO attempts VALUES(?,?,?,?)',('c:1','1','failed','b'))
@@ -39,12 +41,20 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
          'phase':'signup','start':'wrong' if bad=='window' else 'start','end':'end','terminal':True,'batch_id':'99',
          'items':[{'item':'1','status':'failed'}],'file_sha256':file_sha(f),
          'source_report':str(report),'source_report_sha256':file_sha(report)}
+    if restored:doc['source_report']=str(tmp_path/'missing.xlsx')
+    if bad=='report_hash':doc['source_report_sha256']='bad'
+    if legacy:doc['official_report_path']=doc.pop('source_report');doc['official_report_sha256']=doc.pop('source_report_sha256')
     source=Path(persist(tmp_path/'terminal.json',doc))
     ref={'path':str(source),'sha256':'bad' if bad=='hash' else file_sha(source),'batch':'99'}
     rows=[{'id':'c:1','item':'1','status':'failed','bundle_id':'b','evidence':json.dumps(ref)}]
     snapshot={'all_erp_rows':['current']};persist(tmp_path/'resolved-snapshot.json',snapshot)
     a=SimpleNamespace(db=db,get_bundle=lambda _:body,bases=lambda s:{'current':True})
     t=SimpleNamespace(root=tmp_path,roots=[tmp_path/'other' if bad=='outside' else tmp_path],authority=a)
+    from campaign_continuous_policy import fingerprint
+    jid=fingerprint(['feedback',{'identity':{'same':True},'batch':'99'}])
+    t.identity=lambda p:{'same':True}
+    t.edge=SimpleNamespace(status=Mock(return_value={'job_id':jid,'operation':'feedback','state':'finished',
+        'result':{'state':'downloaded','batch':'99','sha256':file_sha(report),'path':str(report)}}))
     parsed={'outcomes':[{'item':'1','outcome':'failed'}],'groups':[{'rows':[{'item':'1','sku':'11' if bad=='scope' else '10',
                                                                                  'submitted_price':'99' if bad=='price' else '100'}]}]}
     monkeypatch.setattr(importer,'parse_feedback',Mock(return_value=parsed))
@@ -58,6 +68,28 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
         assert result['batch']=='99'
         assert norm.call_args.kwargs['erp_rows']==['current']
         assert norm.call_args.kwargs['actual_discounts']==[]
+        assert file_sha(source)==ref['sha256']
+        assert t.edge.status.call_count==int(restored)
+
+
+@pytest.mark.parametrize('doc',[
+    {},{'official_report_path':'x'},
+    {'source_report':'x','source_report_sha256':'a','official_report_path':'y','official_report_sha256':'a'},
+    {'source_report':'x','source_report_sha256':'a','official_report_path':'x','official_report_sha256':'b'}])
+def test_conflicting_or_missing_report_reference_rejected(doc):
+    with pytest.raises(ValueError):importer.report_reference(doc)
+
+
+@pytest.mark.parametrize('change',[{'state':'running'},{'operation':'signup'},{'job_id':'wrong'},
+    {'result':{'state':'downloaded','batch':'98','sha256':'sha','path':'x'}},
+    {'result':{'state':'downloaded','batch':'99','sha256':'wrong','path':'x'}}])
+def test_restored_report_requires_exact_finished_same_sha(change):
+    from campaign_continuous_policy import fingerprint
+    jid=fingerprint(['feedback',{'identity':{'same':True},'batch':'99'}])
+    job=dict(job_id=jid,state='finished',operation='feedback',result={'state':'downloaded','batch':'99','sha256':'sha','path':'x'})
+    job.update(change)
+    t=SimpleNamespace(identity=lambda p:{'same':True},edge=SimpleNamespace(status=Mock(return_value=job)))
+    with pytest.raises(ValueError):importer.restored_report(t,{},'99','sha')
 
 
 @pytest.mark.parametrize('bad',[None,'duplicate','missing','mismatch'])

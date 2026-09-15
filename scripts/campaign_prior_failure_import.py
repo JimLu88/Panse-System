@@ -10,6 +10,35 @@ from campaign_official_failure_report import parse_feedback
 from campaign_feedback_normalization import normalize_errors
 
 
+def report_reference(terminal):
+    """Accept both historical spellings without modifying pinned terminals."""
+    refs=[]
+    for prefix in ('source_report','official_report'):
+        path_key=prefix if prefix=='source_report' else prefix+'_path'
+        sha_key=prefix+'_sha256'
+        if path_key in terminal or sha_key in terminal:
+            if not terminal.get(path_key) or not terminal.get(sha_key):
+                raise ValueError('prior_report_reference_incomplete')
+            refs.append((terminal[path_key],terminal[sha_key]))
+    if not refs or any(r!=refs[0] for r in refs):
+        raise ValueError('prior_report_reference_missing_or_conflicting')
+    return refs[0]
+
+
+def restored_report(transport,payload,batch,sha):
+    """Status-only lookup of an already downloaded exact-batch, same-byte file."""
+    from campaign_continuous_policy import fingerprint
+    bound={'identity':transport.identity(payload),'batch':str(batch)}
+    jid=fingerprint(['feedback',bound]);job=transport.edge.status(jid)
+    result=job.get('result') or {}
+    if (job.get('job_id')!=jid or job.get('operation')!='feedback' or job.get('state')!='finished'
+            or result.get('state')!='downloaded' or str(result.get('batch'))!=str(batch)
+            or result.get('sha256')!=sha):
+        raise ValueError('prior_same_sha_report_not_recovered')
+    # checked() below also verifies actual bytes and allowed resolved roots.
+    return result['path'],{k:v for k,v in job.items() if k!='ok'}
+
+
 def import_prior(transport,payload,items,*,readback=False):
     p=payload['identity'];campaign='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id'))
     a=transport.authority;protected=a.blocked(campaign,'signup',p['start'],p['end'])
@@ -64,8 +93,13 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
     files=[f for f in body['files'] if f['sha256']==terminal['file_sha256']]
     if len(files)!=1:raise ValueError('prior_submitted_file_binding_missing')
     checked(files[0]['path'],files[0]['sha256'])
-    raw=checked(terminal['source_report'],terminal['source_report_sha256'])
-    parsed=parse_feedback(raw.read_bytes(),expected_sha=terminal['source_report_sha256'],batch=str(ref['batch']),
+    report_path,report_sha=report_reference(terminal)
+    recovery=None
+    try:raw=checked(report_path,report_sha)
+    except FileNotFoundError:
+        report_path,recovery=restored_report(transport,payload,ref['batch'],report_sha)
+        raw=checked(report_path,report_sha)
+    parsed=parse_feedback(raw.read_bytes(),expected_sha=report_sha,batch=str(ref['batch']),
                           expected_items=sorted(original))
     if {r['item']:r['outcome'] for r in parsed['outcomes']}!=original:
         raise ValueError('prior_feedback_conflicts_with_claim')
@@ -73,6 +107,11 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
     if set(report_rows)!=set(submitted) or any(Decimal(r['submitted_price'])!=Decimal(submitted[k]['activity_price'])
                                               for k,r in report_rows.items()):
         raise ValueError('prior_feedback_submitted_sku_or_price_changed')
+    if recovery is not None:
+        persist(transport.root/'prior-import'/(str(ref['batch'])+'-restored-report.json'),
+                {'source_terminal':str(source),'source_terminal_sha256':ref['sha256'],
+                 'original_report_reference':report_reference(terminal),'recovered':recovery,
+                 'report_sha256':report_sha,'claims_changed':False,'platform_write':False})
     snapshot=load(transport.root/'resolved-snapshot.json')
     # Current frozen ERP version/bases, original submitted price and official
     # constraints. Never treat a historical deduction as live readback.
