@@ -15,7 +15,7 @@ from campaign_official_template import (_archive, _read, _effective, _layout,
     sheet_path, template_rows, ROW, CELL, REF)
 
 
-def project(raw, scope, items):
+def project(raw, scope, items, *, approved_shipping=None):
     wanted = set(map(str, items))
     if not wanted or scope.get('complete') is not True or not scope.get('page_evidence'):
         raise ValueError('complete_current_product_scope_required')
@@ -53,6 +53,10 @@ def project(raw, scope, items):
             if item in shipping and shipping[item] != value:
                 raise ValueError('fixed_master_shipping_not_unique')
             shipping[item]=value
+        if approved_shipping:
+            if not set(approved_shipping).issubset(wanted) or any(v!='1' for v in approved_shipping.values()):
+                raise ValueError('shipping_projection_scope_invalid')
+            shipping.update(approved_shipping)
         new_rows = [original[n] for n in (1,2,3)]
         for number, pair in enumerate(sorted(facts), 4):
             fact=facts[pair]

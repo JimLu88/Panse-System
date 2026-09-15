@@ -270,6 +270,12 @@ def execute_repairs(transport,action_id,payload,folder):
                 custom.append(dict(item=item,sku=d['sku'],activity_price=repair['price']))
                 local_items.add(item)
             elif repair['kind']=='file_price':local_items.add(item) # Generator already writes ERP daily.
+            elif repair['kind']=='file_shipping':
+                from campaign_approved_shipping import validate
+                validate(item,d['sku'],repair,payload['identity'])
+                if str(payload['failed_batch'])!=repair['failed_batch']:
+                    raise ValueError('shipping_failed_batch_changed')
+                local_items.add(item) # Only this approved next-file commitment changes.
             elif repair['kind']=='exclude_ineligible_sku':
                 ref=repair['scope_evidence']
                 if file_sha(ref['path'])!=ref['sha256']:raise ValueError('sku_exclusion_evidence_changed')

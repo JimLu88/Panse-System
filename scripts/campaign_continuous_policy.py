@@ -88,6 +88,10 @@ def classify(error):
             or not error.get('batch') or not error.get('official_evidence')):
         return dict(base, reason='official_failed_scope_not_proven')
     kind = error.get('kind')
+    if kind=='unknown' and error.get('parse_issue')=='free_shipping_commitment_required':
+        from campaign_approved_shipping import decision
+        shipping=decision(error)
+        if shipping is not None:return dict(base,action='repair',repair=shipping)
     if kind=='unknown' and error.get('parse_issue'):
         return dict(base,reason=error['parse_issue'])
     if kind == 'no_sales':

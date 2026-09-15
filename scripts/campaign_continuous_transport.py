@@ -197,7 +197,9 @@ class CampaignTransport:
                 issues=mapping_conflicts(snapshot,mapping_facts)
                 if issues:return {'input_issues':issues,'items':payload['items']}
                 snapshot_path=Path(persist(folder/'snapshot-with-id-overlay.json',snapshot))
-            projected=project(source.read_bytes(),scope,payload['items'])
+            from campaign_approved_shipping import projection_values
+            shipping=projection_values(scoped_corrections,payload.get('identity',{}))
+            projected=project(source.read_bytes(),scope,payload['items'],approved_shipping=shipping)
             activity_template=folder/'fixed-master-current-skus.xlsx'
             if activity_template.exists():
                 if activity_template.read_bytes()!=projected:

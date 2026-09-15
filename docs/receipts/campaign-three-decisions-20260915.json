@@ -1,0 +1,25 @@
+{
+  "schema": "campaign_exact_user_authorization_v1",
+  "authorization_id": "user-20260915-three-decisions-approved",
+  "source": "User direct reply: 三项都同意",
+  "scope_reference": "outputs/three-products-user-decisions-20260915.md",
+  "free_shipping": {"item": "1001358847694", "campaign": "legacy/itemApply/3172207691", "approved": true},
+  "fixed_originals": [
+    {"item":"1001358847694","sku":"5991470332907","original":"2000","floor":"400"},
+    {"item":"1001358847694","sku":"5991470332908","original":"5000","floor":"1000"},
+    {"item":"1001358847694","sku":"6001467129246","original":"9000","floor":"1800"},
+    {"item":"793202812082","sku":"5916518666444","original":"1000","floor":"200"},
+    {"item":"793202812082","sku":"5916518666443","original":"2000","floor":"400"},
+    {"item":"793202812082","sku":"5916518666442","original":"1500","floor":"300"}
+  ],
+  "cabinet_rotation": {
+    "item":"793052650673", "campaign":"49557/49560/3538210379",
+    "pairs":[{"old":"6112006437836","new":"6134178749284"},{"old":"6274590435214","new":"6134178749285"}],
+    "stock":"copy_each_old_sku_actual_sellable_stock_at_execution_to_its_new_sku",
+    "disable_old":true, "enable_new":true, "preserve_erp_prices":true
+  },
+  "exclude_items":["863525290377"],
+  "reset_previously_fixed_bases":false,
+  "replay_success_or_unknown":false,
+  "platform_execution_completed":false
+}
