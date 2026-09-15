@@ -53,7 +53,9 @@ def validate_request(request):
         if any(str(source[k])!=str(page[k]) for k in ('shop_id','start','end','official_rate','page_evidence')):
             raise ValueError('calendar_not_bound_to_observed_page')
     # Price version is resolved AFTER the one required product export/mapping.
-    build_plan(dict(calendar,price_version='resolved_after_single_scope_export'))
+    plan=build_plan(dict(calendar,price_version='resolved_after_single_scope_export'))
+    from campaign_authorized_item_scope import validate as validate_item_scope
+    validate_item_scope(request.get('authorized_item_scope'),plan)
     return shop
 
 
@@ -86,6 +88,8 @@ def execute_request(request, *, root, authority, edge, artifact_roots, progress=
         for segment in plan['segments']:
             page=request['pages'][segment['campaign']]
             options={'target':segment['target'],'time_request':time_path}
+            if request.get('authorized_item_scope') is not None:
+                options['authorized_item_scope']=request['authorized_item_scope']
             if segment['kind']=='daily':
                 options['fixed_signup_template']=request.get('fixed_signup_template')
                 if not options['fixed_signup_template']:

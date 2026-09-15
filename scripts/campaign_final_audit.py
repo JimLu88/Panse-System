@@ -192,7 +192,8 @@ def finalize(request, result, *, root, authority, edge, artifact_roots):
                     sorted(set(segment.get('success',{}))|set(segment.get('exceptions',{}))|set(segment.get('pending') or []))))
         if not result.get('segments'): gaps.append(dict(reason='final_audit_no_segment_scope',items=[]))
         audit=dict(policy=POLICY, checked_at=datetime.now(timezone.utc).isoformat(),segments=segments,gaps=gaps,
-                   scope='request_only' if request.get('schema')!='continuous_campaign_request_v1' else 'erp_sellable_and_taobao_onsale',
+                   scope='user_authorized_item_subset' if request.get('authorized_item_scope') else
+                       'request_only' if request.get('schema')!='continuous_campaign_request_v1' else 'erp_sellable_and_taobao_onsale',
                    verified=bool(segments) and not gaps and all(s['coverage_complete'] for s in segments),
                    platform_write=False,automatic_retry=False)
         # A normal calendar may have stopped before reaching later segments.

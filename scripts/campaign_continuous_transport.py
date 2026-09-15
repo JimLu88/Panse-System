@@ -126,6 +126,8 @@ class CampaignTransport:
             price_version=snapshot['resolved_price_version_sha256'],mapping_issues=mapping['unknown']),payload,folder)
 
     def with_prior(self,scope,payload,folder):
+        from campaign_authorized_item_scope import apply as apply_item_scope
+        scope=apply_item_scope(scope,self.request.get('authorized_item_scope'))
         p=payload['identity'];campaign='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id'))
         prior=self.authority.blocked(campaign,'signup',p['start'],p['end'])
         # Preserve explicit old failures as exceptions until their original
