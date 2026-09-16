@@ -27,9 +27,10 @@ def pinned(ref):
 def derive(a,request):
     if request.get('schema')!='campaign_missing_discount_include_v1':raise ValueError('include_schema_invalid')
     exact_campaign(request['campaign'])
-    snapshot=a.resolve_snapshot(pinned(request['snapshot']))
-    if snapshot['resolved_price_version_sha256']!=request['price_version']:raise ValueError('include_price_version_changed')
     coverage=pinned(request['coverage']);read=pinned(request['missing_read'])
+    from campaign_snapshot_scope import resolve_for_items
+    snapshot=resolve_for_items(a,pinned(request['snapshot']),coverage['items'])
+    if snapshot['resolved_price_version_sha256']!=request['price_version']:raise ValueError('include_price_version_changed')
     window=dict(start=request['start'],end=request['end'])
     if (coverage.get('filtered_offer_list_coverage_verified') is not True or coverage.get('price_window')!=window
             or coverage.get('platform_write') is not False):raise ValueError('include_offer_coverage_not_proven')
@@ -204,7 +205,8 @@ def recover_inputs(transport,payload,exceptions):
     a=transport.authority
     if not a.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='missing_discount_includes'").fetchone():return {}
     p=payload['identity'];campaign='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id'))
-    snapshot=a.resolve_snapshot(load(transport.root/'resolved-snapshot.json'))
+    from campaign_snapshot_scope import resolve_for_items
+    snapshot=resolve_for_items(a,load(transport.root/'resolved-snapshot.json'),exceptions)
     mapped=mapped_erp_rows(snapshot);verified={};references={}
     for claim in a.db.execute("SELECT * FROM missing_discount_includes WHERE state='verified'"):
         body=json.loads(claim['body'])

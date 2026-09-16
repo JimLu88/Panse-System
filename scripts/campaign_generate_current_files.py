@@ -147,7 +147,15 @@ def _generate(args,authority):
     # Persist explicitly supplied sources, so the next task need not remember flags.
     for path in args.custom_basis_receipt:
         authority.register_source(path,'fixed',sha(path.read_bytes()))
-    snapshot = authority.resolve_snapshot(load(args.snapshot))
+    snapshot_scope = None
+    if (getattr(args, 'continuous_rule_sha', None) is not None
+            and signup_items is not None and discount_items is not None):
+        snapshot_scope = sorted(signup_items | discount_items)
+    if snapshot_scope:
+        from campaign_snapshot_scope import resolve_for_items
+        snapshot = resolve_for_items(authority, load(args.snapshot), snapshot_scope)
+    else:
+        snapshot = authority.resolve_snapshot(load(args.snapshot))
     time_binding = None
     if getattr(args, 'time_request', None) or getattr(args, 'time_segment', None):
         if not getattr(args, 'time_request', None) or not getattr(args, 'time_segment', None):
@@ -245,6 +253,8 @@ def _generate(args,authority):
                   signup_rows=activity,discount_rows=discounts,planned_discount_rows=planned_discounts,discount_reuse=reused,corrections=corrections,files=result['files'])
         if continuous_rule_sha is not None:
             body['continuous_rule_sha']=continuous_rule_sha
+        if snapshot_scope:
+            body['snapshot_item_scope']=snapshot_scope
         if exclusions:body['sku_exclusion_receipts']=exclusions
         if time_binding is not None:
             body['time_binding']=time_binding

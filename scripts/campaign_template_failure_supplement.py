@@ -7,7 +7,7 @@ from copy import deepcopy
 import hashlib
 import re
 
-from campaign_official_failure_report import attributes, amount
+from campaign_official_failure_report import attributes, amount, COUPON, LIST
 from campaign_official_template import read_rows
 
 
@@ -40,8 +40,11 @@ def supplement(errors, raw, *, expected_sha, evidence):
             result.append(deepcopy(error)); continue
         # Only this exact truncated grammar is understood. A partial name,
         # another error, missing number after 为, or unknown suffix stays held.
-        tail = re.search(r'您的sku[：:]\s*([^\r\n]+?)\s+在管\s*$',error['message'])
+        tail = re.search(r'您的sku[：:]\s*((?:(?!您的sku[：:])[^\r\n])+?)\s+在管(?:控)?\s*$',error['message'])
         if not tail:
+            result.append(deepcopy(error)); continue
+        remainder = COUPON.sub('', LIST.sub('', error['message'][:tail.start()]))
+        if re.search(r'您的sku[：:]|活动普惠券后价[：:]', remainder):
             result.append(deepcopy(error)); continue
         matches = [r for r in facts if r['item']==error['item'] and attributes(r['name'])==attributes(tail[1])]
         if len(matches)!=1 or not matches[0]['cap']:
@@ -59,3 +62,22 @@ def supplement(errors, raw, *, expected_sha, evidence):
         result.append(entry); count += 1
     if count == 0: raise ValueError('no_proven_truncated_list_clause')
     return result
+
+
+def supplement_bound_terminal(terminal, body):
+    """Optional exact-template evidence before normalization; never download."""
+    errors = terminal.get('errors', [])
+    if not any(e.get('parse_issue') == 'unparsed_or_incomplete_official_failure' for e in errors):
+        return terminal
+    # Fixed SuperReduce masters have no current reference facts.
+    if str(body.get('campaign', '')).startswith('legacy/'):
+        return terminal
+    from pathlib import Path
+    try:
+        revised = supplement(errors, Path(body['template_path']).read_bytes(),
+            expected_sha=body['template_sha256'], evidence={
+                'path':body['template_path'], 'submitted_prices':{
+                    (r['item'],r['sku']):r['activity_price'] for r in body['signup_rows']}})
+    except (ValueError, OSError, KeyError):
+        return terminal  # Missing/ambiguous evidence remains explicitly unknown.
+    return dict(terminal, errors=revised)

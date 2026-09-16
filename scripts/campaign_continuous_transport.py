@@ -339,6 +339,9 @@ class CampaignTransport:
         if not result.get('errors'):
             result=report_from_download(self,result,payload,folder)
         body=self.authority.get_bundle(result['bundle_id']);snapshot=load(body['snapshot_path'])
+        if payload['failed_phase']=='signup':
+            from campaign_template_failure_supplement import supplement_bound_terminal
+            result=supplement_bound_terminal(result,body)
         path=self.root/'verified-discounts'/(result['bundle_id']+'.json')
         readback=load(path) if path.exists() else {'rows':[]}
         actual=[dict(r,verified_readback=True,evidence=readback.get('evidence'),target=body['target']) for r in readback['rows']]

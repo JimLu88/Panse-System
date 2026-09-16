@@ -37,7 +37,13 @@ def validated_body(authority, identity, phase):
     if body['rule_sha256']!=authority.rule_sha:raise ValueError('rule_version_changed')
     if file_sha(body['snapshot_path'])!=body['snapshot_sha256']:raise ValueError('snapshot_file_changed')
     if file_sha(body['template_path'])!=body['template_sha256']:raise ValueError('official_template_changed')
-    snapshot=authority.resolve_snapshot(load(body['snapshot_path']))
+    if body.get('snapshot_item_scope'):
+        if set(body['snapshot_item_scope']) != set(body['signup_items']) | set(body['discount_items']):
+            raise ValueError('snapshot_scope_bundle_mismatch')
+        from campaign_snapshot_scope import resolve_for_items
+        snapshot=resolve_for_items(authority,load(body['snapshot_path']),body['snapshot_item_scope'])
+    else:
+        snapshot=authority.resolve_snapshot(load(body['snapshot_path']))
     if snapshot['resolved_price_version_sha256']!=body['price_version'] or not source_version_matches(authority,body,snapshot['entry_source_sha256']):
         raise ValueError('mapping_or_price_authority_changed_regenerate_local_files')
     bases=authority.bases(snapshot)

@@ -53,6 +53,14 @@ class SupplementTests(unittest.TestCase):
         self.error['message']='您的sku：颜色定制（咨询客服） 在管控期标价为'
         with self.assertRaisesRegex(ValueError,'no_proven'):self.run_it()
 
+    def test_truncated_at_guankong_is_exact(self):
+        self.error['message']='您的sku：颜色定制（咨询客服） 在管控'
+        self.assertEqual(self.run_it()[0]['official_cap'],'1125.00')
+
+    def test_other_incomplete_price_clause_remains_unknown(self):
+        self.error['message']='您的sku：另一规格 在管控期标价为?；您的sku：颜色定制（咨询客服） 在管控'
+        with self.assertRaisesRegex(ValueError,'no_proven'):self.run_it()
+
     def test_hash_mismatch_rejected(self):
         self.sha='0'*64
         with self.assertRaisesRegex(ValueError,'changed'):self.run_it()
