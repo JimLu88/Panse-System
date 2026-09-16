@@ -14,6 +14,32 @@ def reconcile_signup(authority, job, *, output_dir):
     if job.get('operation') != 'signup' or job.get('state') != 'finished':
         raise ValueError('edge_signup_job_has_no_official_terminal')
     result = job.get('result') or {}
+    return _reconcile_signup_result(authority,job,result,output_dir=output_dir)
+
+
+def reconcile_bound_signup_feedback(authority, job, result, *, output_dir):
+    """Record a separately bound read-only receipt, preserving the unknown job.
+
+    The installed recovery validates the original upload frame and downloaded
+    report before calling here. This is not a fabricated finished transport job.
+    """
+    from campaign_continuous_policy import fingerprint
+    ref=result.get('readonly_feedback_binding') or {}
+    if (job.get('operation')!='signup' or job.get('state')!='unknown'
+            or (job.get('result') or {}).get('reason')!='multiple_new_matching_batches_do_not_replay'
+            or not ref.get('path') or file_sha(ref['path'])!=ref.get('sha256')):
+        raise ValueError('verified_readonly_signup_binding_required')
+    binding=load(ref['path'])
+    if (binding.get('original_job_sha256')!=fingerprint(job)
+            or binding.get('job_id')!=job.get('job_id')
+            or binding.get('batch')!=result.get('batch')
+            or binding.get('feedback_sha256')!=(result.get('feedback') or {}).get('sha256')
+            or binding.get('platform_write') is not False):
+        raise ValueError('readonly_signup_binding_changed')
+    return _reconcile_signup_result(authority,job,result,output_dir=output_dir)
+
+
+def _reconcile_signup_result(authority, job, result, *, output_dir):
     claim = result.get('claim') or {}
     claim_id = claim.get('claim_id')
     binding = authority.db.execute(
@@ -77,6 +103,8 @@ def reconcile_signup(authority, job, *, output_dir):
                batch_id=batch,terminal=True,items=rows,job_id=job['job_id'],
                official_observation={'path':str(evidence_path),'sha256':file_sha(evidence_path)},
                feedback=result.get('feedback'),errors=errors)
+    if result.get('readonly_feedback_binding'):
+        doc['readonly_feedback_binding']=result['readonly_feedback_binding']
     output = Path(output_dir); output.mkdir(parents=True,exist_ok=True)
     path = output/(claim_id+'-official-terminal.json')
     if path.exists():

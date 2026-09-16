@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 import test_campaign_entry_guards as entry
-from campaign_edge_receipt import reconcile_signup
+from campaign_edge_receipt import reconcile_signup, reconcile_bound_signup_feedback
 from campaign_submission_gate import consume_claim
 
 
@@ -61,3 +61,24 @@ class ReceiptTests(unittest.TestCase):
         reconciled=reconcile_signup(self.auth,job,output_dir=self.root/'reconciled')
         self.assertEqual(reconciled['items'][0]['outcome'],'failed')
         self.assertEqual(reconciled['errors'][0]['message'],'导入模板有误')
+
+    def test_bound_feedback_preserves_unknown_transport_and_checks_binding(self):
+        from campaign_continuous_policy import fingerprint
+        from campaign_entry_authority import file_sha
+        job=self.job(success=0);result=job['result']
+        job=dict(job,state='unknown',result={'reason':'multiple_new_matching_batches_do_not_replay'})
+        proof=self.write('binding.json',dict(original_job_sha256=fingerprint(job),job_id=job['job_id'],
+            batch=result['batch'],feedback_sha256=None,platform_write=False))
+        result['readonly_feedback_binding']=dict(path=str(proof),sha256=file_sha(proof))
+        with self.assertRaisesRegex(ValueError,'no_official_terminal'):
+            reconcile_signup(self.auth,job,output_dir=self.root/'reconciled')
+        changed=dict(job,result={'reason':'different-unknown'})
+        with self.assertRaisesRegex(ValueError,'binding_required'):
+            reconcile_bound_signup_feedback(self.auth,changed,result,output_dir=self.root/'reconciled')
+        result['readonly_feedback_binding']['sha256']='bad'
+        with self.assertRaisesRegex(ValueError,'binding_required'):
+            reconcile_bound_signup_feedback(self.auth,job,result,output_dir=self.root/'reconciled')
+        result['readonly_feedback_binding']['sha256']=file_sha(proof)
+        out=reconcile_bound_signup_feedback(self.auth,job,result,output_dir=self.root/'reconciled')
+        self.assertEqual(out['items'][0]['outcome'],'failed')
+        self.assertEqual(job['state'],'unknown')

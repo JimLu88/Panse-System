@@ -23,8 +23,13 @@ def reclassify(transport,report,payload,folder):
     terminal=load(transport.root/'terminals'/('signup-'+str(report['batch'])+'.json'))
     if not terminal.get('errors'):terminal=report_from_download(transport,terminal,payload,folder)
     body=transport.authority.get_bundle(report['bundle_id']);snapshot=load(body['snapshot_path'])
-    saved=load(transport.root/'verified-discounts'/(report['bundle_id']+'.json'))
-    actual=[dict(r,verified_readback=True,evidence=saved.get('evidence'),target=body['target']) for r in saved['rows']]
+    # Custom-only bundles legitimately have no ordinary discount readback.
+    # Absence is NOT a zero discount: normalize_errors still requires actual
+    # verified evidence for any ordinary repair that depends on that amount.
+    discount_path=transport.root/'verified-discounts'/(report['bundle_id']+'.json')
+    saved=load(discount_path) if discount_path.is_file() else None
+    actual=([dict(r,verified_readback=True,evidence=saved.get('evidence'),target=body['target'])
+             for r in saved['rows']] if saved is not None else [])
     errors=normalize_errors(terminal,submitted_rows=body['signup_rows'],erp_rows=snapshot['all_erp_rows'],
         fixed_bases=transport.authority.bases(snapshot),actual_discounts=actual,
         rate=body['official_rate'],target_mode=body['target'])
