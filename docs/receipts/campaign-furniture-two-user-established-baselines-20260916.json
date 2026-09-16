@@ -1,0 +1,15 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-16",
+  "source_thread_id": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "executor_thread_id": "01a067c6-7e83-7483-9a21-84b44ed7299b",
+  "user_verbatim": "这两条原价同意固定  ，你报名到完成",
+  "authorization_provenance": "Direct user confirmation of the immediately preceding exact two SKU originals and 20 percent floors.",
+  "scope": "Establish only these two missing originals once. Other original baselines, daily prices, existing claims and successful registrations remain unchanged.",
+  "first_ever_historical_record_claimed": false,
+  "policy": "Keep these fixed originals and exact 20 percent floors across future reductions and verified replacements; do not rebase.",
+  "rows": [
+    {"item":"1001358847694","sku":"6231821270898","erp_code":"PPS100135884769496","name":"超大件家具定制","fixed_original_record":"13000.00","fixed_floor":"2600.00","minimum_submittable_price":"2600.00","floor_provenance":"user_established_exact_price_20260916","first_ever_historical_record_claimed":false},
+    {"item":"1001358847694","sku":"6001467129247","erp_code":"PPS100135884769495","name":"其他定制","fixed_original_record":"20000.00","fixed_floor":"4000.00","minimum_submittable_price":"4000.00","floor_provenance":"user_established_exact_price_20260916","first_ever_historical_record_claimed":false}
+  ]
+}
