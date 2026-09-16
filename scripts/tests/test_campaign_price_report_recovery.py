@@ -9,6 +9,25 @@ from campaign_price_report_recovery import reclassify
 
 
 class ReclassificationTests(unittest.TestCase):
+    def test_product_level_shipping_reclassification_keeps_exact_sku_scope(self):
+        import campaign_approved_shipping as shipping
+        from campaign_continuous_policy import classify
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'terminals').mkdir()
+            snapshot=root/'snapshot.json';snapshot.write_text(json.dumps({'all_erp_rows':[]}))
+            errors=[dict(item=shipping.ITEM,sku='',kind='unknown',batch=shipping.BATCH,
+                terminal='failed',message='该商品需要包邮',official_evidence={'sha256':'original'},
+                parse_issue='unparsed_or_incomplete_official_failure')]
+            (root/('terminals/signup-'+shipping.BATCH+'.json')).write_text(json.dumps({'errors':errors}))
+            body=dict(snapshot_path=str(snapshot),target='medium',official_rate='.1',
+                signup_rows=[dict(item=shipping.ITEM,sku=s) for s in shipping.SKUS])
+            auth=SimpleNamespace(get_bundle=lambda _:body,bases=lambda _: {})
+            result=reclassify(SimpleNamespace(root=root,authority=auth),
+                dict(batch=shipping.BATCH,bundle_id='bundle',errors=errors),{},root/'out')
+            self.assertEqual({e['sku'] for e in result['errors']},shipping.SKUS)
+            self.assertTrue(all(classify(e)['repair']['kind']=='file_shipping' for e in result['errors']))
+            self.assertEqual(json.loads((root/('terminals/signup-'+shipping.BATCH+'.json')).read_text())['errors'],errors)
+
     def test_missing_discount_readback_does_not_block_fixed_custom_basis(self):
         for custom in (True,False):
             with self.subTest(custom=custom), tempfile.TemporaryDirectory() as directory:

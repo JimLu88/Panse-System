@@ -36,4 +36,6 @@ def reclassify(transport,report,payload,folder):
         fixed_bases=transport.authority.bases(snapshot),actual_discounts=actual,
         rate=body['official_rate'],target_mode=body['target'])
     wanted={(e['item'],e['sku']) for e in report['errors']}
-    return dict(report,errors=[e for e in errors if (e['item'],e['sku']) in wanted])
+    product_level={i for i,s in wanted if not s}
+    return dict(report,errors=[e for e in errors if (e['item'],e['sku']) in wanted
+        or (e.get('product_level_requirement') is True and e['item'] in product_level)])

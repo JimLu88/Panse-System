@@ -6,6 +6,7 @@ repairs where the last reason silently overwrites the stricter limit.
 """
 from collections import defaultdict
 from decimal import Decimal, ROUND_FLOOR
+import re
 
 from campaign_continuous_policy import money
 from campaign_generate_current_files import official_cut
@@ -29,6 +30,22 @@ def normalize_errors(parsed, *, submitted_rows, erp_rows, fixed_bases, actual_di
         discounts[(str(row['item']), str(row['sku']))].append(row)
     grouped = defaultdict(list)
     for error in parsed['errors']:
+        # Older saved feedback classified this product-wide requirement as an
+        # unexplained price error. Reinterpret the exact original text without
+        # a new download; carry it only to the original submitted SKU scope.
+        # This does NOT grant shipping: classify still checks the user receipt,
+        # exact product, failed batch and authorized SKUs independently.
+        if (error.get('kind')=='unknown' and not error.get('sku')
+                and re.fullmatch(r'该商品需要包邮[。！!\s]*',error.get('message',''))
+                and error.get('parse_issue') in {
+                    'free_shipping_commitment_required','unparsed_or_incomplete_official_failure'}):
+            pairs=[pair for pair in submitted if pair[0]==error['item']]
+            if pairs:
+                for pair in pairs:
+                    grouped[pair].append(dict(error,sku=pair[1],
+                        parse_issue='free_shipping_commitment_required',
+                        original_parse_issue=error['parse_issue'],product_level_requirement=True))
+                continue
         grouped[(error['item'], error['sku'])].append(error)
     normalized = []
     for pair, constraints in grouped.items():
