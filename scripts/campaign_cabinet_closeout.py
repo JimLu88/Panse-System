@@ -98,11 +98,27 @@ def apply(transport,scope,payload,folder):
     if key==AUTUMN and ITEM not in prior:
         latest=transport.authority.db.execute("SELECT id,status FROM attempts WHERE item=? AND campaign=? AND phase='signup' ORDER BY rowid DESC LIMIT 1",(ITEM,key)).fetchone()
         if not latest or tuple(latest)!=(LAST,'failed'):raise ValueError('cabinet_failure_predecessor_changed')
-    if payload.get('time_binding'):
+    discount_gaps=[]
+    if payload.get('time_binding') and ITEM in prior:
+        # Enrollment success is protected before any price-writing helper runs.
+        # A changed physical catalog is NOT permission to amend that success.
+        # Keep missing discount coverage explicit in the final read-only audit.
+        window=payload['time_binding']['segment']['price_window']
+        offers=[o for o in transport.authority.discount_offers()
+            if (o['start'],o['end'])==(window['start'],window['end'])
+            and any(r['item']==ITEM for r in o['items'])]
+        covered={r['sku'] for o in offers for r in o['rows'] if r['item']==ITEM}
+        missing=sorted({p[2] for p in PAIRS}-covered)
+        if missing:
+            discount_gaps=[dict(item=ITEM,skus=missing,price_window=window,
+                reason='protected_registration_new_sku_discount_unverified',
+                registration_status=prior[ITEM],platform_write=False)]
+    elif payload.get('time_binding'):
         include_missing(transport,payload,folder)
     ref=persist(folder/'cabinet-prior.json',dict(campaign=key,protected=prior,
         changed_physical_scope=True,publication=proof['published_source'],claims_unchanged=True))
-    return dict(result,prior_outcomes={ITEM:prior[ITEM]} if ITEM in prior else {},prior_outcomes_evidence=ref)
+    return dict(result,prior_outcomes={ITEM:prior[ITEM]} if ITEM in prior else {},prior_outcomes_evidence=ref,
+                protected_discount_gaps=discount_gaps)
 
 
 def include_missing(transport,payload,folder):

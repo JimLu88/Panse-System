@@ -99,3 +99,57 @@ def test_parser_merged_product_rows(tmp_path):
     assert rows[1]['item']=='719436834260'
     assert rows[1]['activity_price']==''
     assert not check(rows)['all_registered']
+
+
+def test_repaired_read_reuses_only_same_execution_pinned_audit(tmp_path):
+    from campaign_final_audit import reusable_segments
+    from campaign_continuous_policy import fingerprint
+    from campaign_entry_authority import file_sha
+    raw=dict(status='complete',segments=[{'segment_id':'s'}])
+    path=tmp_path/'final-audit'/fingerprint([POLICY,3,raw])/'audit-v3.json'
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'segments':[{'segment_id':'s','all_registered':True}]}))
+    result=dict(raw,final_audit=dict(evidence=str(path),sha256=file_sha(path)))
+    assert reusable_segments(tmp_path,result,raw)['s']['all_registered'] is True
+    assert reusable_segments(tmp_path,result,dict(raw,status='blocked'))=={}
+    path.write_text('{}')
+    with pytest.raises(ValueError,match='receipt_changed'):reusable_segments(tmp_path,result,raw)
+
+
+def test_successful_sibling_export_not_requested_again(tmp_path,monkeypatch):
+    import campaign_final_audit as mod
+    from campaign_entry_authority import file_sha
+    from campaign_continuous_policy import fingerprint
+    raw=dict(status='complete',segments=[{'segment_id':'s','success':{EXPECTED[0]['item']:'receipt'}}])
+    source=tmp_path/'export.xlsx';source.write_bytes(b'unchanged')
+    old=check([row(),row('100000002')])
+    old.update(segment_id='s',scope_sha256='scope',source_file={'path':str(source),'sha256':file_sha(source)})
+    path=tmp_path/'final-audit'/fingerprint([POLICY,3,raw])/'audit-v3.json'
+    path.parent.mkdir(parents=True);path.write_text(json.dumps({'segments':[old]}))
+    result=dict(raw,final_audit=dict(evidence=str(path),sha256=file_sha(path)))
+    monkeypatch.setattr(mod,'manifest',lambda *a:dict(scope_sha256='scope',window=WINDOW,pairs=EXPECTED))
+    def no_transport(*a,**kw):raise AssertionError('successful export repeated')
+    monkeypatch.setattr(mod,'CampaignTransport',no_transport)
+    request=dict(schema='fixture',pages={'legacy':{'campaign_id':'legacy'}})
+    final=mod.finalize(request,result,root=tmp_path,authority=None,edge=None,artifact_roots=[])
+    assert final['all_signed_up'] is True
+
+
+def test_registered_export_does_not_hide_missing_discount(tmp_path,monkeypatch):
+    import campaign_final_audit as mod
+    from campaign_entry_authority import file_sha
+    from campaign_continuous_policy import fingerprint
+    raw=dict(status='complete',segments=[{'segment_id':'s'}])
+    source=tmp_path/'export.xlsx';source.write_bytes(b'unchanged')
+    old=check([row(),row('100000002')]);old.update(segment_id='s',scope_sha256='scope',
+        source_file={'path':str(source),'sha256':file_sha(source)})
+    path=tmp_path/'final-audit'/fingerprint([POLICY,3,raw])/'audit-v3.json'
+    path.parent.mkdir(parents=True);path.write_text(json.dumps({'segments':[old]}))
+    result=dict(raw,final_audit=dict(evidence=str(path),sha256=file_sha(path)))
+    gap=dict(reason='protected_registration_new_sku_discount_unverified',item=EXPECTED[0]['item'])
+    monkeypatch.setattr(mod,'manifest',lambda *a:dict(scope_sha256='scope',window=WINDOW,pairs=EXPECTED,protected_discount_gaps=[gap]))
+    final=mod.finalize(dict(schema='fixture',pages={'l':{'campaign_id':'legacy'}}),result,
+        root=tmp_path,authority=None,edge=None,artifact_roots=[])
+    assert final['all_signed_up'] is False
+    assert final['final_audit']['segments'][0]['all_registered'] is True
+    assert final['final_audit']['gaps'][0]['reason']==gap['reason']

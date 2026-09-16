@@ -39,6 +39,23 @@ def facts_and_rows():
     return facts,rows
 
 
+@pytest.mark.parametrize('status',['success','unknown'])
+def test_protected_registration_never_enters_discount_writer(tmp_path,monkeypatch,status):
+    facts,_=facts_and_rows()
+    persist(tmp_path/'cabinet-active.json',dict(active_skus=[f['sku'] for f in facts],published_source={}))
+    a=Mock();a.blocked.return_value={mod.ITEM:status};a.discount_offers.return_value=[]
+    include=Mock();monkeypatch.setattr(mod,'include_missing',include)
+    payload=dict(identity=dict(campaign_id='legacy',phase_id='itemApply',sign_record_id='3172207691',
+        start='2025-06-21 00:00:00',end='2028-07-31 23:59:59'),
+        time_binding={'segment':{'price_window':dict(start='2026-09-28 00:00:00',end='2026-09-30 23:59:59')}})
+    result=mod.apply(SimpleNamespace(root=tmp_path,authority=a),
+        dict(sku_facts=[{'facts':f} for f in facts]),payload,tmp_path/'action')
+    include.assert_not_called()
+    assert result['prior_outcomes']=={mod.ITEM:status}
+    assert result['protected_discount_gaps'][0]['skus']==sorted(p[2] for p in mod.PAIRS)
+    assert result['protected_discount_gaps'][0]['platform_write'] is False
+
+
 @pytest.mark.parametrize('bad',[None,'stock','price','code','switch','rows','daily','state'])
 def test_publication_and_new_export_must_match_before_alias_binding(tmp_path,bad):
     facts,rows=facts_and_rows()

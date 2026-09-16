@@ -131,7 +131,24 @@ def manifest(root, segment):
     if {i for i,s in pairs} != items: raise ValueError('final_audit_sku_scope_incomplete')
     window=target_window(payload)
     return dict(payload=payload, window=window, pairs=[dict(item=i,sku=s) for i,s in pairs],
-                scope_sha256=file_sha(source), scope_path=str(source))
+                scope_sha256=file_sha(source), scope_path=str(source),
+                protected_discount_gaps=scope.get('protected_discount_gaps',[]))
+
+
+def reusable_segments(root, result, raw):
+    """Reuse only byte-pinned readbacks for the same settled execution.
+
+    Repairing one failed export must not export its successful sibling again.
+    Old audits remain immutable and cannot authorize a submission.
+    """
+    ref=result.get('final_audit') or {}
+    if not ref.get('evidence'):return {}
+    path=Path(ref['evidence']).resolve()
+    if not path.is_relative_to((Path(root)/'final-audit').resolve()):return {}
+    if path.parent.name not in {fingerprint([POLICY,n,raw]) for n in (2,3,4)}:return {}
+    if file_sha(path)!=ref.get('sha256'):raise ValueError('final_audit_previous_receipt_changed')
+    audit=load(path)
+    return {s['segment_id']:s for s in audit.get('segments',[])}
 
 
 def execution_export_conflicts(result,audit):
@@ -162,16 +179,26 @@ def finalize(request, result, *, root, authority, edge, artifact_roots):
     root=Path(root)
     raw={k:v for k,v in result.items() if k not in ('final_audit','all_signed_up','all_currently_effective',
         'recordings','recording_errors','full_recording_verified','failure_handling','execution_export_conflicts')}
-    revision=3 if any(p.get('campaign_id')=='legacy' for p in request.get('pages',{}).values()) else READ_REVISION
+    revision=4 if any(p.get('campaign_id')=='legacy' for p in request.get('pages',{}).values()) else READ_REVISION
     key=fingerprint([POLICY,revision,raw]); folder=root/'final-audit'/key
     target=folder/'audit-v3.json'  # Reproject the same export against the verified price window.
     if target.exists(): audit=load(target)
     else:
         segments=[]; gaps=[]
+        reusable=reusable_segments(root,result,raw)
         for segment in result.get('segments',[]):
             sid=segment.get('segment_id','unknown')
             try:
                 data=manifest(root,segment)
+                old=reusable.get(sid)
+                if old:
+                    if (old.get('scope_sha256')!=data['scope_sha256'] or old.get('price_window')!=data['window']
+                            or {(r['item'],r['sku']) for r in old.get('rows',[])}!={(r['item'],r['sku']) for r in data['pairs']}
+                            or file_sha(old['source_file']['path'])!=old['source_file']['sha256']):
+                        raise ValueError('final_audit_reusable_segment_changed')
+                    segments.append(old)
+                    for gap in data.get('protected_discount_gaps',[]):gaps.append(dict(gap,segment_id=sid))
+                    continue
                 transport=CampaignTransport(edge,authority,root=folder/sid,request={},artifact_roots=artifact_roots)
                 identity=transport.identity(data['payload'])
                 request_payload=dict(identity=identity,read_request_id=fingerprint([key,sid]),price_window=data['window'])
@@ -204,6 +231,7 @@ def finalize(request, result, *, root, authority, edge, artifact_roots):
                     checked['recording_verified']=True
                 except (ValueError,OSError,KeyError): checked['recording_verified']=False
                 segments.append(checked)
+                for gap in data.get('protected_discount_gaps',[]):gaps.append(dict(gap,segment_id=sid))
             except Exception as exc:
                 # Browser/library exceptions may contain URLs or credentials.
                 reason=str(exc) if isinstance(exc,ValueError) and __import__('re').fullmatch('[a-z0-9_:]+',str(exc)) else type(exc).__name__
