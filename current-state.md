@@ -1,6 +1,15 @@
 # Current state — logistics bill product analytics
 
 
+## 2026-09-16 最新覆盖：第二批修复代码就绪，在线加载被拒绝
+
+- ERP a2481ce / WA d73dbff已push/install；148项WA测试和16项ERP测试通过。修复交接中短暂旧blocked、超级立减收尾固定地址恢复、原已授权包邮要求落实到原5SKU。只读准备校验通过，不新增业务规则。
+- 家具1001358847694秋季5SKU已发布设定，marketing10031382708683，禁止重报；超级立减未完成，九斗柜未取得本轮新成功。上一条“无新成功”已被此事实覆盖。
+- 第二批加载命令被工具执行前blocked by policy拒绝，未绕过；8500仍PID47616，8502仍PID40884。不能把旧进程健康当新代码生效。03已收到暂停业务接续的准确交接，待正常人工服务重启及加载核验。
+- 最新权威交接：D:/AI/畔色ERP系统/outputs/campaign-program-handoff-repair-20260916.md。成功、未知不重放；无新的包邮/首次原价授权缺口。
+
+
+
 ## 2026-09-16 原报名页面恢复已安装，待原批次业务验收
 
 - 当前 ERP 修复版本 27d10db；Web-Agent 业务代码 2c127d4，跨步骤回归 c03033e。8500 已实际重启为 PID47616，健康200，新 recover-signup-binding 路由已加载；8502 PID40884 保持、program_reload_idle 成功，Edge及登录态未重启。下方旧“未加载”及旧待授权描述不代表当前状态。
