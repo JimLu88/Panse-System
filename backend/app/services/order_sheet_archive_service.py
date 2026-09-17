@@ -692,6 +692,11 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
     )
     sent = line_delivery.sent_line_evidence(db)
     already_void = line_delivery.void_line_evidence(db)
+    failed: list[dict] = [
+        {"sub_order_no": sub, "reason": "作废通知结果未知，需核对飞书回执，未自动重发"}
+        for sub, record in already_void.items()
+        if (record.row_summary or {}).get("delivery_state") == "unknown"
+    ]
     targets = [
         line for line in line_delivery.physical_lines(db)
         if line.sub_order_no
@@ -700,14 +705,13 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
         and str(line.sub_order_no) not in already_void
     ]
     if not targets:
-        return {"voided": 0, "failed": 0, "sub_order_nos": [], "failures": []}
+        return {"voided": 0, "failed": len(failed), "sub_order_nos": [], "failures": failed}
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "notify_disabled"}
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
         return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "no_chat_id"}
     voided: list[str] = []
-    failed: list[dict] = []
     for line in targets[:limit]:
         order = db.execute(select(Order).where(Order.order_no == line.order_no)).scalar_one_or_none()
         if order is None:
@@ -716,8 +720,9 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
             sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
             content = render_void_png(sheet)
             image_key = feishu_client.upload_image(db, content)
-            feishu_client.send_image(db, chat_id, image_key)
-            import_storage.archive(
+            label = f"畔色{line.factory_no}单"
+            notice = f"{label}已作废（订单关闭／退款成功）。请停止制作、不要发货；本消息不是新增下单。"
+            record = import_storage.archive(
                 db,
                 content=content,
                 original_name=(
@@ -736,9 +741,26 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
                     ),
                     "render_width": 1684,
                     "line_void": True,
-                    "pushed": True,
+                    "pushed": False,
+                    "delivery_state": "unknown",
+                    "void_notice_version": 2,
+                    "notice_text": notice,
                 },
-            )
+            ).file
+            # 发送前持久化，超时或进程中断不能导致下一轮盲目重发。
+            db.commit()
+            # 文本与图片在同一条消息中，防止只收到一张像新下单的图片。
+            receipt = feishu_client.send_card(db, chat_id, {
+                "header": {"template": "red", "title": {"tag": "plain_text", "content": f"作废通知｜{label}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "plain_text", "content": notice}},
+                    {"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": f"{label} 作废"}},
+                ],
+            })
+            if not receipt.get("message_id"):
+                raise RuntimeError("作废通知未取得飞书消息回执，需核对，不能视为发送成功")
+            record.row_summary = dict(record.row_summary, pushed=True,
+                                      delivery_state="sent", delivery_message_id=receipt["message_id"])
             db.commit()
             voided.append(str(line.sub_order_no))
         except Exception as exc:  # noqa: BLE001
@@ -1845,13 +1867,14 @@ def push_daily(db: Session) -> dict:
 # 归档 kind=order_sheet_void (档案页单独分类), 删掉原下单图, 只生成一次并推送。
 
 _VOID_OVERLAY = """
-<div style="position:fixed;inset:0;pointer-events:none;z-index:99;">
-  <div style="position:absolute;inset:0;background:
-    linear-gradient(45deg, transparent 47.5%, rgba(220,38,38,.8) 47.5%, rgba(220,38,38,.8) 52.5%, transparent 52.5%),
-    linear-gradient(-45deg, transparent 47.5%, rgba(220,38,38,.8) 47.5%, rgba(220,38,38,.8) 52.5%, transparent 52.5%);"></div>
-  <div style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%) rotate(-16deg);
-    font-size:56px;font-weight:900;color:#dc2626;background:rgba(255,255,255,.88);
-    border:6px solid #dc2626;padding:10px 36px;border-radius:10px;white-space:nowrap;">已退款 · 作废</div>
+<!-- wkhtmltoimage 的旧 Qt 不支持 inset；使用明确坐标和尺寸。 -->
+<div data-void-notice-version="2" style="position:absolute;top:0;left:0;width:100%;height:1190px;pointer-events:none;z-index:99;">
+  <div style="position:absolute;top:365px;left:24%;width:52%;text-align:center;
+    font-size:230px;line-height:1.2;font-weight:900;color:#dc2626;background:#fff;
+    border:14px solid #dc2626;padding:10px;white-space:nowrap;">作废</div>
+  <div style="position:absolute;top:690px;left:15%;width:70%;text-align:center;
+    font-size:48px;font-weight:900;color:#dc2626;background:#fff;
+    border:4px solid #dc2626;padding:15px;">订单已作废 · 停止制作 · 禁止发货<br>作废通知，不是新增下单</div>
 </div>
 """
 
