@@ -278,7 +278,7 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
     monkeypatch.setattr("app.services.agent_ingest_service.reingest_pending_shipping", _fake_reingest)
     monkeypatch.setattr(
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
-        lambda db: {
+        lambda db, **kwargs: {
             "completed": True,
             "artifacts": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
         },
@@ -311,7 +311,7 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
     )
     monkeypatch.setattr(
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
-        lambda db: {
+        lambda db, **kwargs: {
             "completed": True,
             "completed_at": "2026-07-27T18:25:00",
             "artifacts": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
@@ -480,7 +480,7 @@ def test_matching_password_reopens_standalone_pause_without_false_success(
     )
     monkeypatch.setattr(
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
-        lambda db: {
+        lambda db, **kwargs: {
             "completed": False,
             "reason": "missing_current_order_pull_evidence",
         },

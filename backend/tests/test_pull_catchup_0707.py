@@ -181,7 +181,9 @@ def test_fresh_after_cutoff_waits_for_shipping_password(db_session):
 
 
 def test_unresolved_shipping_password_can_be_found_after_midnight(db_session):
-    yesterday = datetime.now() - timedelta(days=1)
+    # DB naive timestamps are UTC; pin noon so this fixture stays yesterday
+    # in both the China developer host and UTC test runners.
+    yesterday = (datetime.now() - timedelta(days=1)).replace(hour=4)
     pending = ImportedFile(
         kind="taobao",
         original_filename="yesterday-shipping.xlsx",

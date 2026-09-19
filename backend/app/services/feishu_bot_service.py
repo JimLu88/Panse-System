@@ -1068,8 +1068,21 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         r["repushed"] = repushed
         # 发货报表通常等口令后才成为三报表的最后一环。用本轮取数证据补齐完成标记，
         # 再立即补生成、补推尚未送达的增量图；证据不足则保持安全门关闭。
-        completion = agent_ingest_service.finalize_order_pull_after_shipping_password(db)
+        completion = agent_ingest_service.finalize_order_pull_after_shipping_password(
+            db, resolved_artifacts=[str(item.get("file") or "")
+                                    for item in (r.get("files") or [])
+                                    if item.get("status") == "imported"],
+        )
         r["order_pull_completion"] = completion
+        if not completion.get("completed"):
+            # Password success is not delivery success. Retain the actual unresolved
+            # stage instead of clearing it and later emitting a generic retry failure.
+            from app.services import automation_pipeline_service
+            automation_pipeline_service.record_stage(
+                db, "order_delivery", "order_batch_reconciliation", status="fail",
+                detail="口令解密成功；原批次收口未完成：" + str(completion.get("reason")),
+            )
+            db.commit()
         delivery: dict
         if completion.get("completed"):
             try:
@@ -1123,7 +1136,12 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                 if pushed:
                     msg += f", 自动续推 {pushed} 张新下单图到工厂群"
                 if delivery.get("_run_status") == "fail":
-                    msg += f"。\n⚠️ 下单图续跑未完成: {delivery.get('_error')}"
+                    if not completion.get("completed"):
+                        msg += ("。\n⚠️ 密码已验证通过，无需重发。订单批次清单尚未完成核对，"
+                                "为避免使用旧数据，暂未继续发送下单图。"
+                                f"（{completion.get('reason') or 'unknown'}）")
+                    else:
+                        msg += f"。\n⚠️ 下单图续跑未完成: {delivery.get('_error')}"
                 else:
                     msg += "，订单制单与送达链路已完成。"
                 from app.services import notify_service

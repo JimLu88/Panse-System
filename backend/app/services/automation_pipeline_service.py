@@ -727,7 +727,10 @@ def finalize_open_failures(
         failures = int(entry.get("failures") or 0)
         if failures <= 0 or entry.get("success") or entry.get("final"):
             continue
-        safe_error = _safe_error(entry.get("last_error") or "重试班次未能完成")
+        last_stage = entry.get("last_stage") or {}
+        safe_error = _safe_error(entry.get("last_error") or (
+            last_stage.get("detail") if last_stage.get("status") == "fail" else None
+        ) or "重试班次未能完成")
         text = (
             f"❌ {day}【{label}】今日失败\n"
             f"今天已失败 {failures} 次，晚间重试窗口已经结束。\n"

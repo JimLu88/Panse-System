@@ -1583,6 +1583,11 @@ def _job_order_sheets_daily(db: Session) -> dict:
     )
     if not agent_ingest_service.order_data_fresh(db, not_before_hour=18):
         upstream = automation_pipeline_service.get_pipeline(db, "order_delivery")
+        orch = agent_ingest_service._load_json(db, agent_ingest_service.KEY_ORCH_STATE)
+        if orch.get("running") and (orch.get("current") == "taobao_orders"
+                                    or orch.get("order_business_date") == date.today().isoformat()):
+            return {"skipped": "order_pull_in_progress", "_run_status": "skipped",
+                    "note": "原批次仍在取数，推送等待终态，不计为失败"}
         if upstream.get("failures") or upstream.get("waiting_input"):
             # 18:00 取数已经留下精确原因（如口令不匹配、登录失效、导入失败）时，
             # 18:10 推送门只应等待，不能再用通用“数据未刷新”覆盖原因或重复发一条失败。
@@ -1705,6 +1710,15 @@ def _job_pull_catchup(db: Session) -> dict:
             retry_times=_ORDER_RETRY_TIMES,
         )
 
+    recovered = ai.recover_order_receipt(db)
+    if recovered.get("recovered"):
+        ai.finalize_order_pull_after_shipping_password(db, on=date.today())
+    if recovered.get("reason") == "order_export_running":
+        return {"skipped": "order_pull_in_progress", "_run_status": "skipped"}
+    if recovered.get("reason") in ("invalid_order_receipt", "order_export_receipt_missing",
+                                   "receipt_artifact_ingest_failed"):
+        return _finish({"_run_status": "fail",
+                        "_error": "订单原批次回执需要程序核对，未重启取数：" + recovered["reason"]})
     if ai.order_data_fresh(db, not_before_hour=18):
         # 数据新鲜不等于图片已送达。即使口令回调或 18:30 日报在发送阶段中断，
         # 每小时补跑仍用 pushed 幂等标记收口，不重复发已成功的图片。
@@ -1784,7 +1798,9 @@ def _job_pull_catchup(db: Session) -> dict:
     )  # 强制补18:00后的订单快照，并复用同一业务批次号
     out = {
         "ran_orchestrate": True,
-        "tasks": len(res.get("tasks", [])),
+        "tasks": res.get("tasks") or [],
+        "task_count": len(res.get("tasks", [])),
+        "order_attempt_id": res.get("order_attempt_id"),
         "pending_manual": len(res.get("pending_manual", [])),
         "order_batch_id": res.get("order_batch_id") or active_batch_id,
         "order_business_date": res.get("order_business_date") or date.today().isoformat(),

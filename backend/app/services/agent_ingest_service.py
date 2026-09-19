@@ -1425,6 +1425,11 @@ def _ingest_candidates(only_paths: Optional[list[str]] = None) -> list[Path]:
         candidates: list[Path] = []
         if raw.is_absolute():
             candidates.append(raw)
+            if raw.is_file() and raw.resolve().is_relative_to(OUTPUT_DIR.resolve()):
+                # An exact local receipt path must not resolve to a newer
+                # same-name file from another date or batch.
+                found[str(raw.resolve())] = raw
+                continue
         else:
             candidates.append(OUTPUT_DIR / raw)
         if basename:
@@ -1734,6 +1739,9 @@ def _order_pull_tasks(payload: dict | None) -> list[dict]:
 def order_pull_artifact_names(payload: dict | None) -> list[str]:
     """Extract the exact three-report manifest from one order-pull result."""
     payload = payload or {}
+    tasks = _order_pull_tasks(payload)
+    if tasks and not any(item.get("task") == "taobao_orders" for item in tasks):
+        return []  # Finance's global artifacts are not an order manifest.
     task = next(
         (
             item for item in _order_pull_tasks(payload)
@@ -1905,6 +1913,10 @@ def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
     current = _load_json(db, KEY_ORCH_STATE)
 
     def _append(payload: dict, started_at) -> None:
+        if not order_pull_batch_id(payload) and not any(
+            item.get("task") == "taobao_orders" for item in _order_pull_tasks(payload)
+        ):
+            return
         if not started_at or not (
             order_pull_artifact_names(payload) or order_pull_batch_id(payload)
         ):
@@ -1928,6 +1940,8 @@ def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
             candidates.append((value, payload))
 
     _append(current, current.get("started_at"))
+    recovered = _load_json(db, "web_agent_order_receipt_evidence")
+    _append(recovered, recovered.get("started_at"))
     from app.models.scheduled_job import ScheduledJobRun
 
     rows = db.execute(
@@ -1944,7 +1958,69 @@ def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
         _append(row.result_summary or {}, row.started_at)
     if not candidates:
         return {}
-    return max(candidates, key=lambda item: item[0])[1]
+    return max(candidates, key=lambda item: (item[0], bool(item[1].get("receipt_source"))))[1]
+
+
+def recover_order_receipt(db: Session, *, on=None) -> dict:
+    """Consume only the original batch's verified late terminal, never rerun export."""
+    target = on or date.today()
+    evidence = latest_order_pull_evidence(db, on=target)
+    batch = order_pull_batch_id(evidence)
+    attempt = str(evidence.get("order_attempt_id") or "")
+    if not batch or not re.fullmatch(r"orders-\d{8}-[a-f0-9]{32}", batch):
+        return {"recovered": False, "reason": "no_batch_receipt"}
+    if not re.fullmatch(r"[a-f0-9]{32}", attempt):
+        return {"recovered": False, "reason": "no_batch_receipt"}
+    receipt_path = OUTPUT_DIR / "order-runs" / (attempt + ".json")
+    if not receipt_path.is_file():
+        return {"recovered": False, "reason": "order_export_receipt_missing"}
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if (receipt.get("version") != 1 or receipt.get("order_batch_id") != batch
+                or receipt.get("order_attempt_id") != attempt
+                or receipt.get("order_business_date") != target.isoformat()):
+            raise ValueError("receipt identity mismatch")
+        if receipt.get("status") != "done":
+            return {"recovered": False, "reason": "order_export_" + str(receipt.get("status"))}
+        files = receipt.get("artifacts") or []
+        if len(files) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
+            raise ValueError("receipt manifest incomplete")
+        root = OUTPUT_DIR.resolve()
+        paths, roles = [], {}
+        for item in files:
+            path = (root / item["path"]).resolve()
+            relative = path.relative_to(root)
+            if relative.parts[:2] != (target.isoformat(), "taobao"):
+                raise ValueError("receipt artifact outside business date")
+            if hashlib.sha256(path.read_bytes()).hexdigest() != item.get("sha256"):
+                raise ValueError("receipt artifact hash mismatch")
+            role = _normalize_order_report_role(item.get("report"))
+            if not role or path.name in roles:
+                raise ValueError("receipt role or filename invalid")
+            roles[path.name] = role
+            paths.append(str(path))
+        if set(roles.values()) != {"orders", "shipping", "sales_detail"}:
+            raise ValueError("receipt roles incomplete")
+        # Repeated callbacks only read already bound records, never append or import again.
+        states = taobao_artifact_states(db, list(roles), order_batch_id=batch)
+        if any(status == "missing" for status in states.values()):
+            result = run_ingest(db, only_paths=paths, artifact_roles=roles, order_batch_id=batch)
+            if result.get("errors"):
+                return {"recovered": False, "reason": "receipt_artifact_ingest_failed"}
+        recovered = {
+            "started_at": evidence.get("started_at") or receipt["started_at"],
+            "order_batch_id": batch, "order_business_date": target.isoformat(),
+            "order_attempt_id": attempt,
+            "manual_recovery": bool(evidence.get("manual_recovery") or evidence.get("manual_pull")),
+            "tasks": [{"task": "taobao_orders", "status": "done", "order_batch_id": batch,
+                       "artifacts": list(roles), "artifact_roles": roles}],
+            "receipt_source": str(receipt_path.relative_to(root)),
+        }
+        _save_json(db, "web_agent_order_receipt_evidence", recovered)
+        db.commit()
+        return {"recovered": True, "order_batch_id": batch}
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        return {"recovered": False, "reason": "invalid_order_receipt", "detail": str(exc)[:200]}
 
 
 def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
@@ -2140,6 +2216,7 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
 def finalize_order_pull_after_shipping_password(
     db: Session, *, on=None, not_before_hour: int = 18,
     now: datetime | None = None,
+    resolved_artifacts: list[str] | None = None,
 ) -> dict:
     """口令补齐最后一份发货报表后，把本轮已完成的淘宝取数正式收口。
 
@@ -2154,10 +2231,21 @@ def finalize_order_pull_after_shipping_password(
     """
     current = now or datetime.now()
     target = on or current.date()
+    recovery = recover_order_receipt(db, on=target)
+    if recovery.get("reason") in ("invalid_order_receipt", "receipt_artifact_ingest_failed"):
+        return {"completed": False, **recovery}
+    newest = latest_order_pull_evidence(db, on=target)
+    resolved = {Path(str(p).replace("\\", "/")).name for p in (resolved_artifacts or [])}
+    if newest:
+        newest_task = next((t for t in _order_pull_tasks(newest)
+                            if t.get("task") == "taobao_orders"), {})
+        if str(newest_task.get("status") or "").lower() not in ("done", "ok", "success"):
+            return {"completed": False, "reason": "current_order_pull_not_complete",
+                    "order_batch_id": order_pull_batch_id(newest)}
 
     # KEY_ORCH_STATE 只保留“最近一次编排”，20:30 财务取数会覆盖 18:00 淘宝取数。
     # 因此先看内存态，找不到时再从不可覆盖的 ScheduledJobRun 历史取当天证据。
-    evidence = _load_json(db, KEY_ORCH_STATE)
+    evidence = newest or _load_json(db, KEY_ORCH_STATE)
     evidence_started_at = evidence.get("started_at")
 
     def _is_manual_recovery(payload: dict) -> bool:
@@ -2203,6 +2291,7 @@ def finalize_order_pull_after_shipping_password(
         }
         return (
             business_day in allowed_days
+            and (not resolved or bool(resolved.intersection(order_pull_artifact_names(payload))))
             # Scheduled pulls remain restricted to the approved evening
             # window. A durable user-triggered recovery may run earlier.
             and (_is_manual_recovery(payload) or dt.hour >= not_before_hour)
@@ -2217,6 +2306,7 @@ def finalize_order_pull_after_shipping_password(
             .where(ScheduledJobRun.job_id.in_((
                 "daily_0630_web_agent",
                 "pull_catchup_30min",
+                "order_delivery_recovery",
             )))
             .order_by(ScheduledJobRun.id.desc())
             .limit(30)
@@ -2481,6 +2571,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         # 不传日期 (用户拍板 2026-06-12): 淘宝导出走"近3个月"全量, 每次刷新所有订单状态,
         # 避免按几天导漏掉中间某天的状态变化。Web-Agent 录制工作流本就无选日期步骤。
         variables = _task_run_variables(task_id, db, on=today)
+        if task_id == "taobao_orders":
+            variables.update(order_batch_id=order_batch_id,
+                             order_business_date=business_date.isoformat(),
+                             order_attempt_id=uuid4().hex)
+            out["order_attempt_id"] = variables["order_attempt_id"]
         artifacts_before = (
             _main_alipay_artifacts()
             if task_id == MAIN_ALIPAY_FLOW_TASK else None
@@ -2496,9 +2591,15 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             out["tasks"].append({"task": task_id, "status": "error",
                                  "error": r.get("error", "无 job id")})
             continue
-        # 淘宝3报表异步导出受淘宝"两次导出≥5分钟"限流, 整轮可达~18分钟 → 等到 30 分钟,
-        # 与 Web-Agent agent_total_timeout_s(1500s) 对齐, 避免单轮假超时 (2026-06-15)。
-        final = web_agent_service.wait_job(db, r["job"], timeout_s=1800)
+        if task_id == "taobao_orders":
+            _save_json(db, KEY_ORCH_STATE, {**out, "running": True, "current": task_id,
+                "tasks": out["tasks"] + [{"task": task_id, "status": "running", "job_id": r["job"]}]})
+            db.commit()
+        # Deterministic three-report export includes platform generation waits;
+        # its runtime is not the LLM agent_total_timeout_s setting.
+        final = web_agent_service.wait_job(
+            db, r["job"], timeout_s=5400 if task_id == "taobao_orders" else 1800,
+        )
         status = (final.get("status") or "").lower()
         job_result = final.get("result") or {}
         task_artifacts = _job_downloads(job_result)
@@ -2536,7 +2637,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                 and _main_alipay_artifacts() == artifacts_before):
             status = "error"
             final = {**final, "error": "任务完成但未生成支付宝主力账号流水文件"}
-        item = {"task": task_id, "status": status}
+        item = {"task": task_id, "status": status, "job_id": r["job"]}
         report_failures = (
             _job_report_failures(job_result)
             if task_id == "taobao_orders" else []
