@@ -812,6 +812,13 @@ def _persist_order_lines(
         )
         if row:
             for k, v in vals.items():
+                # Shipping/master reports can omit SKU and quantity. Absence
+                # is not an instruction to erase a sales-detail variant or to
+                # replace two ordered units with the parser's default one.
+                if k in {"product_code", "sku_code", "sku_name", "product_name"} and v in (None, ""):
+                    continue
+                if k == "qty" and ln.get("qty") in (None, ""):
+                    continue
                 setattr(row, k, v)
             if enable_factory_delivery:
                 row.factory_delivery_required = True

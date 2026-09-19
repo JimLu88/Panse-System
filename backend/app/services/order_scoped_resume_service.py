@@ -128,7 +128,7 @@ def resume(
             repairs.append({"sub_order_no": sub, "line_id": row.id,
                             "before": {"sku_code": row.sku_code, "qty": row.qty},
                             "after": {"sku_code": sku, "qty": qty,
-                                      "product_code": fact.get("product_code"), "sku_name": fact.get("sku")}})
+                                      "product_code": importer._norm_pps_code(fact.get("product_code")), "sku_name": fact.get("sku")}})
         elif row.sku_code != sku or row.qty != qty:
             held.append({"sub_order_no": sub, "reason": "source_variant_or_quantity_conflict"})
             continue
