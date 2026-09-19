@@ -260,6 +260,31 @@ def require_ingest_token(
     return True
 
 
+def require_order_scoped_resume_principal(
+    request: Request,
+    user: Optional[User] = Depends(get_current_user_optional),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> User | ServicePrincipal:
+    """2026-09-20 explicit grant: existing order agent, one scoped recovery only.
+
+    The endpoint additionally checks the approved body before entering service.
+    This does not grant an operator role or change any other route's auth.
+    """
+    if user is not None:
+        if not user.is_active or user.role not in ("admin", "operator"):
+            raise HTTPException(403, "需要启用的管理员或操作员账号")
+        return user
+    path = "/api/imports/order-sheets/resume-scoped"
+    if request.method == "POST" and request.url.path == path:
+        identity = machine_identity_for_key(x_api_key, db, path=path)
+        # Live order agent uses this configured fallback; ingestion token is
+        # not configured. Do not grant access to other machine identities.
+        if identity == "machine:cs_api_key":
+            return ServicePrincipal(identity, "order_resume_service", "orders.resume.20260919")
+    raise HTTPException(401, "需要登录或本次限定订单续推身份")
+
+
 def enforce_page_permission(
     request: Request,
     authorization: Optional[str] = Header(None),

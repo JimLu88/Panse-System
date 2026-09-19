@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_role
+from app.dependencies import require_role, require_order_scoped_resume_principal, ServicePrincipal
 from app.models.auth import User
 from app.models.import_file import ImportedFile
 from app.services import import_storage, order_sheet_archive_service, settings_service
@@ -169,10 +169,23 @@ class ScopedOrderResumeIn(BaseModel):
 def resume_scoped_order_sheets(
     payload: ScopedOrderResumeIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_role("admin", "operator")),
+    principal: User | ServicePrincipal = Depends(require_order_scoped_resume_principal),
 ):
     """按操作者指定的原档及子单续推；不重取、不重导、不撤销、不关闭原失败。"""
     from app.services.order_scoped_resume_service import resume
+    if isinstance(principal, ServicePrincipal):
+        # User explicitly approved only these archives/children and this claim.
+        # Exact lists also reject duplicates and accidental broadened retries.
+        approved = {
+            "business_date": "2026-09-19",
+            "order_batch_id": "orders-20260919-fca9a7d3462846c8aa512a3648f35916",
+            "file_ids": [3025, 3027, 3033],
+            "sub_order_nos": ["3316428051023004178", "3316871605005137171", "3316871605005146353"],
+            "request_id": "20260919000040008000000000000001",
+        }
+        if (principal.scope != "orders.resume.20260919"
+                or payload.model_dump(exclude={"dry_run"}) != approved):
+            raise HTTPException(403, "超出本次限定订单续推授权")
     try:
         return resume(db, **payload.model_dump())
     except ValueError as exc:
