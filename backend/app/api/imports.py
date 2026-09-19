@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -154,6 +154,30 @@ def order_sheet_push(
 
 class PushConfigIn(BaseModel):
     min_amount: float = 400.0   # 实付低于此的单判为补差/加价, 不推工厂 (0=关闭金额规则)
+
+
+class ScopedOrderResumeIn(BaseModel):
+    business_date: str
+    order_batch_id: str
+    file_ids: list[int] = Field(min_length=3, max_length=3)
+    sub_order_nos: list[str] = Field(min_length=1, max_length=50)
+    request_id: str
+    dry_run: bool = True
+
+
+@router.post("/order-sheets/resume-scoped")
+def resume_scoped_order_sheets(
+    payload: ScopedOrderResumeIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """按操作者指定的原档及子单续推；不重取、不重导、不撤销、不关闭原失败。"""
+    from app.services.order_scoped_resume_service import resume
+    try:
+        return resume(db, **payload.model_dump())
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/order-sheets/push-config")

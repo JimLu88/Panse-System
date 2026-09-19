@@ -15,7 +15,7 @@ from decimal import Decimal
 from html import escape
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
@@ -579,7 +579,9 @@ def archive_sent_line_snapshot(
     return result.file
 
 
-def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
+def reconcile_order_line_delivery(
+    db: Session, *, limit: int = 50, only_sub_order_nos: set[str] | None = None,
+) -> dict:
     """按淘宝子订单逐件生成并推送尚未送达的实体商品。
 
     仅处理 ``factory_delivery_required`` 的新/已迁移行；历史未绑定记录不会被全量重推。
@@ -602,9 +604,12 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
     failed: list[dict] = []
     for line in line_delivery.active_lines(db):
         sub_order_no = str(line.sub_order_no or "")
+        if only_sub_order_nos is not None and sub_order_no not in only_sub_order_nos:
+            continue
         if sub_order_no in sent or len(pushed) + len(failed) >= limit:
             continue
-        if line.factory_delivery_state in {"sending_caption", "sending_image", "uncertain"}:
+        if (line.factory_delivery_state in {"rendering", "sending_caption", "sending_image", "uncertain", "sent"}
+                or line.factory_delivery_message_id):
             failed.append({
                 "order_no": line.order_no,
                 "sub_order_no": sub_order_no,
@@ -628,6 +633,19 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
                 "deferred": "address_masked",
             })
             continue
+        # Claim the row before rendering. Parallel scheduler/manual workers must
+        # not both deliver it; a process crash leaves a visible, non-replayable claim.
+        claimed = db.execute(update(OrderDetail).where(
+            OrderDetail.id == line.id,
+            or_(OrderDetail.factory_delivery_state.is_(None),
+                OrderDetail.factory_delivery_state.in_(["", "failed"])),
+            or_(OrderDetail.factory_delivery_message_id.is_(None),
+                OrderDetail.factory_delivery_message_id == ""),
+        ).values(factory_delivery_state="rendering"))
+        if claimed.rowcount != 1:
+            db.rollback()
+            failed.append({"sub_order_no": sub_order_no, "reason": "子单已被其他执行占用，未重复发送"})
+            continue
         if line.factory_no is None:
             line.factory_no = line_delivery.next_factory_no(db)
             db.flush()
@@ -650,6 +668,8 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
             db.commit()
             send_stage = "sending_image"
             image_result = feishu_client.send_image(db, chat_id, image_key) or {}
+            if not _feishu_message_id(image_result):
+                raise RuntimeError("飞书未返回消息ID，送达结果未知，不自动重发")
             archive_sent_line_snapshot(db, order, line, png)
             line.factory_delivery_state = "sent"
             line.factory_delivery_sent_at = datetime.now().astimezone()
