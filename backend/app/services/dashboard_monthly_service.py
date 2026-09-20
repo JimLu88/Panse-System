@@ -110,6 +110,8 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
         )
     ).scalars().all()
 
+    from app.services.order_purchase_facts import sales_projections
+    orders = sales_projections(db, orders)
     # #7 饼图用店铺内部产品名(非淘宝长名): order.product_code(P+11) → Product(PPS+11).name
     from app.models.product import Product as _P
     _codes: set = set()
@@ -138,11 +140,11 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
         else:
             name = _iname(o.product_code) or o.product_name or o.product_code or "未知产品"
         # #18 排除非产品服务(送货入户/商家安装/上门安装等)
-        if any(k in name for k in ("送货", "入户", "安装")) or any(
-                k in (o.product_name or "") for k in ("送货", "入户", "安装")):
+        from app.services.taobao_order_import import _is_service_line_name
+        if _is_service_line_name(o.product_name):
             continue
         rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)   # 真实收入(扣退款) 统一口径
-        qty = int(o.qty or 1)
+        qty = int(o.qty or 0)
         b = buckets.setdefault(name, {"name": name, "revenue": Decimal("0"), "qty": 0})
         b["revenue"] += rev
         b["qty"] += qty

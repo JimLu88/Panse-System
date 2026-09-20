@@ -540,6 +540,7 @@ def _custom_wood_unit_price(
 
 def build_rows(db: Session) -> list[dict[str, Any]]:
     """按工厂下单图同口径构造飞书行，不改变订单或价格数据。"""
+    from app.services.order_line_delivery_service import is_master_summary_line
     auto_since = order_sheet_archive_service.AUTO_SINCE
     orders = db.execute(
         select(Order).where(
@@ -573,7 +574,8 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         imported_lines = db.execute(select(OrderDetail).where(
             OrderDetail.order_no == order.order_no, OrderDetail.source == "import",
             OrderDetail.sub_order_no.isnot(None)).order_by(OrderDetail.id.asc())).scalars().all()
-        line_rows = [line for line in imported_lines if line.factory_delivery_required]
+        line_rows = [line for line in imported_lines if line.factory_delivery_required
+                     and not is_master_summary_line(db, line)]
         legacy_shared_key = (len(imported_lines) == 1 and order.factory_no is not None
                              and imported_lines[0].sub_order_no == order.order_no)
         if imported_lines and not line_rows and not legacy_shared_key:
@@ -1487,6 +1489,24 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             for row in rows
         }
         void_record_ids = _confirmed_void_record_ids(db, remote_rows, projected_entity_keys)
+        # Historical parent summaries remain auditable, but are never production
+        # instructions. Only exact ERP-proven summary identities may be retired.
+        from app.services.order_line_delivery_service import is_master_summary_line
+        summary_lines = [line for line in db.scalars(
+            select(OrderDetail).where(OrderDetail.source == "import",
+                                      OrderDetail.sub_order_no == OrderDetail.order_no))
+            if is_master_summary_line(db, line)]
+        summary_keys = {str(line.sub_order_no) for line in summary_lines}
+        summary_labels = {str(line.sub_order_no): f"畔色{line.factory_no}单"
+                          for line in summary_lines if line.factory_no}
+        summary_record_ids = set()
+        for record in remote_rows:
+            fields = record.get("fields") or {}
+            sub = str(_norm(fields.get("子订单号")) or "").strip()
+            parent = str(_norm(fields.get("订单号")) or "").strip()
+            label = str(_norm(fields.get("工厂下单号")) or "").strip()
+            if sub in summary_keys or (not sub and parent in summary_labels and label == summary_labels[parent]):
+                summary_record_ids.add(str(record["record_id"]))
         remote_by_no: dict[str, dict] = {}
         legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
@@ -1507,6 +1527,24 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             result["errors"].append("duplicate_source_entity: no writes performed")
             result["ok"] = False
             return result
+
+        # Resolve all unique legacy bindings before walking children. A legacy
+        # row already proven to be sibling A must not block/create a duplicate B.
+        legacy_bindings = {}
+        reserved_legacy = set()
+        for row in rows:
+            key = str(row.get("子订单号") or row["订单号"])
+            label = str(row.get("工厂下单号") or "").strip()
+            parent = str(row["订单号"])
+            if key in remote_by_no or not label or label == "待编号":
+                continue
+            source_matches = [r for r in rows if str(r["订单号"]) == parent
+                              and str(r.get("工厂下单号") or "").strip() == label]
+            matches = [r for r in legacy_remote_by_order.get(parent, [])
+                       if str(_norm((r.get("fields") or {}).get("工厂下单号")) or "").strip() == label]
+            if len(source_matches) == len(matches) == 1:
+                legacy_bindings[key] = matches[0]
+                reserved_legacy.add(str(matches[0]["record_id"]))
 
         creates: list[dict] = []
         create_image_bindings: list[tuple[str, str]] = []
@@ -1532,17 +1570,14 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             if remote is None and row.get("子订单号"):
                 # 0139 上线前飞书一行=主订单，没有子订单号。用“主订单+原工厂号”
                 # 唯一匹配并原地升级，避免切换后重复新建一行。
-                matches = [
-                    item for item in legacy_remote_by_order.get(order_no, [])
-                    if str(item.get("record_id") or "") not in claimed_remote_ids
-                    and str((item.get("fields") or {}).get("工厂下单号") or "").strip()
-                    == str(row.get("工厂下单号") or "").strip()
-                ]
-                if len(matches) == 1:
-                    remote = matches[0]
-                elif legacy_remote_by_order.get(order_no):
+                remote = legacy_bindings.get(entity_key)
+                unresolved = [item for item in legacy_remote_by_order.get(order_no, [])
+                              if str(item.get("record_id") or "") not in reserved_legacy
+                              and str(item.get("record_id") or "") not in summary_record_ids]
+                if remote is None and unresolved:
                     result["warnings"].append("legacy_identity_unresolved: preserved without duplicate create")
                     result["identity_unresolved_count"] = result.get("identity_unresolved_count", 0) + 1
+                    result["errors"].append("legacy_identity_unresolved: expected child not synchronized")
                     continue
             remote_fields = (remote or {}).get("fields") or {}
             proof = row.get('_tracking_clear')
@@ -1641,7 +1676,15 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
         for rec in remote_rows:
             rf = rec.get("fields") or {}
             key = str(_norm(rf.get("子订单号")) or _norm(rf.get("订单号")) or "").strip()
-            if rec.get("record_id") in void_record_ids:
+            if str(rec.get("record_id")) in summary_record_ids and str(rec.get("record_id")) not in claimed_remote_ids:
+                fields = _delta(rf, {"订单状态": "历史母单汇总", "交期紧急度": "取消",
+                                    "发货安排": "历史汇总（禁止重复生产发货）",
+                                    "订购数量": None, "确认成品数量": None,
+                                    "生产事实状态": "母单汇总（非商品）", "系统更新时间": _now_ms()})
+                if fields:
+                    updates.append({"record_id": rec["record_id"], "fields": fields})
+                    result["retired_in_place"] += 1
+            elif rec.get("record_id") in void_record_ids:
                 fields = _delta(rf, {"订单状态": "已作废", "交期紧急度": "取消",
                                     "发货安排": "售后核实（暂勿发货）", "系统更新时间": _now_ms()})
                 if fields:
@@ -1700,6 +1743,19 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             result["verified_field_changes"] = dict(verified)
             if remaining:
                 result["errors"].append("readback_mismatch: system fields remain different")
+
+        # A successful batch response is not proof that every expected child
+        # exists. Check the entire projection even on an otherwise no-op run.
+        final_rows = (list(readback.values()) if creates or updates
+                      else [r.get("fields") or {} for r in remote_rows])
+        coverage = Counter(str(_norm(f.get("子订单号")) or _norm(f.get("订单号")) or "").strip()
+                           for f in final_rows)
+        missing = sorted(k for k in projected_entity_keys if coverage[k] != 1)
+        result["expected_entity_count"] = len(projected_entity_keys)
+        result["verified_entity_count"] = len(projected_entity_keys) - len(missing)
+        result["unverified_entity_keys"] = missing
+        if missing:
+            result["errors"].append("entity_coverage_mismatch: missing or duplicate expected children")
 
         if cache != cache_before:
             # 防缓存无限增长：保留最近使用和最新插入的至多 500 个 token。

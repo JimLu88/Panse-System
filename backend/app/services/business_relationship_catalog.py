@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-20.1'
+VERSION = '2026-09-21.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -94,6 +94,12 @@ NODES = [
     node('governance.auth','角色与页面权限','governance','User.role / page_perms','dependencies.py','def enforce_page_permission'),
     node('governance.change','字段变更与审计','governance','FieldChange / SystemEvent','models/field_change.py'),
     node('governance.backup','备份与恢复边界','governance','backup_service','services/backup_service.py'),
+    node('order.purchase_facts','全部有效购买明细','order','OrderDetail SKU/qty/refund','services/order_purchase_facts.py','def purchase_lines'),
+    node('finance.sales_sku','逐SKU销量与未分摊金额','finance','sales product_breakdown','services/sales_analytics.py','def product_breakdown'),
+    node('finance.dashboard','月度大盘销售占比','finance','sales_mix','services/dashboard_monthly_service.py','def sales_mix'),
+    node('finance.cache','销售缓存与来源指纹','finance','SalesDailyRollup','services/sales_rollup_service.py','def query_summary'),
+    node('finance.closeout','限定派生修复与待核实台账','finance','source-bound closeout','services/multi_child_closeout_service.py','def apply'),
+    node('stock.demand','逐子SKU需求预测','stock','DemandObservation','services/inventory_demand_service.py','def load_observations'),
 ]
 
 
@@ -104,6 +110,15 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('order.child','order.purchase_facts','读取有效购买行','排除母单汇总/服务/全退，部分退款保留','数量未知不填1；无子行编码不猜','services/order_purchase_facts.py','def _filter_lines'),
+    edge('order.purchase_facts','finance.estimate','按全部有效行计算成本','缺价/数量或护栏失败','保留原估值并待核实，不回退首SKU','services/order_cost_service.py','def recompute_and_save'),
+    edge('order.purchase_facts','finance.sales_sku','逐子SKU统计购买件数','同一母单现金仅一次','未分摊金额单列；子单待分摊不是零售价','services/order_purchase_facts.py','def sales_projections'),
+    edge('finance.sales_sku','finance.dashboard','保持金额守恒与子单数量','月度实时数据','入户玄关柜不是服务；真实账单不改','services/dashboard_monthly_service.py','def sales_mix'),
+    edge('order.purchase_facts','finance.cache','刷新可再生销售缓存','订单/子单来源指纹一致','过期返回实时查询；毛估利润不是会计净利','services/sales_rollup_service.py','def _source_fingerprints'),
+    edge('order.purchase_facts','stock.demand','逐子SKU进入预测与未发需求','保留已有预测清洗政策','不复制母单金额到每个子SKU；未知状态不判已发','services/inventory_demand_service.py','def current_unshipped_standard_qty'),
+    edge('order.child','sync.readback','检查全量实体覆盖','旧汇总只做历史保留；旧记录唯一绑定','未匹配子单不能宣称同步成功','services/factory_dispatch_feishu_service.py','def _sync_unlocked'),
+    edge('finance.estimate','finance.closeout','源文件与完整SKU核对后修派生值','只处理可证明分项；关账期间不改','实际付款/账单保护；未决写异常台账','services/order_completeness_incident.py','def all_product_financial_plan'),
+    edge('finance.closeout','finance.cache','一次重建当前年派生缓存','精确计划hash、事务锁及防重复回执','不重新导单/发图/修改真实账单','services/multi_child_closeout_service.py','def apply'),
     edge('npd.project','npd.gate','阶段门检查','切换阶段时','未完成必做任务/检验不得混同已通过','services/npd_service.py','def move_project'),
     edge('npd.gate','npd.materialize','核对建档资格','操作员请求建档；具体门分支须复核','阶段切换不等于自动正式化','services/npd_service.py','def materialize_project',evidence='review'),
     edge('npd.materialize','product.identity','生成正式商品','有BOM且未曾建档','重复建档拒绝','services/npd_service.py','def materialize_project'),
@@ -186,6 +201,8 @@ EDGES = [
 ]
 
 FLOWS = [
+    {'id':'reporting','name':'全部子单 → 销量 → 财务及大盘 → 缓存核验',
+     'steps':['order.child','order.purchase_facts','finance.estimate','finance.sales_sku','finance.dashboard','finance.cache','stock.demand']},
     {'id':'order','name':'订单 → 数量确认 → 制单 → 工厂表',
      'steps':['order.file','order.child','order.qty','quantity.card','quantity.reply','quantity.physical','factory.sheet','factory.receipt','sync.factory','sync.readback']},
     {'id':'product','name':'研发 → 商品 → BOM → 定价',

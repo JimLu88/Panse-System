@@ -42,6 +42,7 @@ def main():
                                     if key not in ('order_no','sub_order_no')},
             'entity_sha256': hashlib.sha256((str(intent.get('order_no'))+'|'+str(intent.get('sub_order_no'))).encode()).hexdigest()}
             for intent in result.get('clear_intents', [])]
+        result['unverified_entity_count'] = len(result.pop('unverified_entity_keys', []) or [])
         # Deliberately no row values, credentials, customer/contact/order IDs.
         for key in ('missing_wood_cost', 'missing_factory_sheet_image', 'deferred_image_uploads'):
             result[key + '_count'] = len(result.pop(key, []) or [])

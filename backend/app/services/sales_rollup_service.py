@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -13,11 +15,29 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.models.sales_rollup import SalesDailyRollup
 from app.services import order_financials as ofin, sales_analytics as sa
 
 _logger = logging.getLogger("panse.sales_rollup")
+_SOURCE_VERSION = "multi-child-v1"
+
+
+def _source_fingerprints(db, days):
+    """Hash current source facts, never persist customer data in cache metadata."""
+    from collections import defaultdict
+    orders = list(db.scalars(select(Order).where(Order.order_date.in_(days)).order_by(Order.id)))
+    children = defaultdict(list)
+    from app.services.order_purchase_facts import purchase_line_groups
+    children.update(purchase_line_groups(db, orders))
+    facts = {day: [] for day in days}
+    for order in orders:
+        facts[order.order_date].append([
+            {c.key: getattr(order,c.key) for c in Order.__table__.columns},
+            [{c.key:getattr(line,c.key) for c in OrderDetail.__table__.columns}
+             for line in sorted(children[order.order_no], key=lambda x:x.id)]])
+    return {day: hashlib.sha256(json.dumps([_SOURCE_VERSION, rows],sort_keys=True,
+                         default=str).encode()).hexdigest() for day,rows in facts.items()}
 
 
 def rollup_day(db: Session, target: date) -> int:
@@ -34,6 +54,8 @@ def rollup_day(db: Session, target: date) -> int:
             sa.settled_sale_clause(),   # 统一成交口径(状态6态+实付>0+非全退+非¥0服务行), 与全系统对齐
         )
     ).scalars().all()
+    from app.services.order_purchase_facts import sales_projections
+    orders = sales_projections(db, orders)
     by_key: dict[tuple, dict] = {}
     for o in orders:
         key = (o.product_code or "", o.sku_code or "", o.platform or "")
@@ -41,8 +63,11 @@ def rollup_day(db: Session, target: date) -> int:
             "qty": 0, "order_count": 0, "revenue": Decimal("0"),
             "cost": Decimal("0"), "net_profit": Decimal("0"),
         })
-        d["order_count"] += 1
         d["qty"] += o.qty or 0
+        if getattr(o, "_quantity_only", False):
+            continue
+        d["order_count"] += 1
+        o = getattr(o, "_financial_source", o)
         paid = Decimal(o.paid_amount or 0)
         refund = Decimal(o.refund_amount or 0)
         revenue = paid - refund        # 真实收入=实付−退款, 与 accounting_summary 完全一致(2026-06-20 补D: 原漏减部分退款)
@@ -74,6 +99,11 @@ def rollup_day(db: Session, target: date) -> int:
             **d,
         ))
     db.flush()
+    from app.services import settings_service
+    settings_service.set_value(db, f"sales_rollup.source.{target.isoformat()}",
+                              _source_fingerprints(db, [target])[target],
+                              description="销售派生缓存来源指纹（不含原始字段）")
+    db.flush()
     return len(by_key)
 
 
@@ -93,6 +123,14 @@ def query_summary(
 ) -> dict:
     """从 rollup 查总览. 比直接 SUM orders 表快很多."""
     from sqlalchemy import and_, func
+    days = [start + timedelta(days=i) for i in range((end-start).days + 1)]
+    fingerprints = _source_fingerprints(db, days)
+    from app.models.settings import SystemSetting
+    keys = [f"sales_rollup.source.{day.isoformat()}" for day in days]
+    recorded = dict(db.execute(select(SystemSetting.key, SystemSetting.value_plain).where(SystemSetting.key.in_(keys))).all())
+    if any(recorded.get(f"sales_rollup.source.{day.isoformat()}") != fingerprint
+           for day,fingerprint in fingerprints.items()):
+        return {}  # Existing API contract: missing/stale => use live sales summary.
     q = select(
         func.count(SalesDailyRollup.id).label("rollup_rows"),
         func.coalesce(func.sum(SalesDailyRollup.order_count), 0).label("order_count"),
@@ -116,4 +154,6 @@ def query_summary(
         "net_profit": float(Decimal(row.net_profit or 0)),
         "gross_profit": float(Decimal(row.revenue or 0) - Decimal(row.cost or 0)),
         "source": "rollup",
+        "profit_basis": "physical_cost_estimate_not_accounting_net_profit",
+        "source_verified": True,
     }

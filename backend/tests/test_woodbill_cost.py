@@ -29,9 +29,16 @@ def _o(actual=None, theo=None, wood=None, paid="0", freight="0", install="0", up
         is_refill=False, sku=None, sku_code=None, product_name=None)
 
 
-def test_physical_adds_non_wood():
-    # 工厂账单木作¥1300 + 非木作(theoretical2000 − 木作估1500 = 500) → 1800
-    assert physical_cost(_o(actual="1300", theo="2000", wood="1500", paid="3000")) == Decimal("1800")
+def test_legacy_remainder_does_not_invent_parts():
+    # 2026-07-14 已冻结为配件阶梯，不再用理论−木作余数推定配件。
+    # 旧测试仍断言6月口径；这里只更新测试，不更改现行财务算法。
+    assert physical_cost(_o(actual="1300", theo="2000", wood="1500", paid="3000")) == Decimal("1300")
+
+
+def test_explicit_non_wood_parts_are_added_once():
+    order = _o(actual="1300", theo="2000", wood="1500", paid="3000")
+    order.est_parts = Decimal("500")
+    assert physical_cost(order) == Decimal("1800")
 
 
 def test_physical_no_wood_est_legacy():

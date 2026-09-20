@@ -215,15 +215,17 @@ def all_product_financial_plan(db):
             pricing=db.scalar(select(PricingSku).where(PricingSku.sku_code==line.sku_code)) if line.sku_code else None
             if (line_is_refunded(line) or fact.get('sku_code')!=line.sku_code or not line.sku_code
                 or int(fact.get('qty') or 0)!=line.qty or pricing is None
-                or pricing.physical_cost is None or pricing.wood_cost is None
+                or pricing.physical_cost is None
                 or any(w in str(fact.get('sku') or '') for w in ('定制','咨询','差价','补拍'))):
                 verified=False;break
         if not verified:
             unresolved.append({'order_no':order.order_no,'reason':'sku_qty_or_exact_pricing_not_verified'});continue
         pc=costs._multi_product_cost(db,order);wc=costs._multi_product_wood(db,order);ep=costs._multi_product_parts(db,order)
-        if pc is None or wc is None or ep is None:
+        if pc is None:
             unresolved.append({'order_no':order.order_no,'reason':'cost_guard_or_missing_price'});continue
-        after={k:str(v.quantize(Decimal('0.01'))) for k,v in [('theoretical_cost',pc),('wood_cost_est',wc),('est_parts',ep)]}
+        # Physical cost can be exact while a separate wood/parts split is unknown
+        # (e.g. sample blocks). Correct only proven components, never invent 0.
+        after={k:str(v.quantize(Decimal('0.01'))) for k,v in [('theoretical_cost',pc),('wood_cost_est',wc),('est_parts',ep)] if v is not None}
         before={k:str(getattr(order,k)) for k in after}
         if before==after:continue
         changes.append({'order_no':order.order_no,'before':before,'after':after,
