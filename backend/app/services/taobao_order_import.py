@@ -87,13 +87,18 @@ def _map_status(raw: Any) -> str:
     return _resolve_status(raw)[0]
 
 
-_SERVICE_NAME_KW = ("送货", "入户", "安装", "上门")
+_SERVICE_NAME_KW = ("商家安装", "送货入户", "送货上门", "上门安装", "安装服务",
+                    "送货服务", "上门服务", "官方服务", "安装", "送货")
 
 
 def _is_service_line_name(name: Any) -> bool:
     """送货入户/商家安装/上门 等服务行 (多行订单里不该抢主商品名)。"""
-    n = str(name or "")
-    return any(k in n for k in _SERVICE_NAME_KW)
+    n = str(name or "").strip()
+    # Product titles such as 入户玄关柜 and 免安装床头柜 are physical goods.
+    # Only a whole service label (possibly repeated) is a service line.
+    return bool(re.fullmatch(
+        r"(?:" + "|".join(map(re.escape, _SERVICE_NAME_KW)) + r")[\s、/，,]*"
+        r"(?:(?:" + "|".join(map(re.escape, _SERVICE_NAME_KW)) + r")[\s、/，,]*)*", n))
 
 
 def _norm_pps_code(code: Any) -> Any:
@@ -754,6 +759,22 @@ def _persist_order_lines(
 
     sku_code 经对应表 resolve 成 PPS 编码(否则匹配不到定价/成本); 服务行(送货/安装)不写; 幂等(按 sync_key)。
     """
+    # Validate before touching any row: two products must never overwrite the
+    # same child identity, including reports using the parent ID as fallback.
+    identities = {}
+    unique_lines = []
+    for ln in lines:
+        child = _clean(ln.get('sub_order_no'))
+        if child and not _is_service_line_name(ln.get('product_name')):
+            signature = tuple(str(ln.get(k) or '') for k in
+                              ('product_name', 'sku_code', 'sku', 'qty'))
+            if child in identities:
+                if identities[child] != signature:
+                    raise ValueError(f'订单 {order_no} 子单 {child} 对应多条冲突商品，未覆盖原明细')
+                continue
+            identities[child] = signature
+        unique_lines.append(ln)
+    lines = unique_lines
     distinct_children = {
         _clean(ln.get("sub_order_no")) for ln in lines
         if _clean(ln.get("sub_order_no")) not in (None, "", order_no)
@@ -811,6 +832,8 @@ def _persist_order_lines(
             refund_amount=_to_decimal(ln.get("refund")),
         )
         if row:
+            if row.order_no != order_no:
+                raise ValueError(f'子单 {sub_order_no} 已属于其他主单，未覆盖')
             for k, v in vals.items():
                 # Shipping/master reports can omit SKU and quantity. Absence
                 # is not an instruction to erase a sales-detail variant or to
@@ -865,8 +888,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         # 主商品行: 优先在"非服务行"里取金额最大的一行 —— 送货入户/商家安装等服务行(常为¥0)不抢主位
         # (用户实测 2026-06-18: ¥11212 的餐边柜单被错标成"送货入户")。全是服务行才退而取金额最大。
         lines = o.lines or [{}]
-        existing_line_keys = set(db.scalars(select(OrderDetail.sub_order_no).where(
-            OrderDetail.order_no == no, OrderDetail.source == 'import')))
+        before_lines = db.execute(select(OrderDetail.sub_order_no, OrderDetail.sku_code, OrderDetail.qty).where(
+            OrderDetail.order_no == no, OrderDetail.source == 'import')).all()
+        existing_line_keys = {r[0] for r in before_lines}
         new_line_keys = {_clean(line.get('sub_order_no')) for line in lines}
         o.source_scope_complete = ((o.fin_source == 'order' and o.status_trusted)
                                    or (existing_line_keys - {None, ''}).issubset(new_line_keys))
@@ -1122,6 +1146,23 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 existing.customer_address, o.customer_address
             )
             remote_report_service.capture_transition(existing, was_remote=was_remote)
+            # A later complete sales-detail report may repair a missing child or
+            # quantity after the master was imported. Refresh derived costs,
+            # not paid/refund/actual invoices, only when purchase facts changed.
+            db.flush()
+            after_lines = db.execute(select(OrderDetail.sub_order_no, OrderDetail.sku_code, OrderDetail.qty).where(
+                OrderDetail.order_no == no, OrderDetail.source == 'import')).all()
+            parent_qty_changed = False
+            if (len(_non_service) == 1 and len(after_lines) == 1
+                    and primary.get('qty') not in (None, '')
+                    and _sku_code and existing.sku_code == _sku_code):
+                source_qty = _to_int(primary.get('qty'), default=0)
+                if source_qty > 0 and existing.qty != source_qty:
+                    _trace('qty', '购买数量', existing.qty, source_qty)
+                    existing.qty = source_qty
+                    parent_qty_changed = True
+            if set(before_lines) != set(after_lines) or parent_qty_changed:
+                order_cost_service.recompute_and_save(db, existing)
             rep.updated += 1
             continue
 

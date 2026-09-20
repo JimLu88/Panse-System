@@ -287,6 +287,12 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
         _notes.append(f"<b>生产备注</b> {e(sheet.production_note)}")
     note_html = ("<div class='z'><div class='zt'>客户备注　NOTE</div>"
                  f"<div class='zb' style='color:#dc2626;font-weight:700'>{'<br>'.join(_notes)}</div></div>") if _notes else ""
+    # A custom/top-up link's purchased units may be money units, not furniture.
+    quantity_link = any(w in ((sheet.sku or '') + (sheet.product_name or ''))
+                        for w in ('定制', '咨询', '补差', '差价', '补拍'))
+    quantity_text = (f'拍下数量 {int(sheet.qty)}；成品件数以确认备注为准'
+                     if quantity_link or sheet.is_custom_variant
+                     else f'本子单共 {int(sheet.qty)} 件（不是整笔主订单合计）')
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
@@ -298,8 +304,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
 <title>{e(sheet.sheet_title)}</title><style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}}
 body{{background:#fff;}}
-.page{{width:1684px;height:1190px;background:#fff;padding:22px;}}
-.card{{position:relative;width:1640px;height:1146px;background:#fff;border:3px solid {A};}}
+.page{{width:1684px;min-height:1190px;background:#fff;padding:22px;}}
+.card{{position:relative;width:1640px;min-height:1146px;background:#fff;border:3px solid {A};}}
 table{{border-collapse:collapse;}}
 .hd{{width:100%;height:150px;background:none;color:#000;}}
 {hd_extra}
@@ -337,6 +343,7 @@ table{{border-collapse:collapse;}}
   <td class="pic">{pic_html}</td>
   <td class="zwrap">
     <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
+    <div class="z"><div class="zt">数量核对　QUANTITY</div><div class="zb" style="font-size:36px;font-weight:900;color:#dc2626">{e(quantity_text)}</div></div>
     {note_html}
     <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}</div></div>
     <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
@@ -544,6 +551,7 @@ def archive_sent_line_snapshot(
     content: bytes,
     *,
     source: str = "factory_push",
+    rendered_sheet: "factory_sheet.FactorySheet | None" = None,
 ) -> ImportedFile:
     """归档已发送的子订单商品图；这是新链路的唯一送达凭证。"""
     from app.services import order_flags
@@ -571,6 +579,13 @@ def archive_sent_line_snapshot(
             "render_width": 1684,
             "pushed": True,
             "line_delivery": True,
+            # Never reconstruct a historical rendered quantity from a mutable row.
+            "rendered_line": ({
+                "schema": "factory-line-v2", "qty": int(rendered_sheet.qty),
+                "sku_code": rendered_sheet.sku_code,
+                "product_code": rendered_sheet.product_code,
+                "content_sha256": __import__('hashlib').sha256(content).hexdigest(),
+            } if rendered_sheet is not None else None),
             # 激活态是送达幂等的一部分。缺少它会让下一轮
             # repush_activated 把刚发成功的子订单再次判成旧图并重推。
             "activated": order_flags.is_activated(order),
@@ -670,7 +685,7 @@ def reconcile_order_line_delivery(
             image_result = feishu_client.send_image(db, chat_id, image_key) or {}
             if not _feishu_message_id(image_result):
                 raise RuntimeError("飞书未返回消息ID，送达结果未知，不自动重发")
-            archive_sent_line_snapshot(db, order, line, png)
+            archive_sent_line_snapshot(db, order, line, png, rendered_sheet=sheet)
             line.factory_delivery_state = "sent"
             line.factory_delivery_sent_at = datetime.now().astimezone()
             line.factory_delivery_message_id = _feishu_message_id(image_result)
@@ -1526,6 +1541,10 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
             "主订单汇总被作为子订单发送，需人工确认处理；未自动作废或重发: "
             + ",".join(line_gate["master_summary_sent_sub_order_nos"])
         )
+    result['line_content_unverified'] = line_gate.get('content_unverified', [])
+    if line_gate.get('content_mismatches'):
+        errors.append('已发送图与当前SKU/件数不一致，未自动重发: ' + ','.join(
+            str(item.get('sub_order_no')) for item in line_gate['content_mismatches']))
     if unexplained_line_missing or line_gate.get("unvoided_refunded_sub_order_nos"):
         errors.append(
             "子订单送达数量不一致: 有效商品 "

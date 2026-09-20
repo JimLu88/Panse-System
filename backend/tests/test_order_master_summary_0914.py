@@ -61,7 +61,10 @@ def test_sent_summary_requires_review_without_automatic_void(db_session, monkeyp
     child = OrderDetail(order_no="P", sub_order_no="C", source="import", sku_code="SKU",
                         factory_delivery_required=True)
     db_session.add_all([o, summary, child]); db_session.flush()
-    monkeypatch.setattr(delivery, "sent_line_evidence", lambda db: {"P": object(), "C": object()})
+    from app.models.import_file import ImportedFile
+    monkeypatch.setattr(delivery, "sent_line_evidence", lambda db: {
+        key: ImportedFile(id=i, kind='order_sheet_sent', stored_path='unused', row_summary={})
+        for i, key in enumerate(('P', 'C'), 1)})
     monkeypatch.setattr(delivery, "void_line_evidence", lambda db: {})
     gate = delivery.delivery_count_gate(db_session)
     assert not gate["ok"]

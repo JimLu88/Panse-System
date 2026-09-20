@@ -164,8 +164,9 @@ def delivery_count_gate(db: Session) -> dict:
         if is_master_summary_line(db, line)
         and str(line.sub_order_no) in sent and str(line.sub_order_no) not in voided
     )
+    content = audit_sent_line_content(active, sent)
     ok = (len(active_ids) == len(sent_ids) and not missing
-          and not unvoided_refunds and not summary_sent)
+          and not unvoided_refunds and not summary_sent and not content['mismatches'])
     return {
         "ok": ok,
         "active_product_count": len(active_ids),
@@ -174,7 +175,44 @@ def delivery_count_gate(db: Session) -> dict:
         "extra_sent_sub_order_nos": extra,
         "master_summary_sent_sub_order_nos": summary_sent,
         "unvoided_refunded_sub_order_nos": unvoided_refunds,
+        "content_verified": not content['mismatches'] and not content['unverified'],
+        "complete_verified": ok and not content['unverified'],
+        "content_mismatches": content['mismatches'],
+        "content_unverified": content['unverified'],
+        "expected_unit_count": sum(int(line.qty or 1) for line in active),
     }
+
+
+def audit_sent_line_content(lines: list[OrderDetail], sent: dict[str, ImportedFile]) -> dict:
+    """Read-only quantity/SKU reconciliation, independent of message count.
+
+    Callers may pass shipped/signed lines for historical incident audits.
+    Old evidence stays unknown; never backfill a made-up rendering snapshot.
+    """
+    mismatches, unverified = [], []
+    for line in lines:
+        evidence = sent.get(str(line.sub_order_no or ''))
+        if evidence is None or line_is_refunded(line):
+            continue
+        summary = evidence.row_summary or {}
+        snapshot = summary.get('rendered_line')
+        identity = {'order_no': line.order_no, 'sub_order_no': line.sub_order_no,
+                    'file_id': evidence.id, 'expected_qty': line.qty}
+        if not isinstance(snapshot, dict) or snapshot.get('schema') != 'factory-line-v2':
+            unverified.append({**identity, 'reason': 'historical_render_snapshot_missing'})
+            continue
+        wrong = []
+        if snapshot.get('qty') != line.qty:
+            wrong.append('quantity_changed')
+        if snapshot.get('sku_code') != line.sku_code:
+            wrong.append('sku_changed')
+        if snapshot.get('product_code') != line.product_code:
+            wrong.append('product_changed')
+        if not snapshot.get('content_sha256') or snapshot['content_sha256'] != evidence.file_hash:
+            wrong.append('image_hash_unverified')
+        if wrong:
+            mismatches.append({**identity, 'rendered_qty': snapshot.get('qty'), 'reasons': wrong})
+    return {'mismatches': mismatches, 'unverified': unverified}
 
 
 def bind_unambiguous_legacy_evidence(db: Session) -> dict:
