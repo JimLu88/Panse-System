@@ -1,5 +1,15 @@
 # Panse-System agent instructions
 
+## Business relationship impact review (2026-09-20)
+
+For code/field repairs, use `docs/business-relationships-maintenance.md` and the
+read-only catalogue before and after edits. Run the changed-file/field impact
+CLI, review downstream checks and unmodeled candidates, and update affected
+relationships plus reviewed fingerprints only after review. Do not infer no
+impact from an absent edge, or business completion from a matching fingerprint.
+This is a maintenance check, NOT an added campaign/order business preflight,
+an AI monitoring loop, or authority to rewrite financial/source data.
+
 ## Program-owned campaign execution (2026-09-14)
 
 Read `docs/campaign-program-owned-execution-20260914.md`. AI confirms identity and

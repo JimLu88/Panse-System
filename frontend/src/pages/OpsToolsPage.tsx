@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Col, InputNumber, Row, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Button, Card, Col, InputNumber, Row, Space, Statistic, Table, Tag, Tabs, Typography, message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -8,8 +8,16 @@ import {
   recycleBinList, recycleBinRestore, type RecycleBinItem,
 } from '../api/system';
 import PresetTable from '../components/PresetTable';
+import BusinessRelationships from '../components/BusinessRelationships';
 
 export default function OpsToolsPage() {
+  return <Tabs defaultActiveKey="relationships" destroyInactiveTabPane items={[
+    { key: 'relationships', label: '关系流程', children: <BusinessRelationships /> },
+    { key: 'existing', label: '原有工具', children: <ExistingTools /> },
+  ]} />;
+}
+
+function ExistingTools() {
   const qc = useQueryClient();
   const health = useQuery({ queryKey: ['owner-health'], queryFn: ownerHealth });
   const bins = useQuery({ queryKey: ['recycle-bin'], queryFn: recycleBinList });

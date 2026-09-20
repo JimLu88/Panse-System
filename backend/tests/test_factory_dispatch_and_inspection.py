@@ -259,9 +259,11 @@ def test_dispatch_custom_order_uses_projected_cost_and_effective_production_qty(
 
     row = dispatch.build_rows(db_session)[0]
     assert row["定制标识"] == "定制单"
-    assert row["订购数量"] == 1
-    assert row["木作成本价"] == 1400.0
-    assert "已扣除非木作成本" in row["木作成本说明"]
+    # Ordinary SKU facts still say four physical items. A remark must never
+    # silently collapse four purchased items into one production task.
+    assert row["订购数量"] == 4
+    assert row["原购买数量"] == 4
+    assert row["确认成品数量"] == 4
     assert row["木作成本说明"].startswith("定制成本需人工核验｜")
 
 
@@ -278,9 +280,11 @@ def test_dispatch_custom_fallback_keeps_base_wood_cost(db_session, monkeypatch):
     db_session.commit()
 
     row = dispatch.build_rows(db_session)[0]
-    assert row["订购数量"] == 1
-    assert row["木作成本价"] == 1200.0
-    assert "基础木作成本兜底" in row["木作成本说明"]
+    assert row["订购数量"] is None
+    assert row["原购买数量"] == 11
+    assert row["确认成品数量"] is None
+    assert row["下单分组"] == '事实待核实'
+    assert '请勿生产' in row["数量确认状态"]
 
 
 def test_dispatch_compare_ignores_timestamp_and_normalizes_number_strings():

@@ -1,7 +1,7 @@
 """工厂系统下单表 → 飞书多维表格。
 
 这张表是给内部运营与木作工厂共看的只读业务投影：
-- 一行对应一个平台订单，主键为订单号；
+- 导入子单存在时一行对应精确子订单；没有导入明细才用旧母单兼容；
 - 常规单同步 SKU 木作成本单价；定制单复用系统定制核价结果，并明确标记待人工核验；
 - 不同步总出厂价、订单金额或其它成本；
 - 每次系统订单更新、下单图推送完成后立即增量覆盖；
@@ -105,9 +105,15 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("木作成本说明", 1),
     # 生产表已上线后新增的字段必须放尾部，飞书字段 API 不能可靠重排既有列。
     ("交期紧急度", 3),
+    ("原购买数量", 2),
+    ("确认成品数量", 2),
+    ("数量确认状态", 1),
+    ("数量确认依据", 1),
+    ("生产事实状态", 1),
 )
 
 EXPECTED_FIELD_ORDER: tuple[str, ...] = tuple(name for name, _type in FIELD_SPECS)
+PRODUCTION_FACT_FIELDS = frozenset({'原购买数量','确认成品数量','数量确认状态','数量确认依据','生产事实状态'})
 MAIN_VIEW_LAYOUT = {
     "primary_field": "工厂下单号",
     "group_by": "下单分组",
@@ -125,6 +131,11 @@ EXPORT_FIELDS: tuple[str, ...] = (
     "SKU规格",
     "尺寸",
     "订购数量",
+    "原购买数量",
+    "确认成品数量",
+    "数量确认状态",
+    "数量确认依据",
+    "生产事实状态",
     "木作成本价",
     "定制标识",
     "木作成本说明",
@@ -404,12 +415,46 @@ def _custom_order_info(
     return (True, f"备注关键词：{hit}") if hit else (False, "")
 
 
-def _production_qty(order: Order, *, is_custom: bool) -> int:
-    """定制凑价 SKU 的平台件数不是生产件数；4 件以上按一个生产任务展示。"""
-    raw = max(int(order.qty or 1), 1)
-    if is_custom and raw >= 4:
-        return 1
-    return raw
+def _production_projection(db, order, line=None):
+    """Use exactly the sheet's evidence and guards, never a price-unit heuristic.
+
+    Historical image receipts remain immutable. Current fact validity is separate.
+    This helper reads only; it never confirms quantity, sends, or recalculates bills.
+    """
+    purchase_qty = line.qty if line is not None else order.qty
+    try:
+        sheet = (factory_sheet.build_for_order_line(db, order.id, line.id) if line is not None
+                 else factory_sheet.build(db, order.id))
+    except (ValueError, RuntimeError) as exc:
+        _logger.warning('生产事实读取失败，保留待核实投影 order=%s line=%s type=%s',
+                        order.id, getattr(line, 'id', None), type(exc).__name__)
+        return {'quantity':None, 'size':'', 'blocked':True, 'fields':{
+            '原购买数量':purchase_qty if type(purchase_qty) is int and purchase_qty > 0 else None,
+            '确认成品数量':None, '数量确认状态':'待核实，请勿生产',
+            '数量确认依据':'制单事实读取失败：' + type(exc).__name__,
+            '生产事实状态':'当前事实读取失败，请勿据此新增生产'}}
+    confirmed = getattr(sheet, 'quantity_confirmation', None)
+    qty_unknown = (not confirmed and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
+        w.code == 'production_quantity_unverified' for w in sheet.warnings)
+    blockers = [w.code for w in sheet.warnings if w.code in (
+        'production_quantity_unverified', 'variant_size_unverified')]
+    if qty_unknown and 'production_quantity_unverified' not in blockers:
+        blockers.append('production_quantity_unverified')
+    quantity = None if qty_unknown else sheet.qty
+    other_warnings = [w.code for w in sheet.warnings if w.code not in blockers]
+    return {
+        'quantity': quantity, 'size': sheet.size_info or '', 'blocked': bool(blockers),
+        'fields': {
+            '原购买数量': purchase_qty if type(purchase_qty) is int and purchase_qty > 0 else None,
+            '确认成品数量': quantity,
+            '数量确认状态': ('待确认，请勿生产' if qty_unknown else '人工已确认' if confirmed else '按有效购买数'),
+            '数量确认依据': ((confirmed.get('evidence_ref') or '') if confirmed else
+                         '原购买记录；无定制计价数量歧义' if not qty_unknown else '缺有效成品数量依据'),
+            '生产事实状态': (('当前事实待核实，请勿据此新增生产：' + ', '.join(blockers)) if blockers
+                         else '数量与已提供尺寸按制单口径核对（不代表已经生产或发齐）')
+                         + ('；其他制单提醒：' + ', '.join(other_warnings) if other_warnings else ''),
+        },
+    }
 
 
 def _custom_wood_unit_price(
@@ -577,7 +622,8 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 remote = order_flags.is_remote(projected)
                 schedule = order_flags.factory_schedule(projected)
                 is_custom, custom_reason = _custom_order_info(projected, ps_line)
-                production_qty = _production_qty(projected, is_custom=is_custom)
+                production = _production_projection(db, order, line)
+                production_qty = production['quantity']
                 unit_wood = (
                     Decimal(str(ps_line.wood_cost)).quantize(Decimal("0.01"))
                     if ps_line is not None and ps_line.wood_cost is not None else None
@@ -585,7 +631,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 if unit_wood is None and len(imported_lines) == 1:
                     unit_wood = _wood_unit_price(order, None)
                 cost_method = ""
-                if is_custom and len(imported_lines) == 1:
+                if is_custom and len(imported_lines) == 1 and production_qty is not None:
                     unit_wood, cost_method = _custom_wood_unit_price(
                         db, projected, ps_line, production_qty=production_qty)
                 photo_requested = _photo_requested(projected)
@@ -598,11 +644,13 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     alerts.append("📷 通知拍照")
                 if order_service.normalize_status(projected.status) in {"shipped", "signed", "cancelled", "aftersales"}:
                     alerts = []  # History remains in notes; no contradictory current shipping action.
+                if production['blocked']:
+                    alerts.append(production['fields']['生产事实状态'])
                 out.append({
                     "订单号": order.order_no,
                     "子订单号": sub_order_no,
                     "工厂下单号": factory_label,
-                    "下单分组": "工厂正式单" if factory_no else "待编号",
+                    "下单分组": "事实待核实" if production['blocked'] else "工厂正式单" if factory_no else "待编号",
                     "系统排序键": (
                         f"1-{factory_no:06d}" if factory_no else f"3-{order.id:010d}-{line.id:010d}"
                     ),
@@ -610,8 +658,9 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "产品编码": line.product_code or (ps_line.product_code if ps_line else None) or "",
                     "SKU编码": line.sku_code or "",
                     "SKU规格": line.sku_name or (ps_line.sku if ps_line else None) or "",
-                    "尺寸": (ps_line.size_info if ps_line else None) or "",
+                    "尺寸": production['size'],
                     "订购数量": production_qty,
+                    **production['fields'],
                     "木作成本价": float(unit_wood) if unit_wood is not None else None,
                     "定制标识": "定制单" if is_custom else "常规单",
                     "木作成本说明": (
@@ -645,8 +694,9 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         schedule = order_flags.factory_schedule(order)
         urgency = _urgency_label(order, refunded=refunded, schedule=schedule)
         is_custom, custom_reason = _custom_order_info(order, ps)
-        production_qty = _production_qty(order, is_custom=is_custom)
-        if is_custom:
+        production = _production_projection(db, order)
+        production_qty = production['quantity']
+        if is_custom and production_qty is not None:
             unit_wood, cost_method = _custom_wood_unit_price(
                 db,
                 order,
@@ -698,6 +748,9 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             alerts.append("📷 通知拍照")
         if order_service.normalize_status(order.status) in {"shipped", "signed", "cancelled", "aftersales"}:
             alerts = []
+        if production['blocked']:
+            alerts.append(production['fields']['生产事实状态'])
+            order_group = '事实待核实'
         out.append({
             "订单号": order.order_no,
             "子订单号": "",
@@ -708,8 +761,9 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "产品编码": order.product_code or "",
             "SKU编码": order.sku_code or "",
             "SKU规格": order.sku or "",
-            "尺寸": (ps.size_info if ps else None) or "",
+            "尺寸": production['size'],
             "订购数量": production_qty,
+            **production['fields'],
             "木作成本价": float(unit_wood) if unit_wood is not None else None,
             "定制标识": "定制单" if is_custom else "常规单",
             "木作成本说明": (
@@ -1362,6 +1416,27 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
         # Routine sync is not a schema migration: never rename/delete factory
         # columns, change types, reorder views or rebuild the table here.
         fields = feishu_client.list_table_fields(db, app_token, table_id)
+        # Explicit, additive 2026-09-20 repair only. Never rename or delete
+        # existing columns or fix conflicting types automatically. Read back
+        # each addition; a timed-out creation is not retried in this invocation.
+        present = {f.get('field_name') for f in fields}
+        additions = [(name, kind) for name, kind in FIELD_SPECS
+                     if name in PRODUCTION_FACT_FIELDS and name not in present]
+        result['required_fact_fields'] = [name for name, _kind in additions]
+        if additions and not dry_run:
+            # Existing unrelated layout faults must not cause any schema writes.
+            old_errors = [e for e in _schema_layout_errors(fields)
+                          if e not in {f'缺少字段「{name}」' for name, _kind in additions}]
+            if old_errors:
+                result.update(ok=False, errors=old_errors)
+                return result
+            for name, kind in additions:
+                feishu_client.create_field(db, app_token, table_id, name, kind)
+                fields = feishu_client.list_table_fields(db, app_token, table_id)
+                if not any(f.get('field_name') == name and f.get('type') == kind for f in fields):
+                    result['errors'].append('新增事实字段未读回：' + name)
+                    result['ok'] = False
+                    return result
         layout_errors = _schema_layout_errors(fields)
         if layout_errors:
             result["errors"].extend(layout_errors)

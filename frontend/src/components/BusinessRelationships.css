@@ -1,0 +1,25 @@
+.business-relationships { color: #20314a; }
+.br-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.br-map { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 16px; }
+.br-node-list { display: grid; gap: 7px; }
+.br-node-button { display: block; width: 100%; text-align: left; padding: 11px 12px; border: 1px solid #e0e7f0; border-radius: 9px; background: #f8faff; color: #20314a; cursor: pointer; font: inherit; overflow-wrap: anywhere; }
+.br-node-button:hover, .br-node-button:focus-visible { border-color: #3477d5; background: #edf4ff; outline: 2px solid #c2d8fa; }
+.br-node-button small { display: block; color: #62728a; font-size: 11px; margin-top: 5px; }
+.br-graph, .br-lanes { overflow: auto; max-height: 620px; border: 1px solid #e1e8f0; border-radius: 12px; background: #fafcff; margin: 12px 0; }
+.br-lanes { padding: 16px; }
+.br-lane-name { display: flex; align-items: center; padding: 10px; background: #edf2fa; border-radius: 6px; }
+.br-lane-cell { min-height: 85px; padding: 6px; background: #f1f5fa; border-radius: 6px; }
+.br-step { color: #62728a; text-align: center; }
+.br-sources { padding-left: 18px; font-size: 12px; margin: 6px 0; }
+.br-sources li { margin-bottom: 8px; overflow-wrap: anywhere; }
+.br-sources code, .br-wrap { overflow-wrap: anywhere; word-break: break-word; }
+.br-check { margin-top: 6px; color: #855327; }
+@media (max-width: 600px) { .br-map { grid-template-columns: 1fr; } .br-graph, .br-lanes { max-height: 480px; } }
+@media (max-width: 600px) {
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-wrap { overflow: visible; }
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-list { flex-wrap: wrap; transform: none !important; width: 100%; }
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-tab { margin: 0; padding: 10px; width: 50%; box-sizing: border-box; }
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-ink-bar,
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-nav-operations { display: none; }
+  .business-relationships > .ant-space-item > .ant-tabs > .ant-tabs-nav .ant-tabs-tab-active { background: #edf4ff; border-radius: 8px; }
+}

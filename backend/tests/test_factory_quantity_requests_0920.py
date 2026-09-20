@@ -12,6 +12,8 @@ from app.services import order_sheet_archive_service as sheets
 
 @pytest.fixture
 def flow(db_session, monkeypatch):
+    from app.services import factory_dispatch_feishu_service
+    monkeypatch.setattr(factory_dispatch_feishu_service, 'sync_if_enabled', lambda db: {'ok':True,'errors':[]})
     db = db_session
     monkeypatch.delenv('PANSE_DISABLE_NOTIFY', raising=False)
     o = Order(platform='淘宝', order_no='MAIN', order_date=date(2026,9,20), status='paid',
@@ -75,6 +77,25 @@ def test_real_reply_confirms_only_child_and_sends_explanation(flow,qty):
     assert f'实际成品 {qty} 件' in f.calls['notes'][0][1]
     assert q.handle_reply(f.db,f.event)['duplicate']
     assert len(f.calls['images'])==1 and len(f.calls['notes'])==1
+
+
+@pytest.mark.parametrize('failure',['failed','unknown','disabled'])
+def test_table_problem_never_replays_sent_image(flow,monkeypatch,failure):
+    from app.services import factory_dispatch_feishu_service as dispatch
+    f=flow;ask(f);calls=[]
+    def sync(db):
+        calls.append(1)
+        if failure=='unknown':raise TimeoutError('table receipt lost')
+        return {'ok':failure=='disabled','skipped':'auto_disabled' if failure=='disabled' else None,'errors':['table failure']}
+    monkeypatch.setattr(dispatch,'sync_if_enabled',sync)
+    q.handle_reply(f.db,f.event)
+    record=json.loads(q._row(f.db,q.PREFIX+str(f.line.id)).value_plain)
+    assert record['factory_sync']['state']==failure
+    assert f.line.factory_delivery_state=='sent' and len(f.calls['images'])==1
+    q.handle_reply(f.db,f.event)
+    q.complete_pending_receipts(f.db)
+    assert calls==[1] and len(f.calls['images'])==1
+    assert '工厂表尚未确认同步' in f.calls['notes'][0][1]
 
 
 def test_guard_automatically_asks_without_sending_image(flow):

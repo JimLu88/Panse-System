@@ -24,6 +24,23 @@ from app.services.ai_provider import (
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+@router.get('/business-relationships')
+def business_relationships(_: object = Depends(require_role('admin', 'operator'))):
+    """Structure metadata only: no business DB reads or business side effects."""
+    from app.services.business_relationship_service import snapshot
+    return snapshot()
+
+
+@router.get('/business-relationships/field')
+def business_relationship_field(model: str, field: str,
+                                _: object = Depends(require_role('admin', 'operator'))):
+    from app.services.business_relationship_service import field_references
+    try:
+        return field_references(model, field)
+    except ValueError as exc:
+        raise HTTPException(422, '模型或字段不在本系统目录中') from exc
+
+
 class IntegrationConfigOut(BaseModel):
     provider: str
     base_url: str

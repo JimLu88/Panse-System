@@ -252,13 +252,32 @@ def complete_delivery(db, line):
     record.update(state='sent', image_message_id=line.factory_delivery_message_id,
                   receipt_state='claimed')
     _save(db, row, record)
+    # The image is already sent. Persist a distinct projection result; never
+    # clear the image receipt or resend it because this table update failed.
+    record['factory_sync'] = {'state': 'claimed', 'at': _now()}
+    _save(db, row, record)
+    try:
+        from app.services import factory_dispatch_feishu_service
+        synced = factory_dispatch_feishu_service.sync_if_enabled(db)
+        record['factory_sync'] = {
+            'state': 'disabled' if synced.get('skipped') else 'verified' if synced.get('ok') else 'failed',
+            'at': _now(), 'errors': synced.get('errors') or [],
+        }
+        _save(db, row, record)
+    except Exception as exc:
+        db.rollback()
+        record['factory_sync'] = {'state':'unknown', 'at':_now(), 'error_type':type(exc).__name__}
+        _save(db, row, record)
+        log.exception('数量已确认、图已送达，工厂表同步未确认；不重发图 line=%s', line.id)
     try:
         name = feishu_client.get_user_name(db, record['actor'].removeprefix('feishu:')) or record['actor']
         text = (f"畔色{record['factory_no']}单数量已确认，正式制单图已发送。\n"
                 f"子单：{record['identity']['sub_order_no']}\n"
                 f"原购买数量 {facts.purchase_quantity_label(record['identity']['purchase_qty'])}，实际成品 {record['physical_qty']} 件。\n"
                 f"确认人：{name}（依据本卡片下的回复）。\n"
-                "原购买数量及财务金额不变；请按最新正式制单图的确认数量生产，待确认卡片不作为生产单。")
+                "原购买数量及财务金额不变；请按最新正式制单图的确认数量生产，待确认卡片不作为生产单。\n"
+                + ("工厂表已同步并回读。" if record['factory_sync']['state']=='verified'
+                   else "工厂表尚未确认同步；系统已单独记录，不会因此重复发制单图。"))
         receipt = feishu_client.reply_text(db, record['card_message_id'], text) or {}
         receipt_id = receipt.get('message_id') or (receipt.get('message') or {}).get('message_id')
         if not receipt_id:
