@@ -622,6 +622,8 @@ def reconcile_order_line_delivery(
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
         return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "no_chat_id"}
+    from app.services import factory_quantity_request_service
+    factory_quantity_request_service.complete_pending_receipts(db, only_sub_order_nos=only_sub_order_nos)
     sent = line_delivery.sent_line_evidence(db)
     pushed: list[str] = []
     failed: list[dict] = []
@@ -685,6 +687,16 @@ def reconcile_order_line_delivery(
                 line.id,
                 address_pending_for_production=address_pending_for_production,
             )
+            if any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
+                from app.services import factory_quantity_request_service as quantities
+                line.factory_delivery_state = 'failed'
+                line.factory_delivery_error = '实际成品数量待确认，请回复飞书对应数量卡片并 @机器人'
+                db.commit()
+                question = quantities.request_quantity(db, line_id=line.id)
+                failed.append({'order_no': order.order_no, 'sub_order_no': sub_order_no,
+                               'factory_no': line.factory_no, 'reason': line.factory_delivery_error,
+                               'quantity_question': question})
+                continue
             png = render_png(sheet)
             image_key = feishu_client.upload_image(db, png)
             line.factory_delivery_state = "sending_image"
@@ -699,6 +711,14 @@ def reconcile_order_line_delivery(
             line.factory_delivery_message_id = _feishu_message_id(image_result)
             db.commit()
             pushed.append(sub_order_no)
+            # The image has already been sent: a failed explanatory message must
+            # never roll its state back to failed/uncertain or cause another image.
+            try:
+                from app.services import factory_quantity_request_service as quantities
+                quantities.complete_delivery(db, line)
+            except Exception:
+                db.rollback()
+                _logger.exception('数量确认解释发送未完成，保留已发送状态 line=%s', line.id)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             line = db.get(OrderDetail, line.id)
@@ -711,7 +731,7 @@ def reconcile_order_line_delivery(
             failed.append({
                 "order_no": order.order_no,
                 "sub_order_no": sub_order_no,
-                "factory_no": line.factory_no,
+                "factory_no": getattr(line, 'factory_no', None),
                 "reason": f"{type(exc).__name__}: {exc}"[:500],
             })
             _logger.warning("子订单下单图发送失败 %s", sub_order_no, exc_info=True)

@@ -1363,6 +1363,12 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
     msg = event.get("message") or {}
     mtype = msg.get("message_type")
     message_id = msg.get("message_id")
+    # Quantity replies own their exact persisted thread; handle before generic
+    # numeric aftersales/password/help routes. The service verifies real content.
+    from app.services import factory_quantity_request_service
+    quantity_reply = factory_quantity_request_service.handle_reply(db, event)
+    if quantity_reply is not None:
+        return quantity_reply
     try:
         content = json.loads(msg.get("content") or "{}")
     except Exception:

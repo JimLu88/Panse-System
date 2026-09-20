@@ -55,7 +55,7 @@ def quantity_confirmation(db, order, line):
 
 
 def confirm_quantity(db, *, line_id, expected_sku, expected_purchase_qty,
-                     physical_qty, actor, evidence_ref):
+                     physical_qty, actor, evidence_ref, commit=True):
     """Operator-only: caller must hold explicit user confirmation; no inference."""
     if type(physical_qty) is not int or physical_qty<=0 or not actor or not evidence_ref:
         raise ValueError('缺少明确实物数量、确认人或依据')
@@ -75,5 +75,8 @@ def confirm_quantity(db, *, line_id, expected_sku, expected_purchase_qty,
         return existing
     db.add(SystemSetting(key=key,value_plain=json.dumps(record,ensure_ascii=False),is_secret=False,
                          description='用户明确确认的子单实物数量，不改变购买数量'))
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return record
