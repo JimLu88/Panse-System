@@ -293,6 +293,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
     quantity_text = (f'拍下数量 {int(sheet.qty)}；成品件数以确认备注为准'
                      if quantity_link or sheet.is_custom_variant
                      else f'本子单共 {int(sheet.qty)} 件（不是整笔主订单合计）')
+    if getattr(sheet, 'quantity_confirmation', None):
+        quantity_text = f'已确认成品 {int(sheet.qty)} 件（原拍下数量 {sheet.purchase_qty}）'
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
@@ -588,6 +590,8 @@ def archive_sent_line_snapshot(
                 "schema": "factory-line-v2", "qty": int(rendered_sheet.qty),
                 "sku_code": rendered_sheet.sku_code,
                 "product_code": rendered_sheet.product_code,
+                "purchase_qty": rendered_sheet.purchase_qty,
+                "quantity_confirmation": rendered_sheet.quantity_confirmation,
                 "content_sha256": __import__('hashlib').sha256(content).hexdigest(),
             } if rendered_sheet is not None else None),
             # 激活态是送达幂等的一部分。缺少它会让下一轮
@@ -707,6 +711,7 @@ def reconcile_order_line_delivery(
             failed.append({
                 "order_no": order.order_no,
                 "sub_order_no": sub_order_no,
+                "factory_no": line.factory_no,
                 "reason": f"{type(exc).__name__}: {exc}"[:500],
             })
             _logger.warning("子订单下单图发送失败 %s", sub_order_no, exc_info=True)

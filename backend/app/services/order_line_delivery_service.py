@@ -202,7 +202,20 @@ def audit_sent_line_content(lines: list[OrderDetail], sent: dict[str, ImportedFi
             unverified.append({**identity, 'reason': 'historical_render_snapshot_missing'})
             continue
         wrong = []
-        if snapshot.get('qty') != line.qty:
+        confirmation = snapshot.get('quantity_confirmation')
+        valid_confirmation = (isinstance(confirmation, dict)
+            and confirmation.get('schema') == 'factory-quantity-v1'
+            and confirmation.get('identity', {}).get('line_id') == line.id
+            and confirmation.get('identity', {}).get('order_no') == line.order_no
+            and confirmation.get('identity', {}).get('sub_order_no') == line.sub_order_no
+            and confirmation.get('identity', {}).get('sku_code') == line.sku_code
+            and confirmation.get('identity', {}).get('purchase_qty') == line.qty
+            and confirmation.get('physical_qty') == snapshot.get('qty')
+            and snapshot.get('purchase_qty') == line.qty
+            and bool(confirmation.get('actor')) and bool(confirmation.get('evidence_ref')))
+        if confirmation and not valid_confirmation:
+            wrong.append('quantity_confirmation_invalid')
+        if snapshot.get('qty') != line.qty and not valid_confirmation:
             wrong.append('quantity_changed')
         if snapshot.get('sku_code') != line.sku_code:
             wrong.append('sku_changed')

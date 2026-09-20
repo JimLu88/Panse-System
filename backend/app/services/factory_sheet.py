@@ -95,6 +95,8 @@ class FactorySheet:
     # 相对图库根路径, 前端拼 /api/gallery/file?path=…&max_edge=1600 显示
     gallery_main_image: Optional[str] = None
     sku_image: Optional[str] = None
+    purchase_qty: Optional[int] = None
+    quantity_confirmation: Optional[dict] = None
 
     # 主材 / 辅材 (图4, 2026-06-12): 取产品总表 main_material / aux_material, 下单图先主材后辅材
     main_material: Optional[str] = None
@@ -288,6 +290,8 @@ def build_for_order_line(
             sku = order.sku or order.sku_code
             sku_code = order.sku_code
 
+    from app.services.factory_production_evidence import quantity_confirmation
+    confirmed = quantity_confirmation(db, order, detail)
     sheet = build_from_fields(
         db,
         order_no=order.order_no,
@@ -295,7 +299,7 @@ def build_for_order_line(
         product_name=product_name,
         sku=sku,
         sku_code=sku_code,
-        qty=detail.qty or 1,
+        qty=confirmed['physical_qty'] if confirmed else detail.qty or 1,
         customer_name=("地址待补" if address_pending_for_production else order.customer_name),
         customer_phone=("待补" if address_pending_for_production else order.customer_phone),
         customer_address=(
@@ -308,7 +312,10 @@ def build_for_order_line(
         production_note=production_note,
         factory_no=detail.factory_no,
         order_is_custom=bool(getattr(order, "is_custom", False)),
+        quantity_verified=bool(confirmed),
     )
+    sheet.purchase_qty = detail.qty
+    sheet.quantity_confirmation = confirmed
     # 图片上同时保留主订单和子订单，便于回查，不改变淘宝主订单的客服口径。
     if detail.sub_order_no:
         sheet.order_no = f"{order.order_no} / 子单 {detail.sub_order_no}"
@@ -338,6 +345,7 @@ def build_from_fields(
     production_note: Optional[str] = None,
     factory_no: Optional[int] = None,
     order_is_custom: bool = False,
+    quantity_verified: bool = False,
 ) -> FactorySheet:
     """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。
 
@@ -455,7 +463,7 @@ def build_from_fields(
         if cv:
             dim_changes = cv.dimension_overrides
 
-    if qty > 1 and (is_custom or any(w in ((sku or '') + (product_name or ''))
+    if not quantity_verified and qty > 1 and (is_custom or any(w in ((sku or '') + (product_name or ''))
                                      for w in ('定制', '咨询', '补差', '差价', '补拍'))):
         warnings.append(FactorySheetWarning(
             code="production_quantity_unverified", severity="error",
@@ -538,6 +546,9 @@ def build_from_fields(
                      if remark else
                      "定制单未录定制尺寸且客户备注为空 — 请先补尺寸再发工厂!"),
         ))
+    if size_info is None:
+        from app.services.factory_production_evidence import verified_dimensions
+        size_info = verified_dimensions(product_code, sku_code)
     if size_info is None and product is not None:
         variant_ids = db.scalars(select(PricingSku.id).where(
             PricingSku.product_code == product.code).limit(2)).all()
