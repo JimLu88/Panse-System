@@ -194,3 +194,28 @@ def test_incident_recovery_atomic_and_idempotent(db_session,monkeypatch):
     from app.models.order import Order
     assert all(o.actual_cost==Decimal('123') for o in db_session.query(Order))
     assert first['new_production_orders']==0
+
+
+def test_incident_notify_metadata_fits_production_schema(db_session,monkeypatch):
+    from types import SimpleNamespace
+    from app.models.settings import SystemSetting
+    from app.services import order_completeness_incident as incident
+    order=_order(db_session,'P');line=_line(db_session,'P','C','柜','SKU')
+    db_session.add(SystemSetting(key=incident.INCIDENT+':repair',value_plain='{}',is_secret=False))
+    db_session.commit()
+    monkeypatch.setattr(incident,'prepare',lambda db:[{'order_no':'P','factory_no':350,'old_file_id':1,'lines':[{'sub_order_no':'C'}]}])
+    monkeypatch.setattr(incident.settings_service,'get',lambda *a,**k:'oc_19d0a696aca01173f99d3276ec921f5b')
+    monkeypatch.setattr(incident,'correction_html',lambda *a:'<body>test</body>')
+    monkeypatch.setattr(incident.sheets,'_html_to_png',lambda *a,**k:b'image')
+    monkeypatch.setattr(incident.feishu_client,'send_text',lambda *a:{'message_id':'om_notice'})
+    monkeypatch.setattr(incident.feishu_client,'upload_image',lambda *a:'image_key')
+    monkeypatch.setattr(incident.feishu_client,'send_image',lambda *a:{'message_id':'om_image'})
+    def archive(db,**kw):
+        # SQLite does not enforce VARCHAR(n), PostgreSQL does. Check the actual
+        # model contract before the first production archive/send.
+        assert len(kw['source'])<=ImportedFile.__table__.c.source.type.length
+        assert kw['kind'] in incident.import_storage.KINDS
+        return SimpleNamespace(file=SimpleNamespace(id=99))
+    monkeypatch.setattr(incident.import_storage,'archive',archive)
+    assert incident.notify(db_session)['status']=='sent'
+    assert incident.notify(db_session)['status']=='sent'  # no repeated outbound

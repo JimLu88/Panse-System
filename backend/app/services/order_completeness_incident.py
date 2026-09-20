@@ -195,7 +195,7 @@ def notify(db):
             line=db.scalar(select(OrderDetail).where(OrderDetail.sub_order_no==sub))
             content=sheets._html_to_png(correction_html(db,item,line),width=1684)
             # Preserve correction separately; never mark it as a new factory delivery.
-            saved=import_storage.archive(db,content=content,original_name=f'{INCIDENT}-{sub}.jpg',kind='order_incident_correction',source=INCIDENT,
+            saved=import_storage.archive(db,content=content,original_name=f'{INCIDENT}-{sub}.jpg',kind='generic',source='incident_0920',
                 row_summary={'order_no':item['order_no'],'sub_order_no':sub,'qty':line.qty,'old_file_id':item['old_file_id'],'not_new_production':True})
             db.commit()
             def send_image():
