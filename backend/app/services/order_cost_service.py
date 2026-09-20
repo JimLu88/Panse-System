@@ -651,27 +651,52 @@ def _effective_qty(order: Order, unit_cost: Decimal) -> int:
     return qty if paid > 0 and (paid / qty) >= unit_cost else 1
 
 
+def _purchase_lines_for_cost(db: Session, order: Order) -> tuple[list, bool]:
+    """Use real purchase rows consistently for all three derived cost totals.
+
+    A parent summary is not an additional item. Explicit cancelled/full-refund
+    lines leave the cost set; partial monetary refunds alone do not erase goods.
+    Retain the legacy amount-match rule only when no line refund facts exist.
+    """
+    from app.models.order import OrderDetail
+    from app.services.order_line_delivery_service import is_master_summary_line
+    from app.services.taobao_order_import import _is_service_line_name
+    rows = list(db.scalars(select(OrderDetail).where(
+        OrderDetail.order_no == order.order_no, OrderDetail.source == "import")))
+    rows = [r for r in rows if not is_master_summary_line(db, r)
+            and not _is_service_line_name(r.product_name)]
+    multiple = len(rows) >= 2
+    has_refund_facts = any(r.refund_status or r.refund_amount is not None for r in rows)
+    active = []
+    for row in rows:
+        amount = Decimal(str(row.amount or 0))
+        refund = Decimal(str(row.refund_amount or 0))
+        if row.line_status in {"cancelled", "closed"}:
+            continue
+        if amount > 0 and refund >= amount * Decimal("0.99"):
+            continue
+        # A successful refund with no amount is not proof of a full return.
+        active.append(row)
+    legacy_refund = Decimal(str(getattr(order, "refund_amount", None) or 0))
+    if legacy_refund > 0 and not has_refund_facts:
+        active = [r for r in active
+                  if abs(Decimal(str(r.amount or 0)) - legacy_refund) >= Decimal("0.5")]
+    return active, multiple
+
+
 def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
     """一单多宝贝 → 按 order_details(source='import')各商品行 pricing物理成本×qty 汇总成本。
 
     需 ≥2 个能取到定价的商品行才算多产品(否则 None, 走原单SKU路径, 保留BOM精度)。
     杜绝塌单漏算(餐桌+床这类: 导入只留主商品, 成本只算一个 → 这里按全部商品行汇总)。
     """
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     # 口径A(用户拍板 2026-06-22): 成本只算"留下的"子产品。排除被退的那一行
     # (其 amount ≈ 订单剩余退款额 refund_amount; refund 已被 _normalize_refund 归0的单无需排除→全留)。
-    _refund = Decimal(str(getattr(order, "refund_amount", None) or 0))
-    if _refund > 0:
-        lines = [ln for ln in lines
-                 if abs(Decimal(str(ln.amount or 0)) - _refund) >= Decimal("0.5")]
-        if len(lines) < 1:
-            return None
+    if not lines:
+        return Decimal("0")
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
     for ln in lines:
@@ -738,12 +763,8 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
 
     任一商品行查不到 wood_cost → None (整单木作估算不完整, 不写 wood_cost_est, physical_cost 退回旧行为)。
     """
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
@@ -765,7 +786,7 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
         if wc is None:
             return None
         total += Decimal(str(wc)) * int(ln.qty or 1)
-    return total if total > 0 else None
+    return total
 
 
 def _set_wood_est(order: Order, wood: Optional[Decimal], quantity: int = 1) -> None:
@@ -823,12 +844,8 @@ def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
     """一单多宝贝 → 各 import 商品行 SKU 的定价表 external_parts_cost × qty 之和。与 _multi_product_wood 对称。
 
     < 2 行 → None(非多宝贝, 走单 SKU 路径)。某行查不到配件估值视作 0(配件可选, 不像木作要求齐全)。"""
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
@@ -1035,7 +1052,7 @@ def auto_cost_backfill(db: Session) -> dict:
         _mp = _multi_product_cost(db, _o)
         if _mp is not None and Decimal(str(_o.theoretical_cost or 0)) != _mp.quantize(_CENTS):
             _o.theoretical_cost = None
-            _o.actual_cost = None    # 多产品按子行汇总; 留 actual 会让 physical_cost 忽略汇总
+            # Derived reconciliation must never erase a real factory bill.
             mp_reset += 1
     if mp_reset:
         db.flush()

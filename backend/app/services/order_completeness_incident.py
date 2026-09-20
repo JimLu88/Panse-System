@@ -148,6 +148,81 @@ def correction_html(db,item,line):
     return sheets.render_html(sheet).replace('<body>','<body>'+banner,1)
 
 
+def all_product_financial_plan(db):
+    """All-product derived-cost repair, only exact source/SKU/quantity matches."""
+    from decimal import Decimal
+    from app.models.pricing import PricingSku
+    from app.services.order_line_delivery_service import line_is_refunded
+    source=db.get(ImportedFile,SOURCE_ID)
+    raw=import_storage.read(source.stored_path)
+    if sha256(raw).hexdigest()!=SOURCE_HASH:raise ValueError('全商品财务源文件变化')
+    parsed=imp._parse_sales_detail(source.original_filename,raw,imp.TaobaoImportReport())
+    changes=[];unresolved=[]
+    for order in db.scalars(select(Order).where(Order.is_refill.is_(False),Order.is_custom.is_(False),
+                                               Order.status.in_(['paid','production','shipped','signed']))):
+        lines,multiple=costs._purchase_lines_for_cost(db,order)
+        if not multiple or not lines:continue
+        facts=parsed.get(order.order_no)
+        if facts is None:
+            unresolved.append({'order_no':order.order_no,'reason':'missing_source'});continue
+        physical=[]
+        for f in facts.lines:
+            candidate=OrderDetail(line_status=imp._map_status(f.get('status_text')),
+                                  refund_status=f.get('refund_status'),refund_amount=f.get('refund'))
+            if not imp._is_service_line_name(f.get('product_name')) and not line_is_refunded(candidate):physical.append(f)
+        expected={str(f.get('sub_order_no')):f for f in physical}
+        if len(expected)!=len(physical) or set(expected)!={str(l.sub_order_no) for l in lines}:
+            unresolved.append({'order_no':order.order_no,'reason':'purchase_line_set_not_exact'});continue
+        verified=True
+        for line in lines:
+            fact=expected[str(line.sub_order_no)]
+            pricing=db.scalar(select(PricingSku).where(PricingSku.sku_code==line.sku_code)) if line.sku_code else None
+            if (line_is_refunded(line) or fact.get('sku_code')!=line.sku_code or not line.sku_code
+                or int(fact.get('qty') or 0)!=line.qty or pricing is None
+                or pricing.physical_cost is None or pricing.wood_cost is None
+                or any(w in str(fact.get('sku') or '') for w in ('定制','咨询','差价','补拍'))):
+                verified=False;break
+        if not verified:
+            unresolved.append({'order_no':order.order_no,'reason':'sku_qty_or_exact_pricing_not_verified'});continue
+        pc=costs._multi_product_cost(db,order);wc=costs._multi_product_wood(db,order);ep=costs._multi_product_parts(db,order)
+        if pc is None or wc is None or ep is None:
+            unresolved.append({'order_no':order.order_no,'reason':'cost_guard_or_missing_price'});continue
+        after={k:str(v.quantize(Decimal('0.01'))) for k,v in [('theoretical_cost',pc),('wood_cost_est',wc),('est_parts',ep)]}
+        before={k:str(getattr(order,k)) for k in after}
+        if before==after:continue
+        changes.append({'order_no':order.order_no,'before':before,'after':after,
+                        'actual_cost':str(order.actual_cost),'paid_amount':str(order.paid_amount),'status':order.status,
+                        'source_file_id':SOURCE_ID,'lines':[(l.id,l.sub_order_no,l.sku_code,l.qty,
+                            l.line_status,l.refund_status,str(l.refund_amount)) for l in lines]})
+    return {'changes':changes,'unresolved':unresolved}
+
+
+def repair_all_product_finance(db):
+    """One atomic, audited correction; no actual bill or production changes."""
+    from decimal import Decimal
+    key=INCIDENT+':all-product-finance'
+    prior=db.scalar(select(SystemSetting).where(SystemSetting.key==key))
+    if prior:return json.loads(prior.value_plain)
+    plan=all_product_financial_plan(db)
+    claim=SystemSetting(key=key,value_plain='{}',is_secret=False,description='全品类已核原始子行派生成本修复')
+    try:
+        db.add(claim);db.flush()
+        for item in plan['changes']:
+            order=db.scalar(select(Order).where(Order.order_no==item['order_no']).with_for_update())
+            for k,v in {**item['before'],'actual_cost':item['actual_cost'],'paid_amount':item['paid_amount'],'status':item['status']}.items():
+                if str(getattr(order,k))!=v:raise ValueError('财务字段已并发变化')
+            for lid,sub,sku,qty,status,refund_status,refund_amount in item['lines']:
+                line=db.scalar(select(OrderDetail).where(OrderDetail.id==lid).with_for_update())
+                if line is None or line.order_no!=order.order_no or (line.sub_order_no,line.sku_code,line.qty,
+                    line.line_status,line.refund_status,str(line.refund_amount))!=(sub,sku,qty,status,refund_status,refund_amount):
+                    raise ValueError('子行或退款状态已并发变化')
+            for k,v in item['after'].items():setattr(order,k,Decimal(v))
+        result={'status':'repaired',**plan,'new_production_orders':0,'actual_bills_changed':0}
+        claim.value_plain=json.dumps(result,ensure_ascii=False);db.commit();return json.loads(claim.value_plain)
+    except Exception:
+        db.rollback();raise
+
+
 def send_once(db,key,content_hash,sender):
     old=db.scalar(select(SystemSetting).where(SystemSetting.key==key))
     if old:
