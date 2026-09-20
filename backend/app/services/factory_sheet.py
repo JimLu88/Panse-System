@@ -455,6 +455,12 @@ def build_from_fields(
         if cv:
             dim_changes = cv.dimension_overrides
 
+    if qty > 1 and (is_custom or any(w in ((sku or '') + (product_name or ''))
+                                     for w in ('定制', '咨询', '补差', '差价', '补拍'))):
+        warnings.append(FactorySheetWarning(
+            code="production_quantity_unverified", severity="error",
+            message="定制或计价链接拍下数量不等于成品件数，未确认实物件数前不自动发送生产单。"))
+
     # 3. BOM 物料明细 (业务需求 §1)
     materials: list[FactorySheetMaterial] = []
     if sku_code:
@@ -533,7 +539,16 @@ def build_from_fields(
                      "定制单未录定制尺寸且客户备注为空 — 请先补尺寸再发工厂!"),
         ))
     if size_info is None and product is not None:
-        size_info = _clean_size(product.size_value) or _clean_size(product.size_detail)
+        variant_ids = db.scalars(select(PricingSku.id).where(
+            PricingSku.product_code == product.code).limit(2)).all()
+        if len(variant_ids) > 1:
+            # A product default may describe an upper cabinet while this SKU is
+            # a lower cabinet. Never fabricate variant dimensions from it.
+            warnings.append(FactorySheetWarning(
+                code="variant_size_unverified", severity="error",
+                message="本SKU缺专属尺寸，产品有多个规格，禁止套用产品默认尺寸；请核对该SKU尺寸资料。"))
+        else:
+            size_info = _clean_size(product.size_value) or _clean_size(product.size_detail)
     # 无任何真实尺寸来源 → size_info 留 None, 下单图标红"未对应尺寸" (2026-06-19, 便于找出缺尺寸的SKU)
 
     # 图库配图: 主图 + SKU 尺寸图 (图库缺失/未挂载时悄悄留空, 不影响下单图)

@@ -342,7 +342,7 @@ table{{border-collapse:collapse;}}
 <table class="mid"><tr>
   <td class="pic">{pic_html}</td>
   <td class="zwrap">
-    <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
+    <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br><b>本SKU：{e(sheet.sku or '规格待核对')}</b>　<span style="font-size:20px">{e(sheet.sku_code or '编码待核对')}</span><br>{mat_txt}</div></div>
     <div class="z"><div class="zt">数量核对　QUANTITY</div><div class="zb" style="font-size:36px;font-weight:900;color:#dc2626">{e(quantity_text)}</div></div>
     {note_html}
     <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}</div></div>
@@ -501,6 +501,10 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
+    if any(getattr(w, 'code', '') == 'variant_size_unverified' for w in getattr(sheet, 'warnings', [])):
+        raise ValueError('本SKU专属尺寸未核实，不能用其他规格尺寸发送生产单')
+    if any(getattr(w, 'code', '') == 'production_quantity_unverified' for w in getattr(sheet, 'warnings', [])):
+        raise ValueError('定制拍下数量不是已核成品件数，停止自动生产发送，待核对实物数量')
     return _html_to_png(render_html(sheet), width=1684)
 
 

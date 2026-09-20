@@ -108,3 +108,26 @@ def test_all_product_repair_is_atomic_idempotent_and_keeps_actual(db_session,mon
     first=incident.repair_all_product_finance(db_session)
     assert o.theoretical_cost==D(500) and o.actual_cost==D(432)
     assert incident.repair_all_product_finance(db_session)==first
+
+
+@pytest.mark.parametrize('valid_hash',[True,False])
+def test_old_source_fallback_is_hash_pinned_not_latest_only(db_session,monkeypatch,valid_hash):
+    from types import SimpleNamespace as NS
+    from hashlib import sha256
+    from app.services import order_completeness_incident as incident
+    from app.models.import_file import ImportedFile
+    o=seed(db_session)
+    facts=[dict(sub_order_no=f'CHILD-{i}',sku_code=f'ANY-{i}',qty=q,sku=f'规格{i}',product_name='书柜',status_text='交易成功') for i,q in [(0,2),(1,1)]]
+    for fid,name in [(incident.SOURCE_ID,'current.xlsx'),(17,'old.xlsx')]:
+        db_session.add(ImportedFile(id=fid,kind='taobao',original_filename=name,stored_path=name,file_hash=str(fid),source='test'))
+    db_session.commit()
+    monkeypatch.setattr(incident,'SOURCE_HASH',sha256(b'current.xlsx').hexdigest())
+    monkeypatch.setattr(incident,'FINANCE_OLD_SOURCES',{o.order_no:17})
+    monkeypatch.setattr(incident,'FINANCE_OLD_HASHES',{17:sha256(b'old.xlsx').hexdigest() if valid_hash else 'bad'})
+    monkeypatch.setattr(incident.import_storage,'read',lambda name:name.encode())
+    monkeypatch.setattr(incident.imp,'_parse_sales_detail',lambda name,*args:{o.order_no:NS(lines=facts)} if name=='old.xlsx' else {})
+    if valid_hash:
+        result=incident.all_product_financial_plan(db_session)
+        assert result['changes'][0]['source_file_id']==17 and result['unresolved']==[]
+    else:
+        with pytest.raises(ValueError,match='哈希'):incident.all_product_financial_plan(db_session)

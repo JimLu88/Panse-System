@@ -27,6 +27,33 @@ REVIEWED = {
     CABINET: (410, 2219),
 }
 
+# Reviewed archive fallback for old multi-product orders absent from file 3027.
+FINANCE_OLD_SOURCES = {
+    '4502316494125276727':1172, '4502177316184015146':485,
+    '5115783241340027720':2285, '5115237121779012546':2262,
+    '2701793318056034064':576, '2701788495053166684':485,
+    '3305705593495183293':2833, '4991917070620599318':409,
+    '5117408713503179541':2448, '3304028352501005156':2395,
+    '3302834235192039473':2395, '3299694026699015351':1677,
+    '5112323136333117949':1498, '3306381708756020786':2889,
+    '3307673964001106764':2999,
+}
+FINANCE_OLD_HASHES = {
+    1172:'ff246d08e09fc765c430bf70e3cf3b8ccb3a6e5acc3666747a5c51099623d9af',
+    485:'8fa55cd226dc1007db30ca22c144fc819fa598a8c8aa085a4c982587323aa970',
+    2285:'9ef6f201ee7655be7941c53e00ffa558b1f890b44a0f4cfbac7756331a6e7a5a',
+    2262:'a119b37a8daa410a7b9987bbe8a33f4b40d1c4ec8736ee409f1fb6af688d059e',
+    576:'dcbaf68d126cbb5af2b085ad4a52638bc2e620546c9ed53c9960273a0b5436d4',
+    2833:'7f03ac3f5176cf5fce2faece99901057ec8d375a4c6c2fbc53188f0fb30ae7ee',
+    409:'71f96082361417f8e4c42b7c47a4316c339266f4e171aba95912b167e1f58fad',
+    2448:'a07f31b3cc44da58cebe9c9aab66af21586b5dee3a82823b59065f440b314e06',
+    2395:'06b39bd27950d3e91048b7b7b1424412be09357efade602dddea6e9c83b15a30',
+    1677:'870bdf3388fedc44299536b1b183a3282cd08e990d532786802891c6fcbfb088',
+    1498:'839655b7e948c273b1b91738220f3b2fe762f5f7f10b3eef83cc597fe48400ce',
+    2889:'1faffe0a676fb1794414344dcaa565cbfde9c17a3fc0e574cdbbc01443799c41',
+    2999:'2abff5fbee651f38dcdecb1c3230095f7af05a7542a60360f97228b5e63667a3',
+}
+
 
 def prepare(db):
     source = db.get(ImportedFile, SOURCE_ID)
@@ -157,12 +184,21 @@ def all_product_financial_plan(db):
     raw=import_storage.read(source.stored_path)
     if sha256(raw).hexdigest()!=SOURCE_HASH:raise ValueError('全商品财务源文件变化')
     parsed=imp._parse_sales_detail(source.original_filename,raw,imp.TaobaoImportReport())
-    changes=[];unresolved=[]
+    changes=[];unresolved=[];archive_cache={}
     for order in db.scalars(select(Order).where(Order.is_refill.is_(False),Order.is_custom.is_(False),
                                                Order.status.in_(['paid','production','shipped','signed']))):
         lines,multiple=costs._purchase_lines_for_cost(db,order)
         if not multiple or not lines:continue
-        facts=parsed.get(order.order_no)
+        facts=parsed.get(order.order_no);source_id=SOURCE_ID
+        if facts is None and order.order_no in FINANCE_OLD_SOURCES:
+            source_id=FINANCE_OLD_SOURCES[order.order_no]
+            if source_id not in archive_cache:
+                file=db.get(ImportedFile,source_id)
+                archive_raw=import_storage.read(file.stored_path)
+                if sha256(archive_raw).hexdigest()!=FINANCE_OLD_HASHES[source_id]:
+                    raise ValueError('旧财务来源档案哈希变化')
+                archive_cache[source_id]=imp._parse_sales_detail(file.original_filename,archive_raw,imp.TaobaoImportReport())
+            facts=archive_cache[source_id].get(order.order_no)
         if facts is None:
             unresolved.append({'order_no':order.order_no,'reason':'missing_source'});continue
         physical=[]
@@ -192,7 +228,7 @@ def all_product_financial_plan(db):
         if before==after:continue
         changes.append({'order_no':order.order_no,'before':before,'after':after,
                         'actual_cost':str(order.actual_cost),'paid_amount':str(order.paid_amount),'status':order.status,
-                        'source_file_id':SOURCE_ID,'lines':[(l.id,l.sub_order_no,l.sku_code,l.qty,
+                        'source_file_id':source_id,'lines':[(l.id,l.sub_order_no,l.sku_code,l.qty,
                             l.line_status,l.refund_status,str(l.refund_amount)) for l in lines]})
     return {'changes':changes,'unresolved':unresolved}
 
@@ -281,3 +317,38 @@ def notify(db):
             if r.get('status')!='sent':break
     return {'status':'sent' if all(r.get('status')=='sent' for r in receipts) else 'needs_review',
             'receipts':receipts,'chat_id':chat,'new_production_orders':0}
+
+
+def lower_size_review_html(db):
+    """A correction notice, explicitly NOT a production-ready dimension sheet."""
+    order=db.scalar(select(Order).where(Order.order_no==CABINET))
+    line=db.scalar(select(OrderDetail).where(OrderDetail.sub_order_no=='5127637176073059926'))
+    if order is None or line is None or (line.order_no,line.sku_code,line.qty)!=(CABINET,'PPS2455001090117',1):
+        raise ValueError('410下柜购买事实已变化')
+    sheet=factory_sheet.build_for_order_line(db,order.id,line.id)
+    if sheet.size_info is not None:raise ValueError('410下柜已出现新尺寸资料，需先核验，不覆盖为未知')
+    sheet.factory_no=410
+    sheet.image_url=None;sheet.sku_image=None;sheet.gallery_main_image=None
+    sheet.size_info='专属尺寸待核对：原图中的上柜900×220×1000尺寸不适用于本下柜，禁止照做'
+    banner=('<div style="width:1684px;padding:24px;color:#b91c1c;background:#fff3cd;font-size:36px;font-weight:bold">'
+            '410下柜尺寸纠错：本图只核对购买数量，不得用于生产或补发。下柜专属尺寸尚未核实；原更正图尺寸栏停止使用。'
+            '请核对原确认图纸，切勿重复生产或整单重发。</div>')
+    return sheets.render_html(sheet).replace('工厂生产单 · PRODUCTION ORDER','历史数量核对 · 尺寸待确认').replace('<body>','<body>'+banner,1)
+
+
+def notify_lower_size_review(db):
+    key=INCIDENT+':410-lower-size-correction-v2'
+    prior=db.scalar(select(SystemSetting).where(SystemSetting.key==key))
+    if prior:return json.loads(prior.value_plain)
+    chat=settings_service.get(db,'feishu_push_chat_id',env_fallback=False)
+    if chat!='oc_19d0a696aca01173f99d3276ec921f5b':raise ValueError('ERP群变化')
+    content=sheets._html_to_png(lower_size_review_html(db),width=1684)
+    saved=import_storage.archive(db,content=content,original_name='410下柜-数量核对-尺寸待确认.jpg',
+        kind='generic',source='incident_0920',row_summary={'order_no':CABINET,'sub_order_no':'5127637176073059926',
+        'qty':1,'replaces_correction_archive_id':3044,'size_verified':False,'not_for_production':True,'not_new_production':True})
+    db.commit()
+    def sender():
+        image_key=feishu_client.upload_image(db,content)
+        return feishu_client.send_image(db,chat,image_key)
+    return {**send_once(db,key,sha256(content).hexdigest(),sender),'archive_id':saved.file.id,
+            'new_production_orders':0,'size_verified':False}
