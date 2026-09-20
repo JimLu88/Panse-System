@@ -316,6 +316,13 @@ def build_for_order_line(
     )
     sheet.purchase_qty = detail.qty
     sheet.quantity_confirmation = confirmed
+    if not confirmed and (detail.qty is None or detail.qty <= 0):
+        # The builder's display fallback is not evidence for a production count.
+        if not any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
+            sheet.warnings.append(FactorySheetWarning(
+                code='production_quantity_unverified', severity='error',
+                message='原购买数量缺失或无效，实际成品数量待飞书确认；不能默认按1件生产',
+            ))
     # 图片上同时保留主订单和子订单，便于回查，不改变淘宝主订单的客服口径。
     if detail.sub_order_no:
         sheet.order_no = f"{order.order_no} / 子单 {detail.sub_order_no}"

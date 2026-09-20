@@ -49,7 +49,7 @@ def question_card(record, *, status=None):
     body = (f"畔色{record['factory_no']}单 · 数量待确认，请勿生产\n"
             f"订单：{record['identity']['order_no']}\n子单：{record['identity']['sub_order_no']}\n"
             f"产品：{record['product']}\n规格：{record['sku']}\n"
-            f"原购买数量：{record['identity']['purchase_qty']}（不等于已确认成品数）\n"
+            f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}（不等于已确认成品数）\n"
             f"订单备注：{record['notes'] or '无'}\n\n"
             "请负责此订单的同事回复本卡片，并 @机器人，填写实际成品数量。"
             "例如回复 1 表示1件，回复 2 表示2件。请勿仅在群里单独发数字。\n"
@@ -59,7 +59,7 @@ def question_card(record, *, status=None):
                 f"订单：{record['identity']['order_no']}\n"
                 f"子单：{record['identity']['sub_order_no']}\n"
                 f"产品：{record['product']}\n规格：{record['sku']}\n"
-                f"原购买数量：{record['identity']['purchase_qty']}\n"
+                f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}\n"
                 f"确认成品数量：{record.get('physical_qty', '待确认')}\n"
                 "只按最终正式制单图生产，本卡片不作为生产单。")
     return {'config': {'wide_screen_mode': True},
@@ -256,7 +256,7 @@ def complete_delivery(db, line):
         name = feishu_client.get_user_name(db, record['actor'].removeprefix('feishu:')) or record['actor']
         text = (f"畔色{record['factory_no']}单数量已确认，正式制单图已发送。\n"
                 f"子单：{record['identity']['sub_order_no']}\n"
-                f"原购买数量 {record['identity']['purchase_qty']}，实际成品 {record['physical_qty']} 件。\n"
+                f"原购买数量 {facts.purchase_quantity_label(record['identity']['purchase_qty'])}，实际成品 {record['physical_qty']} 件。\n"
                 f"确认人：{name}（依据本卡片下的回复）。\n"
                 "原购买数量及财务金额不变；请按最新正式制单图的确认数量生产，待确认卡片不作为生产单。")
         receipt = feishu_client.reply_text(db, record['card_message_id'], text) or {}

@@ -198,3 +198,18 @@ def test_image_receipt_before_crash_resumes_only_explanation(flow):
     q.complete_pending_receipts(f.db,only_sub_order_nos={'CHILD'})
     q.complete_pending_receipts(f.db,only_sub_order_nos={'CHILD'})
     assert len(f.calls['notes'])==1 and not f.calls['images']
+
+
+@pytest.mark.parametrize('qty',[None,0,-2])
+def test_missing_or_invalid_purchase_quantity_never_defaults_to_one(flow,qty):
+    f=flow
+    f.line.qty=qty;f.line.sku_name='普通组合柜';f.order.sku='普通组合柜'
+    f.db.commit()
+    result=sheets.reconcile_order_line_delivery(f.db,limit=1,only_sub_order_nos={'CHILD'})
+    assert result['pushed']==0 and len(f.calls['cards'])==1 and not f.calls['images']
+    assert '原购买数量：未知' in json.dumps(f.calls['cards'],ensure_ascii=False)
+    f.actual['body']['content']=json.dumps({'text':'2'})
+    assert q.handle_reply(f.db,f.event)['state']=='sent'
+    assert f.line.qty==qty and f.order.qty==2
+    assert f.calls['archives'][0].qty==2 and f.calls['archives'][0].purchase_qty==qty
+    assert '原购买数量 未知，实际成品 2 件' in f.calls['notes'][0][1]

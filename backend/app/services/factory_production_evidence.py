@@ -9,6 +9,10 @@ from app.models.settings import SystemSetting
 DIMENSION_REGISTRY = Path(__file__).parents[1] / 'assets' / 'factory_verified_dimensions.json'
 
 
+def purchase_quantity_label(qty):
+    return str(qty) if type(qty) is int and qty > 0 else '未知'
+
+
 def verified_dimensions(product_code, sku_code):
     from app.services.gallery_lookup import _root
     try:

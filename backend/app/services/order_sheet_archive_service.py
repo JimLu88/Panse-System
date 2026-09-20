@@ -294,7 +294,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
                      if quantity_link or sheet.is_custom_variant
                      else f'本子单共 {int(sheet.qty)} 件（不是整笔主订单合计）')
     if getattr(sheet, 'quantity_confirmation', None):
-        quantity_text = f'已确认成品 {int(sheet.qty)} 件（原拍下数量 {sheet.purchase_qty}）'
+        from app.services.factory_production_evidence import purchase_quantity_label
+        quantity_text = f'已确认成品 {int(sheet.qty)} 件（原拍下数量 {purchase_quantity_label(sheet.purchase_qty)}）'
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
