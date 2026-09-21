@@ -80,6 +80,23 @@ with sync_playwright() as p:
             assert relationship_requests
             page.screenshot(path=str(OUT / ('page-mobile.png' if mobile else 'page-desktop.png')))
             checks.append(label + ': Tools link navigates from importer to relationship page')
+            page.get_by_role('button', name='活动相关关系', exact=True).click()
+            page.get_by_role('button', name='Web Agent固定程序边界', exact=False).wait_for()
+            page.get_by_role('button', name='活动程序全链路', exact=True).click()
+            page.get_by_role('button', name='活动报名入口与官方发现', exact=False).click()
+            drawer = page.get_by_role('dialog', name='活动报名入口与官方发现', exact=True)
+            drawer.get_by_text('03｜畔色活动报名 / checked_snapshot', exact=True).wait_for()
+            page.keyboard.press('Escape')
+            drawer.wait_for(state='hidden')
+            page.get_by_role('button', name='飞书相关关系', exact=True).click()
+            assert page.get_by_role('tab', name='业务地图', exact=True).get_attribute('aria-selected') == 'true'
+            for text in ['飞书报表口令与解密结果', '飞书活动终态通知', '真实回复与身份核验']:
+                page.get_by_role('button', name=text, exact=False).wait_for()
+            page.get_by_role('heading', name='关系流程', exact=True).scroll_into_view_if_needed()
+            page.screenshot(path=str(OUT / ('feishu-mobile.png' if mobile else 'feishu-desktop.png')))
+            page.get_by_role('button', name='工厂表同步流程', exact=True).click()
+            page.get_by_role('button', name='工厂表管理字段', exact=False).wait_for()
+            checks.append(label + ': campaign, Feishu search, ownership drawer and factory flow visible')
         context.close()
     browser.close()
 result = {'base_url': BASE, 'scope': 'real App navigation with isolated mocked APIs', 'checks': checks, 'errors': errors}

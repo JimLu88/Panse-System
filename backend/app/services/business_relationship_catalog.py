@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-21.2'
+VERSION = '2026-09-21.3'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -222,7 +222,88 @@ EDGES = [
     edge('quantity.physical','stock.lock','成品数量变化需核对用料','物料占用是否已按新成品数更新待验证','只提醒核对，不自动改库存台账','services/inventory_lock_service.py',kind='gap',evidence='gap'),
 ]
 
+# Execution remains in the existing programs. These are review relationships,
+# not new workflow steps and not an assertion that a deployment has run them.
+NODES += [
+    node('campaign.entry','活动报名入口与官方发现','campaign','03｜畔色活动报名 / checked_snapshot','services/campaign_official_discovery.py','def checked_snapshot','日常入口为03；官方入口识别店铺、活动ID及时间。日历日期不等于精确价格窗口，不猜网址。'),
+    node('campaign.schedule','活动定时与连续执行接入','campaign','run_auto_execute / continuous runtime','services/campaign_automation_service.py','def run_auto_execute','ERP调度交给本机Web Agent持久执行；不会回退旧预检链。登记程序不表示定时现已开启或验收通过。'),
+    node('campaign.controller','Web Agent固定程序边界','campaign','continuous capabilities / dispatch','services/campaign_continuous_runtime.py','def dispatch','ERP通过接口交接；本机Web-Agent的campaign_continuous_worker与ERP scripts/campaign_continuous_execute.py执行。先单品立减、再超级立减、再同窗口主题活动是已约定业务顺序，不代表本场已执行。这里核对的是ERP接口，不冒充外部程序实时指纹。AI只看开头和终态，不分步接管浏览器。'),
+    node('campaign.product_export','活动商品全量导出与SKU核对','campaign','parse_product_batch_export / 商品ID+SKU ID','services/campaign_recon_service.py','def parse_product_batch_export','商品文件核对出售中商品与ERP映射；实际导出由固定Web Agent执行。页面总数、总页数、文件范围仍需独立核验。'),
+    node('campaign.failure','活动失败报告与隔离修正','campaign','scripts/campaign_failure_remediation.py / report_from_download','services/campaign_continuous_runtime.py','def dispatch','跨程序职责：固定程序下载失败报告、核对无对应SKU并只重报变化后的失败范围。官方本场无动销本场跳过，下场重试；成功/未知不重传。ERP接口源码不能单独证明这些外部分支已验收。'),
+    node('campaign.attempt','报名批次与防重放账本','campaign','CampaignExecutionAttempt.scope_sha256 / write_claimed','services/campaign_execution_service.py','def claim_platform_write','活动、窗口、商品SKU、价格和政策绑定同一范围；成功及未知写入不重放。'),
+    node('campaign.policy','普通价差与定制底线','campaign','frozen campaign policy / resolve','services/campaign_policy_service.py','def require_policy','普通报名价保持ERP日常价，同一目标累计±2元；定制按首次固定基线20%。这是原规则，不新增价格授权。'),
+    node('campaign.baseline','首次定制原价与轮换槽位','campaign','CampaignSkuSlot / immutable_baseline','services/campaign_sku_slot_service.py','def immutable_baseline','定制基线不随降价或轮换重设；缺基线不能编造。槽位存在不表示已获本次轮换授权。'),
+    node('campaign.rotation','SKU轮换人工确认边界','campaign','rotation_enabled / rotation_block_result','services/campaign_price_protection_service.py','def rotation_enabled','超过允许价差或触及底线时进入待确认；图中箭头不授权自动轮换，不改变库存或上架状态。'),
+    node('campaign.reconcile','活动报名覆盖与价格核对','campaign','reconcile / resolve_current_activity_records','services/campaign_recon_service.py','def reconcile','按本场官方商品/SKU记录核对窗口、覆盖和最终价；上传完成不等于全量成功。超级立减因大促暂停须结合活动身份核对。'),
+    node('campaign.notice','活动通知开关','campaign','campaign_notifications_enabled','services/campaign_notification_service.py','def enabled','ERP活动通用通知受独立开关控制；不代表Web Agent终态通知同走这一开关，不影响其他ERP告警。'),
+    node('sync.campaign_terminal','飞书活动终态通知','sync','campaign_terminal / delivered / channel','api/web_agent.py',"if payload.kind == 'campaign_terminal':",'本机Web Agent终态发件箱去重；ERP仅交付飞书提醒路由，不回退微信或订单群。通知失败不等于报名失败；此处不能据群消息判断全部SKU成功。'),
+    node('sync.route','飞书订单群与提醒群分流','sync','notify_route_mode / feishu_push_chat_id / feishu_alert_chat_id','services/notify_service.py','def get_alert_chat_id','只展示配置字段名，不读取真实群ID、webhook、密钥或客户消息。通用兼容路由与活动专用终态路由分开。'),
+    node('sync.inbound','飞书消息与卡片回调','sync','message_id / event_id / card action','services/feishu_ws_service.py','def _on_message','消息入队、旧事件过滤与去重；收到回调不表示业务处理完成。'),
+    node('sync.password','飞书报表口令与解密结果','sync','apply_shipping_password / pending files','services/feishu_bot_service.py','def apply_shipping_password','只展示流程，不展示或保存口令到关系目录。收到口令、成功解密、完成导入是不同状态。'),
+    node('sync.freshness','报表批次完整性与续跑','sync','finalize_order_pull_after_shipping_password','services/agent_ingest_service.py','def finalize_order_pull_after_shipping_password','绑定本批报表、待解密文件及新鲜度；不能拿旧报表或收到密码消息冒充本批完成。'),
+    node('sync.file_card','飞书文件识别与确认入库卡','sync','_file_confirm_card / process_pick','services/feishu_bot_service.py','def _file_confirm_card','订单表、采购单、供应商送货单、工厂对账单等先区分类型；确认卡响应不等于入库完成。'),
+    node('sync.import','飞书文件与图片分类导入','sync','_dispatch_file / _dispatch_import','services/feishu_bot_service.py','def _dispatch_import','按文件/图片类型进入各自既有导入器；供应商归属、待确认和导入结果不可混为一谈。'),
+    node('sync.conflict','飞书通用表字段冲突','sync','system_hash / feishu_hash / resolve_conflict','services/feishu_sync_service.py','def _sync_one','双向绑定双方改动进入冲突；单向out按系统值维护管理字段。专用工厂表不套用通用表规则。'),
+    node('sync.mapping','飞书表行身份与同步回执','sync','FeishuRecordMap / record_id / hashes','services/feishu_sync_service.py','def _flush_push_batch','绑定、系统主键、飞书record_id与字段映射对应；批量发送成功后更新映射，不以任务已启动代表同步完成。'),
+    node('sync.remote','飞书远期单报备提醒','sync','reminder_card / confirm','services/remote_report_service.py','def confirm','人工在淘宝处理后点击确认。飞书确认记录是人工声明，不是程序已在淘宝延期的官方回执。'),
+    node('sync.inspection','飞书工厂验货图归档','sync','_process_inspection_post','services/feishu_bot_service.py','def _process_inspection_post','按订单引用归档验货图；归档不等于逐子单发齐或物流签收。'),
+]
+
+# Replace the old prepare-only -> official-success shortcut with the real
+# preparation / execution / readback boundary. Do not retain a misleading edge.
+EDGES = [e for e in EDGES if e['id'] != 'campaign.files>campaign.receipt']
+EDGES += [
+    edge('campaign.entry','campaign.window','官方身份与精确窗口','官方页面完整且店铺匹配','日历仅到天时不能补造秒级窗口','services/campaign_official_discovery.py','def checked_snapshot'),
+    edge('campaign.schedule','campaign.controller','接入固定连续执行器','原调度启用且接入就绪','不回退旧链；dispatch结果不代表业务完成','services/campaign_automation_service.py','def run_auto_execute'),
+    edge('campaign.files','campaign.controller','准备与执行分离','ERP准备完成后由已有执行程序接手','workflow_service仅准备，不操控网页；具体外部版本另核','services/campaign_continuous_runtime.py','def dispatch',kind='boundary'),
+    edge('campaign.controller','campaign.attempt','程序写入范围核对','同一精确范围和持久请求','连续程序与ERP账本的跨程序一致性需核对，不能仅凭一个prepared状态提交','services/campaign_execution_service.py','def ensure_attempt',evidence='review'),
+    edge('campaign.attempt','campaign.receipt','持久记录官方结果','已经声明写入的范围','成功/失败/未知分开；未知不自动重传','services/campaign_execution_service.py','TERMINAL_NO_RETRY_STATES'),
+    edge('campaign.policy','campaign.files','沿用冻结价格规则','同一价格版本和精确窗口','不把普通价差让步变成改ERP日常价；连续脚本与ERP规则入口需交叉核对','services/campaign_policy_service.py','def require_policy',evidence='review'),
+    edge('campaign.product_export','campaign.mapping','解析官方商品事实','完整导出且商品ID+SKU ID唯一匹配','无对应仅从本场失败报名范围移除；不删除商品或改库存','services/campaign_recon_service.py','def parse_product_batch_export',evidence='review'),
+    edge('campaign.controller','campaign.failure','固定程序收集本场失败报告','本场真实失败且下载结果可验证','入口不可用或登录交互需说明最小人工操作，不自由操控重试','services/campaign_continuous_runtime.py','def dispatch',kind='boundary',evidence='review'),
+    edge('campaign.failure','campaign.product_export','不存在SKU的事实核对','仅受影响范围需要补足商品证据','已有同范围新鲜文件可复用；不是每步重新导出','services/campaign_recon_service.py','def parse_product_batch_export',evidence='review'),
+    edge('campaign.failure','campaign.policy','按原规则分类失败','本场官方失败商品和SKU','小额差按同一基准累计，不逐轮放宽；缺数据不猜','services/campaign_policy_service.py','def require_policy',evidence='review'),
+    edge('campaign.baseline','campaign.policy','定制底线计算依据','首次原价已固定','不低于原基线20%；缺失保留待确认','services/campaign_price_resolution_service.py','def resolve'),
+    edge('campaign.policy','campaign.rotation','超界后的人工分支','原规则不允许直接修正','不因程序失败自动更换SKU','services/campaign_price_protection_service.py','def rotation_block_result',kind='protect'),
+    edge('campaign.rotation','campaign.mapping','轮换后的身份影响','仅本次明确授权且平台保存读回','新旧SKU映射/属性/报名范围需核对；不扩大其他商品','services/campaign_sku_slot_service.py','def finalize_switch',evidence='review'),
+    edge('campaign.receipt','campaign.reconcile','官方结果覆盖核对','当场活动导出与精确商品SKU','不能把部分结果当全量通过','services/campaign_recon_service.py','def resolve_current_activity_records'),
+    edge('price.current','campaign.reconcile','价格目标核对','同一价格口径','日常价/活动价/券后价不可混用','services/campaign_recon_service.py','def reconcile'),
+    edge('campaign.reconcile','campaign.notice','价格及覆盖异常通知','现有对账告警条件','通知开关关闭不等于异常已处理','services/campaign_recon_service.py','def reconcile'),
+    edge('campaign.notice','sync.route','ERP活动通用通知分流','campaign_notifications_enabled启用','不要据此推断专用终态通知也受该开关控制','services/campaign_notification_service.py','def broadcast_text'),
+    edge('campaign.controller','sync.campaign_terminal','本机终态发件箱交付ERP','已有专用终态协议','外部发件箱状态须独立核对，不能从ERP接口源码推断已送达','api/web_agent.py',"if payload.kind == 'campaign_terminal':",kind='boundary'),
+    edge('sync.campaign_terminal','sync.route','仅飞书提醒群','专用路由就绪','不回退微信/订单群；发送不成功不能重跑报名','api/web_agent.py',"if payload.kind == 'campaign_terminal':",kind='protect'),
+    edge('sync.campaign_terminal','campaign.receipt','消息与报名回执独立','通知已发或失败均如此','飞书已送达不是全量报名证明，不能覆盖官方结果','api/web_agent.py',"if payload.kind == 'campaign_terminal':",kind='protect'),
+    edge('sync.inbound','quantity.reply','分流真实数量回复','先识别原卡片/子单和真实发言人','不把任意数字消息作为数量确认','services/feishu_bot_service.py','def on_message_event'),
+    edge('sync.inbound','sync.password','分流发货报表口令','文本命中口令入口','只处理对应待解密文件，不把口令写入关系日志','services/feishu_bot_service.py','def on_message_event'),
+    edge('sync.password','sync.freshness','解密后核验本批完整性','已导入与待解密状态重新核对','收到口令不直接放行制单','services/feishu_bot_service.py','def apply_shipping_password'),
+    edge('sync.freshness','automation.closeout','续跑订单交付','本批报表完成且业务条件满足','已发/未知不重放；图、表分别记结果','services/agent_ingest_service.py','def finalize_order_pull_after_shipping_password'),
+    edge('sync.inbound','sync.file_card','文件/图片分类确认','真实消息和资源已接收','不把识别置信度当人工确认','services/feishu_bot_service.py','def _on_file_message'),
+    edge('sync.file_card','sync.import','确认后进入分类导入','有效原消息及选择类型','送货单先核供应商；回调toast不是入库结果','services/feishu_ws_service.py','def _on_card'),
+    edge('sync.import','order.child','订单导入影响逐子单','文件类型确为订单且解析成功','核验全部子单/购买数量，不能只看母单总数','services/feishu_bot_service.py','def _import_orders',evidence='review'),
+    edge('sync.import','finance.actual','账单导入影响实际成本','真实类型和供应商/工厂归属','OCR结果仍需核对，不把制单估价替代账单','services/feishu_bot_service.py','def _dispatch_import',evidence='review'),
+    edge('sync.generic','sync.conflict','按绑定方向比较两侧变化','字段映射和主键明确','双向两侧改动不得静默覆盖；out方向按既有规则','services/feishu_sync_service.py','def _sync_one'),
+    edge('sync.conflict','sync.mapping','人工解决冲突后记录映射','明确保留侧或字段选择','未知字段/类型冲突不能强行覆盖','services/feishu_sync_service.py','def resolve_conflict'),
+    edge('sync.generic','sync.mapping','批量同步记录身份','实际外部记录返回成功','请求启动不能当写入完成','services/feishu_sync_service.py','def _flush_push_batch'),
+    edge('sync.mapping','governance.change','飞书修改保留字段历史','允许pull且飞书侧发生变更','回写权限受绑定限制，不影响未绑定字段','services/feishu_sync_service.py','def _sync_one'),
+    edge('sync.inbound','sync.remote','报备确认卡分支','有效confirm_remote_report操作','人工确认记录不代替淘宝真实处理','services/feishu_ws_service.py','def _on_card'),
+    edge('order.notes','sync.remote','备注识别远期订单','命中既有远期关键词','未确认后续继续提醒，非自动延期','services/remote_report_service.py','def matched_keyword'),
+    edge('sync.inbound','sync.inspection','工厂验货图分流','有效订单引用和图片','未找到订单不挂错单','services/feishu_bot_service.py','def _process_inspection_post'),
+    edge('sync.inspection','shipping.fulfilled','验货与实发分开','有验货归档仍需逐子单实发证据','不能把图片归档当所有商品已发齐','services/feishu_bot_service.py','def _process_inspection_post',kind='protect'),
+]
+
 FLOWS = [
+    {'id':'campaign-execution','name':'活动报名程序：官方发现 → ERP准备 → Web Agent → 官方对账 → 飞书',
+     'steps':['campaign.entry','campaign.window','campaign.files','campaign.controller','campaign.attempt','campaign.receipt','campaign.reconcile','sync.campaign_terminal']},
+    {'id':'campaign-exceptions','name':'活动失败处理：价格规则 → 基线 → 人工轮换 → 映射与重新核对',
+     'steps':['campaign.failure','campaign.product_export','campaign.policy','campaign.baseline','campaign.rotation','campaign.mapping','campaign.files','campaign.receipt']},
+    {'id':'feishu-password','name':'飞书口令：消息 → 解密 → 本批完整性 → 制单与工厂表',
+     'steps':['sync.inbound','sync.password','sync.freshness','automation.closeout','factory.receipt','sync.factory','sync.readback']},
+    {'id':'feishu-import','name':'飞书文件/图片：确认卡 → 分类导入 → 子单、财务与追溯',
+     'steps':['sync.inbound','sync.file_card','sync.import','order.child','finance.actual','governance.change']},
+    {'id':'feishu-binding','name':'飞书通用表：绑定方向 → 字段冲突 → 行回执与修改历史',
+     'steps':['sync.generic','sync.conflict','sync.mapping','governance.change','sync.manual']},
+    {'id':'feishu-cards','name':'飞书业务分支：数量回复、远期报备、验货图（非串行）',
+     'steps':['sync.inbound','quantity.reply','quantity.physical','sync.remote','sync.inspection','sync.readback']},
     {'id':'finished-stock','name':'成品现货 → 母单扣库/备货入库 → 冲正与子SKU覆盖核查',
      'steps':['order.parent','order.child','stock.finished','stock.ship_movement','factory.order','stock.restock','stock.reversal','shipping.fulfilled']},
     {'id':'approval','name':'人工审批 → 注册执行器 → 独立结果与告警核对',

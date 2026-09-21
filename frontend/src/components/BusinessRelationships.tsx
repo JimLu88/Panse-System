@@ -79,23 +79,35 @@ export default function BusinessRelationships() {
   const refs = useQuery({ queryKey: ['business-field-references', scanField], enabled: !!scanField, retry: false,
     queryFn: () => api.get<{ total: number; truncated: boolean; notice: string; candidates: { path: string; line: number; kind: string; receiver: string }[] }>('/api/admin/business-relationships/field', { params: { model: scanField.split('.')[0], field: scanField.split('.')[1] } }).then(r => r.data) });
   const data = query.data;
-  const visible = useMemo(() => data?.nodes.filter(n => `${n.label} ${n.field} ${n.note}`.toLowerCase().includes(search.toLowerCase())) || [], [data, search]);
+  const visible = useMemo(() => data?.nodes.filter(n => {
+    const domain = data.domains.find(d => d.id === n.domain);
+    const flows = data.flows.filter(f => f.steps.includes(n.id)).map(f => f.name).join(' ');
+    return `${n.label} ${n.field} ${n.note} ${domain?.label} ${domain?.owner} ${flows} ${n.sources.map(s => s.path).join(' ')}`.toLowerCase().includes(search.trim().toLowerCase());
+  }) || [], [data, search]);
   if (query.isPending) return <Spin tip="正在读取业务关系目录"><div style={{ height: 180 }} /></Spin>;
   if (query.isError || !data) return <Alert type="error" showIcon message="关系目录暂时无法读取（可能是权限或连接问题）" description="没有触发任何业务操作。" action={<Button onClick={() => query.refetch()}>重新读取</Button>} />;
   const drift = Object.values(data.source_states).filter(s => s !== 'matching').length;
   if (!data.nodes.length || !data.flows.length || data.validation_errors.length) return <Alert type="error" message="关系目录不完整，暂不展示可能误导的关系图" description="请修复目录对象、流程或引用；没有执行任何业务操作。" />;
   const flow = data.flows.find(f => f.id === flowId) || data.flows[0];
+  const mapDomains = [...data.domains].sort((a, b) => Number(b.label.includes(search.trim()) && !!search.trim()) - Number(a.label.includes(search.trim()) && !!search.trim()));
   const selectedRoot = data.nodes.some(n => n.id === root) ? root : data.nodes[0].id;
   const owners = [...new Set(flow.steps.map(id => data.domains.find(d => d.id === data.nodes.find(n => n.id === id)?.domain)?.owner || '待核实'))];
   const focus = (n: Node) => { setRoot(n.id); setTab('impact'); };
   return <Space direction="vertical" size="middle" style={{ width: '100%' }} className="business-relationships">
     <div className="br-header"><div><Typography.Title level={3} style={{ margin: 0 }}>关系流程</Typography.Title><Typography.Text type="secondary">先看业务，再检查改动会影响哪里</Typography.Text></div><Space wrap><Button onClick={() => downloadReview(data, '业务关系目录.json')}>导出关系目录</Button><Button onClick={() => query.refetch()}>刷新关系核查</Button></Space></div>
-    <Alert type="info" showIcon message="只读业务关系目录，不是订单运行看板" description="这里展示来源、条件和检查要求；不会报名、发单、修改库存或财务，也不会把“已发图”当作“已经发齐”。" />
+    <Alert type="info" showIcon message="只读业务关系目录，不是活动或订单运行看板" description="活动由03日常入口交给既有程序执行。这里展示程序、来源、条件和检查要求；不会报名、发单、修改库存或财务。报名回执、飞书群送达、工厂表同步、实际发齐分别核对。" />
+    <Space wrap aria-label="业务快捷入口">
+      <Button onClick={() => { setSearch('活动'); setTab('map'); }}>活动相关关系</Button>
+      <Button onClick={() => { setFlowId('campaign-execution'); setTab('flow'); }}>活动程序全链路</Button>
+      <Button onClick={() => { setSearch('飞书'); setTab('map'); }}>飞书相关关系</Button>
+      <Button onClick={() => { setFlowId('sync'); setTab('flow'); }}>工厂表同步流程</Button>
+      <Button onClick={() => { setSearch(''); setTab('map'); }}>全部业务关系</Button>
+    </Space>
     <Space wrap><Tag>{data.domains.length} 个业务域</Tag><Tag>{data.nodes.length} 个重点对象/字段</Tag><Tag>{data.edges.length} 条审查关系</Tag><Tag>版本 {data.version}</Tag><Tag>代码目录：{data.coverage.model_count} 模型 / {data.coverage.field_count} 字段</Tag></Space>
     {(drift > 0 || data.validation_errors.length > 0 || data.coverage.errors.length > 0) && <Alert type="warning" showIcon message={`${drift} 处源码需复核；目录错误 ${data.validation_errors.length}，扫描异常 ${data.coverage.errors.length}`} description="不可把过期或缺失关系当成已验证。" />}
     <Tabs activeKey={tab} onChange={setTab} items={[
       { key: 'changes', label: '改动影响核查', children: <BusinessRelationshipReview /> },
-      { key: 'map', label: '业务地图', children: <><Input.Search aria-label="搜索业务或字段" placeholder="搜索业务、字段或规则，例如：数量、退款、成本" value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ maxWidth: 540, marginBottom: 16 }} />{!visible.length && <Empty description="没有匹配关系；不代表该业务没有影响" />}<div className="br-map">{data.domains.map(d => { const nodes = visible.filter(n => n.domain === d.id); return nodes.length ? <Card size="small" title={d.label} extra={<Tag>{d.owner}</Tag>} key={d.id}><div className="br-node-list">{nodes.map(n => <button key={n.id} onClick={() => focus(n)} className="br-node-button"><span>{n.label}</span><small>{n.field}</small></button>)}</div></Card> : null; })}</div></> },
+      { key: 'map', label: '业务地图', children: <><Input.Search aria-label="搜索业务或字段" placeholder="搜索业务、字段或规则，例如：活动、飞书、数量、成本" value={search} onChange={e => setSearch(e.target.value)} allowClear style={{ maxWidth: 540, marginBottom: 16 }} />{!visible.length && <Empty description="没有匹配关系；不代表该业务没有影响" />}<div className="br-map">{mapDomains.map(d => { const nodes = visible.filter(n => n.domain === d.id); return nodes.length ? <Card size="small" title={d.label} extra={<Tag>{d.owner}</Tag>} key={d.id}><div className="br-node-list">{nodes.map(n => <button key={n.id} onClick={() => focus(n)} className="br-node-button"><span>{n.label}</span><small>{n.field}</small></button>)}</div></Card> : null; })}</div></> },
       { key: 'flow', label: '流程泳道', children: <><Select aria-label="选择流程" value={flowId} onChange={setFlowId} options={data.flows.map(f => ({ value: f.id, label: f.name }))} style={{ width: '100%', maxWidth: 600 }} /><Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>这是业务理解顺序，不是强制执行串行。无需数量确认的普通单按原流程直达制单；并行输入及分支请点节点看关系。横向滚动查看完整泳道。</Typography.Paragraph><div className="br-lanes"><div style={{ display: 'grid', gridTemplateColumns: `110px repeat(${flow.steps.length}, 170px)`, gap: 8 }}><strong>责任方 / 阅读顺序</strong>{flow.steps.map((s, i) => <div className="br-step" key={s}>{i + 1} {i < flow.steps.length - 1 ? '→' : ''}</div>)}{owners.map(owner => <div style={{ display: 'contents' }} key={owner}><strong className="br-lane-name">{owner}</strong>{flow.steps.map(id => { const n = data.nodes.find(n => n.id === id)!; const match = data.domains.find(d => d.id === n.domain)?.owner === owner; return <div key={id} className="br-lane-cell">{match && <button className="br-node-button" onClick={() => setDetail(n)}>{n.label}<small>{n.source_current ? '查看条件与依据' : '来源需复核'}</small></button>}</div>; })}</div>)}</div></div></> },
       { key: 'impact', label: '字段影响', children: <><Space wrap style={{ marginBottom: 16 }}><Select aria-label="选择关注字段" showSearch optionFilterProp="label" value={selectedRoot} onChange={setRoot} options={data.nodes.map(n => ({ value: n.id, label: `${n.label} · ${n.field}` }))} style={{ width: 330, maxWidth: '100%' }} /><Select aria-label="展开层数" value={depth} onChange={setDepth} options={[1, 2, 3, 6, 12].map(n => ({ value: n, label: `展开 ${n} 层` }))} /></Space><ImpactGraph data={data} root={selectedRoot} depth={depth} select={setDetail} /></> },
       { key: 'coverage', label: '遗漏与过期检查', children: <Space direction="vertical" style={{ width: '100%' }}><Alert type="warning" showIcon message="这是待补全清单，不是全覆盖合格证" description={data.coverage.note} /><Typography.Paragraph>扫描 {data.coverage.file_count} 个程序文件，其中 {data.coverage.referenced_file_count} 个被重点关系引用；其余 {data.coverage.unmapped_files.length} 个尚未登记详细语义。以下模型字段目录支持查漏，不自动生成猜测关系。</Typography.Paragraph>
