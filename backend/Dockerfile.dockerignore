@@ -2,3 +2,12 @@
 !backend/
 !backend/**
 !TAOBAO_CAMPAIGN_SIGNUP_POLICY.json
+!scripts/
+!scripts/**/
+!scripts/**/*.py
+!frontend/
+!frontend/src/
+!frontend/src/**/
+!frontend/src/**/*.ts
+!frontend/src/**/*.tsx
+**/__pycache__/
