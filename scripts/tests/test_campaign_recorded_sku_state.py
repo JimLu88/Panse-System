@@ -3,7 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from campaign_recorded_sku_state import disabled_from_rows
+from campaign_recorded_sku_state import disabled_from_rows, disabled_from_batch
 
 
 class RecordedSwitchTests(unittest.TestCase):
@@ -37,6 +37,28 @@ class RecordedSwitchTests(unittest.TestCase):
                 if kind=='wrong_sku':r['requested_skus']=['22']
                 if kind=='switch_conflict':row['switches'][0]['aria']='true'
                 self.assertEqual(disabled_from_rows(s,[r]),[])
+
+    def test_partial_batch_keeps_only_exact_positive_off_facts(self):
+        s,r=self.fixture()
+        failed=dict(item='2',requested_skus=['22'],state='blocked',reason='TimeoutError',platform_write=False)
+        for state,error in [('batch_read_complete',None),('batch_read_partial','batch_evidence_incomplete')]:
+            batch=dict(state=state,error=error,platform_write=False,records=[r,failed],unread_items=['1','2'],
+                       recording=dict(capture_errors=1))
+            self.assertEqual(disabled_from_batch(s,batch),[dict(item='1',sku='11',row_index=0)])
+            self.assertEqual(batch['unread_items'],['1','2'])
+            self.assertEqual(batch['recording']['capture_errors'],1)
+
+    def test_duplicate_item_even_conflicting_blocked_is_not_chosen(self):
+        s,r=self.fixture()
+        other=dict(item='1',state='blocked',platform_write=False)
+        self.assertEqual(disabled_from_rows(s,[r,other]),[])
+
+    def test_top_level_failure_or_write_is_rejected(self):
+        s,r=self.fixture()
+        for extra in [dict(state='batch_read_blocked'),dict(error='human_login_or_security_gate'),dict(platform_write=True)]:
+            batch=dict(state='batch_read_partial',error='batch_evidence_incomplete',platform_write=False,records=[r])
+            batch.update(extra)
+            with self.assertRaisesRegex(ValueError,'recorded_state_batch_incomplete'):disabled_from_batch(s,batch)
 
 
 if __name__=='__main__':unittest.main()

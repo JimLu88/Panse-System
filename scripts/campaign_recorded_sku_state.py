@@ -35,8 +35,13 @@ def row_matches(fact, row):
 def disabled_from_rows(scope, records):
     if scope.get('complete') is not True:raise ValueError('recorded_state_complete_export_required')
     facts=[entry['facts'] for entry in scope['sku_facts']];resolved=[]
+    counts={}
+    for record in records:counts[record.get('item')]=counts.get(record.get('item'),0)+1
     for record in records:
         if record.get('state')!='read' or record.get('platform_write') is not False:continue
+        # A second, possibly contradictory observation of the same item must
+        # not be resolved by picking its convenient OFF row.
+        if counts[record.get('item')]!=1:continue
         item=record['item']; local=[f for f in facts if f['item']==item]
         requested=set(record['requested_skus'])
         for row in record['rows']:
@@ -54,6 +59,20 @@ def disabled_from_rows(scope, records):
     pairs=[(r['item'],r['sku']) for r in resolved]
     if len(pairs)!=len(set(pairs)):raise ValueError('recorded_state_duplicate_item')
     return resolved
+
+
+def disabled_from_batch(scope, batch):
+    """Consume positive per-item facts without promoting the whole batch.
+
+    The immutable job and video are verified by the caller. A sibling timeout
+    or video capture gap is not proof against an exact OFF row, and is never
+    permission to infer the missing sibling's state.
+    """
+    if (batch.get('state') not in ('batch_read_complete','batch_read_partial')
+            or batch.get('platform_write') is not False
+            or batch.get('error') not in (None,'batch_evidence_incomplete')):
+        raise ValueError('recorded_state_batch_incomplete')
+    return disabled_from_rows(scope,batch.get('records',[]))
 
 
 def verified_disabled(doc):
@@ -83,8 +102,6 @@ def verified_disabled(doc):
                 or Path(result.get('evidence_path','')).resolve()!=path
                 or {k:v for k,v in result.items() if k!='evidence_path'}!=batch):
             raise ValueError('recorded_state_job_evidence_changed')
-    if (batch.get('state')!='batch_read_complete' or batch.get('platform_write') is not False
-            or batch.get('error') or batch.get('unread_items')):raise ValueError('recorded_state_batch_incomplete')
     recording=batch['recording'];video=Path(recording['video']).resolve(strict=True)
     if (not video.is_relative_to(path.parent) or not recording.get('frames') or recording.get('active') is not False
             or file_sha(video)!=recording.get('video_sha256')):raise ValueError('recorded_state_video_not_verified')
@@ -92,7 +109,41 @@ def verified_disabled(doc):
     # an official upload terminal. Preserve the gap; no full-recording claim.
     complete=not bool(recording.get('error') or recording.get('capture_errors') or recording.get('duration_limit_reached'))
     if ref.get('recording_complete') is not complete:raise ValueError('recorded_state_capture_gap_misreported')
-    computed=disabled_from_rows(load(doc['official_scope_path'])['scope'],batch['records'])
+    computed=disabled_from_batch(load(doc['official_scope_path'])['scope'],batch)
     expected_rows=ref['disabled']
     if computed!=expected_rows:raise ValueError('recorded_state_disabled_scope_changed')
     return {(r['item'],r['sku']) for r in computed}
+
+
+def register_recorded_catalog(authority, source_catalog, batch_path, output):
+    """Add a scoped supplement; keep every original receipt and price intact."""
+    from pathlib import Path
+    from campaign_entry_authority import load,file_sha
+    from campaign_catalog_repair import documents
+    source_catalog=Path(source_catalog).resolve();batch_path=Path(batch_path).resolve()
+    registered=[s for s in authority.sources() if s['kind']=='catalog' and Path(s['path']).resolve()==source_catalog]
+    if len(registered)!=1:raise ValueError('recorded_catalog_registered_parent_required')
+    parent=load(source_catalog)
+    snapshot=dict(captured_at=parent['snapshot_captured_at'],resolved_price_version_sha256=parent['price_version'],
+                  catalog_repair_sources=[dict(path=str(source_catalog),sha256=file_sha(source_catalog))])
+    list(documents(snapshot))
+    batch=load(batch_path);recording=batch['recording']
+    disabled=disabled_from_batch(load(parent['official_scope_path'])['scope'],batch)
+    if not disabled:raise ValueError('recorded_catalog_no_exact_off_facts')
+    complete=not bool(recording.get('error') or recording.get('capture_errors') or recording.get('duration_limit_reached'))
+    doc={k:parent[k] for k in ('schema','snapshot_captured_at','price_version','registry_path','official_scope_path')}
+    paths=list(dict.fromkeys([str(source_catalog),parent['registry_path'],parent['official_scope_path'],str(batch_path)]))
+    doc.update(sources=[dict(path=p,sha256=file_sha(p)) for p in paths],retired=[],restored=[],
+               recorded_state=dict(path=str(batch_path),sha256=file_sha(batch_path),recording_complete=complete,disabled=disabled),
+               scope='Exact recorded OFF rows only; sibling gaps preserved. No SKU, stock, price or historical claim changes.')
+    verified_disabled(doc)  # Includes immutable original job and video verification.
+    output=Path(output)
+    encoded=json.dumps(doc,ensure_ascii=False,indent=2)
+    if output.exists():
+        if load(output)!=doc:raise ValueError('recorded_catalog_output_immutable')
+    else:
+        output.parent.mkdir(parents=True,exist_ok=True)
+        with output.open('x',encoding='utf-8') as f:f.write(encoded)
+    authority.register_source(output,'catalog',file_sha(output))
+    return dict(path=str(output),sha256=file_sha(output),disabled_skus=len(disabled),
+                items=sorted({r['item'] for r in disabled}),recording_complete=complete,platform_write=False)

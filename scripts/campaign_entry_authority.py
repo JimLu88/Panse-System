@@ -93,9 +93,12 @@ class Authority:
 
     def register_source(self, path, kind, expected_sha):
         path=Path(path).resolve()
-        if kind not in ('fixed','mapping','outcome','rotation','discount','catalog'):raise ValueError('unsupported_authority_source')
+        if kind not in ('fixed','mapping','outcome','rotation','discount','catalog','discount_availability'):raise ValueError('unsupported_authority_source')
         if file_sha(path)!=expected_sha:raise ValueError('source_version_mismatch')
         doc=load(path)
+        if kind=='discount_availability':
+            from campaign_discount_availability import verified_scope
+            verified_scope(dict(path=str(path),sha256=expected_sha))
         if kind=='fixed':
             from campaign_price_basis import receipt_records
             if not receipt_records(doc,path):raise ValueError('fixed_source_requires_valid_basis_records')
@@ -300,14 +303,21 @@ class Authority:
         result=overlay(self,result)
         result=apply_verified_amendments(self,result)
         from campaign_discount_include import overlay as include_overlay
-        return include_overlay(self,result)
+        from campaign_discount_availability import overlay as availability_overlay
+        return availability_overlay(self,include_overlay(self,result))
 
     def blocked(self, campaign, phase, start, end):
         exact_campaign(campaign);result={}
         if phase=='discount':
+            from campaign_discount_availability import inactive_for_window
             for offer in self.discount_offers():
+                if inactive_for_window(offer,campaign,start,end):continue
                 if offer['start']<=end and start<=offer['end']:
                     result.update({r['item']:r['status'] for r in offer['items'] if r['status'] in ('success','unknown')})
+            # discount_offers includes every historical receipt and success/
+            # unknown attempt. Do not add inactive receipts a second time from
+            # raw tables below; those tables remain intact and auditable.
+            return result
         for source in self.sources():
             if source['kind']!='outcome':continue
             doc=source['document']

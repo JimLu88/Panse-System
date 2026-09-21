@@ -67,6 +67,8 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
     policy = policy_for(campaign, start, end, rate, target, continuous_rule_sha=continuous_rule_sha)
     index = {}
     for offer in offers:
+        from campaign_discount_availability import inactive_for_window
+        if inactive_for_window(offer,campaign,start,end):continue
         if not (offer['start'] <= end and start <= offer['end']) or offer['offer_id'] == excluding_offer:
             continue
         for item in offer['items']:
