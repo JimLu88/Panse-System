@@ -46,11 +46,21 @@ def validate():
     domains = {d[0] for d in catalog.DOMAINS}
     for n in catalog.NODES:
         if n['domain'] not in domains: errors.append('unknown_domain:' + n['id'])
+        if not n.get('sources') or not n.get('field') or not n.get('label'): errors.append('incomplete_node:' + n['id'])
     for e in catalog.EDGES:
         if e['from'] not in ids or e['to'] not in ids: errors.append('dangling:' + e['id'])
         if not e['condition'] or not e['check'] or not e['sources']: errors.append('incomplete:' + e['id'])
+        if e['kind'] not in ('data', 'protect', 'gap', 'boundary'): errors.append('invalid_kind:' + e['id'])
+        if e['evidence'] not in ('code', 'review', 'gap'): errors.append('invalid_evidence:' + e['id'])
+    flow_ids = [f['id'] for f in catalog.FLOWS]
+    if len(flow_ids) != len(set(flow_ids)): errors.append('duplicate_flow')
     for f in catalog.FLOWS:
+        if not f.get('steps') or not f.get('name'): errors.append('empty_flow:' + f['id'])
         if any(s not in ids for s in f['steps']): errors.append('invalid_flow:' + f['id'])
+    for item in catalog.NODES + catalog.EDGES:
+        for ref in item['sources']:
+            try: _path(APP_ROOT, ref)
+            except (ValueError, KeyError): errors.append('invalid_source:' + item['id'])
     return errors
 
 
@@ -59,7 +69,8 @@ def inventory(root=APP_ROOT):
     referenced = set(referenced_sources())
     models, files, errors = [], [], []
     for folder in ('models', 'services', 'api'):
-        for path in sorted((root / folder).glob('*.py')):
+        for path in sorted((root / folder).rglob('*.py')):
+            if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()): continue
             if path.name == '__init__.py': continue
             relative = 'backend/app/' + path.relative_to(root).as_posix()
             if path.name.startswith('business_relationship'): continue
@@ -75,7 +86,7 @@ def inventory(root=APP_ROOT):
                         models.append({'model':cls.name,'table':table,'path':relative,
                                        'fields':[x.target.id for x in cls.body if isinstance(x,ast.AnnAssign) and isinstance(x.target,ast.Name)],
                                        'detail_status':'字段逐项语义仍需按关系明细核对'})
-            except (SyntaxError, ValueError, OSError) as exc:
+            except (SyntaxError, ValueError, UnicodeError, OSError) as exc:
                 errors.append({'path':relative,'type':type(exc).__name__})
     return {'models':models, 'files':files, 'errors':errors,
             'model_count':len(models), 'field_count':sum(len(m['fields']) for m in models),
@@ -94,11 +105,15 @@ def snapshot(root=APP_ROOT, lock=LOCK):
     for path, digest in current.items():
         states[path] = ('missing' if digest is None else 'unreviewed' if path not in baseline.get('sources', {})
                         else 'changed' if baseline['sources'][path] != digest else 'matching')
+    retired = sorted(set(baseline.get('sources', {})) - set(current))
+    source_lines = {}
     def with_sources(item):
         result = {**item, 'sources':[]}
         for ref in item['sources']:
             path = _path(root,ref)
-            lines = path.read_text('utf-8-sig').splitlines() if path.is_file() else []
+            if ref['path'] not in source_lines:
+                source_lines[ref['path']] = path.read_text('utf-8-sig').splitlines() if path.is_file() else []
+            lines = source_lines[ref['path']]
             line = next((i+1 for i,s in enumerate(lines) if ref['anchor'] and ref['anchor'] in s),None)
             state = states[ref['path']]
             if ref['anchor'] and line is None: state = 'anchor_missing'
@@ -110,7 +125,7 @@ def snapshot(root=APP_ROOT, lock=LOCK):
             'domains':[{'id':i,'label':l,'owner':o} for i,l,o in catalog.DOMAINS],
             'nodes':[with_sources(n) for n in catalog.NODES],
             'edges':[with_sources(e) for e in catalog.EDGES], 'flows':catalog.FLOWS,
-            'source_states':states,'validation_errors':validate(), 'coverage':inventory(root)}
+            'source_states':states,'retired_sources':retired,'validation_errors':validate(), 'coverage':inventory(root)}
 
 
 def impact(node_ids, *, direction='downstream', depth=6, data=None):
@@ -158,6 +173,34 @@ def change_report(paths, *, data=None):
             'impact':impact(sorted(hit),data=data) if hit else None,
             'decision':'需要逐项审查，不自动修改业务；未覆盖文件不是无影响',
             'validation_errors':data['validation_errors']}
+
+
+def review_changes(paths, *, depth=6, root=APP_ROOT):
+    from app.services.business_relationship_index import source_index, dependency_review
+    index = source_index(root)
+    candidate = dependency_review(paths, index, depth=depth)
+    data = snapshot(root=root)
+    affected = [f['path'] for f in candidate['files']]
+    report = change_report(sorted(set(candidate['changed_paths'] + affected)), data=data)
+    impact_data = report['impact']
+    checklist = [{k: e[k] for k in ('id', 'from', 'to', 'action', 'condition', 'check', 'kind', 'evidence', 'source_current', 'sources')}
+                 for e in (impact_data['edges'] if impact_data else [])]
+    return {'read_only': True, 'runtime_verified': False, 'version': data['version'],
+            'requested_paths': candidate['changed_paths'], 'business_review': report,
+            'code_candidates': candidate, 'checklist': checklist,
+            'source_states': data['source_states'], 'retired_sources': data['retired_sources'],
+            'scan_errors': index['errors'], 'missing_scopes': index['missing_scopes'],
+            'notice': '代码依赖候选用于扩大核查范围；检查清单不等于允许修改。未知文件、缺源码和未建模关系均不能判定安全。'}
+
+
+def flow_review(flow_id, *, data=None):
+    data = data or snapshot()
+    flow = next((f for f in data['flows'] if f['id'] == flow_id), None)
+    if flow is None: raise ValueError('unknown_flow')
+    steps = set(flow['steps'])
+    return {'flow': flow, 'relations': [e for e in data['edges'] if e['from'] in steps and e['to'] in steps],
+            'boundary_relations': [e for e in data['edges'] if (e['from'] in steps) != (e['to'] in steps)],
+            'notice': '只使用登记关系；步骤先后不是依赖证明，跨流程影响单独列出。'}
 
 
 def field_references(model, field, *, root=APP_ROOT):

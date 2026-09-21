@@ -4,6 +4,10 @@
 
 ## 给业务同事
 
+- **改动影响核查**：每行输入一个项目相对路径，批量生成依赖候选、业务检查、保护事项和未建模清单；可以加入索引中的程序，再导出本次结构化检查结果。仅下载到操作者本地，不向飞书发送技术文件。
+- **全程序代码索引**：包括递归后端、命令入口、报名脚本、前端声明与静态导入；未执行源码。群晖缺少的脚本/前端源文件使用同版镜像构建时的脱敏索引，明确标为发布快照，不冒充当前本机工作区。
+- **流程条件明细**：泳道下方列出实际登记的流程内关系、跨流程关系、触发条件、核查要求和来源，不从步骤排列推断串行调用。
+
 - **业务地图**：按18个域找到商品、子单、数量、制单、库存、财务、飞书等对象，点卡片查看影响。
 - **流程泳道**：看参与方及阅读顺序。不是新的执行器、也不是强制把并行任务改为串行。普通有效数量无需走人工确认分支。
 - **字段影响**：选字段→选展开层数→点节点看条件。实线是已核代码关系；虚线包含待核分支、缺口和禁止覆盖。所有箭头只是检查方向。
@@ -20,6 +24,9 @@ python -m app.cli.business_relationships --node quantity.physical
 python -m app.cli.business_relationships --field OrderDetail.qty
 python -m app.cli.business_relationships --changed backend/app/services/factory_sheet.py backend/app/services/order_cost_service.py
 python -m app.cli.business_relationships --check
+python -m app.cli.business_relationships --review-changes backend/app/services/factory_sheet.py scripts/campaign_prior_failure_import.py
+python -m app.cli.business_relationships --source-index
+python -m app.cli.business_relationships --flow order
 ```
 
 每次改动的最低检查：
@@ -50,3 +57,5 @@ python -m app.cli.business_relationships --check
 初版重点语义为67节点、79关系、5条流程；同时扫描当前版本全部模型与字段（实施基线113模型、1630字段、385程序文件）。未建模清单公开保留，文件引用数不是关系完整度百分比。
 
 逐子单仓库实际发齐、确认成品量与既有库存占用之间的完整联动仍为缺口/待核实。此处不擅自增加实发字段或重算库存规则。外部评价/采购项目只画边界，不继承其写入权限。
+
+2026-09-21补查：成品现货账本`record_shipment`读取母单product_code/sku/qty；选行缺精确SKU时存在最多现货行回退。关系目录分别登记该现存行为、多子SKU覆盖缺口和禁止自动库存修正，不能将之前财务/工厂表收口解释为库存也已验证。`ApprovalRequest.approved`在执行器不存在时亦可赋值；已批准状态不能当实际支付证明。两者本次只补齐关系事实与风险提示，未修改业务动作。

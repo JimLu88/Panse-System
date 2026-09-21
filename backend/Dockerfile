@@ -1,3 +1,9 @@
+FROM python:3.11-slim-bookworm AS relationship-index
+COPY backend/app /source/backend/app
+COPY scripts /source/scripts
+COPY frontend/src /source/frontend/src
+RUN python /source/backend/app/services/business_relationship_index.py /source/backend/app /relationship-index.json
+
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -24,6 +30,7 @@ COPY backend/pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[dev]"
 
 COPY backend/ ./
+COPY --from=relationship-index /relationship-index.json /app/app/assets/business_relationship_index.json
 # 根目录活动报名规则既保留为仓库内唯一可编辑源，也随 API 镜像固化。
 # 生产 NAS 即使尚未增加 compose bind mount，程序仍读取同一提交里的规则；
 # 若 compose 已挂载该文件，则挂载版本覆盖镜像内副本。

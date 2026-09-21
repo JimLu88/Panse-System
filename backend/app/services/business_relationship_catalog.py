@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-21.1'
+VERSION = '2026-09-21.2'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -27,6 +27,14 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('stock.finished','成品现货与规格选择','stock','ProductInventory.physical_qty / sku','services/product_stock_ledger_service.py','def _pick_stock_row','现存规格回退分支需核实；不能视为精确子SKU库存证明'),
+    node('stock.ship_movement','母单发货扣成品现货','stock','ProductStockMovement reason=ship entity=order','services/product_stock_ledger_service.py','def record_shipment','当前入口读取母单product_code/sku/qty，不证明多子SKU均已扣库'),
+    node('stock.restock','备货单到货入成品库','stock','FactoryOrder.source_order_id / qty','services/product_stock_ledger_service.py','def record_restock_receipt','客户单MTO不计入可售现货'),
+    node('stock.reversal','成品库存冲正流水','stock','ProductStockMovement reason=reversal','services/product_stock_ledger_service.py','def reverse','冲正现存流水，不据关系图执行库存调整'),
+    node('governance.approval','审批状态与执行器','governance','ApprovalRequest / _EXECUTORS','services/approval_service.py','def approve','approved状态不单独证明执行器存在及动作实际完成'),
+    node('shipping.confirmed_month','人工确认发货月份','shipping','Order.customer_shipping_month','services/factory_shipping_confirmation_service.py','def apply_confirmed_months','仅既有两笔精确授权；月份不补造日期，不改变生产权限'),
+    node('governance.relationships','业务影响检查清单','governance','review_changes / flow_review','services/business_relationship_service.py','def review_changes','只读维护工具，不增加报名和订单执行前置门'),
+    node('governance.source_index','全程序静态引用索引','governance','source_index / dependency_review','services/business_relationship_index.py','def source_index','索引候选不等于业务语义已审查；发布快照与运行源码区分'),
     node('npd.project','研发项目与阶段','npd','NpdProject / NpdStageInstance','models/npd.py'),
     node('npd.gate','任务、检验及成本关口','npd','NpdTask / NpdInspectionItem / NpdCostGate','services/npd_service.py','def move_project'),
     node('npd.materialize','设计正式建档','npd','materialize_project','services/npd_service.py','def materialize_project'),
@@ -110,6 +118,20 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('order.parent','stock.ship_movement','读取母单扣成品现货','有产品/订单ID且原事件尚未记账、有正现货','核对母单qty与全部有效子行；无现货no-op不等于已发齐','services/product_stock_ledger_service.py','def record_shipment'),
+    edge('order.child','stock.ship_movement','多子SKU库存覆盖缺口','当前函数读取母单product_code/sku/qty','逐子SKU实际库存扣减未在此入口证明，不能用图或表已同步替代','services/product_stock_ledger_service.py','def record_shipment',kind='gap',evidence='gap'),
+    edge('stock.finished','stock.ship_movement','选择可扣现货行','SKU精确匹配优先，否则回退现货最多行','规格回退不等于精确匹配；扣减上限为现存量','services/product_stock_ledger_service.py','def _pick_stock_row',evidence='review'),
+    edge('stock.ship_movement','stock.finished','按实际记账take减少现货','唯一reason+entity账本插入成功','take=min(母单qty,现货)；不以本条关系证明客户收到货','services/product_stock_ledger_service.py','def record_shipment'),
+    edge('factory.order','stock.restock','区分备货与客户生产单','source_order_id为空且qty为正、原流水不存在','客户MTO到货不自动增加可售现货','services/product_stock_ledger_service.py','def record_restock_receipt'),
+    edge('stock.restock','stock.finished','增加成品现货并记入库日期','已插入唯一到货流水','首次备货可能建库存行；不混同物料库存','services/product_stock_ledger_service.py','def record_restock_receipt'),
+    edge('stock.ship_movement','stock.reversal','原出库可作为冲正依据','明确调用reverse且能找到原流水','查重、仓库与规格；不能因为图谱提示自动撤销库存','services/product_stock_ledger_service.py','def reverse',kind='protect'),
+    edge('stock.reversal','stock.finished','冲正影响现货结余','原库存行存在；现货不低于零','流水冲正量与实际结余变化须对平；不自动复原订单','services/product_stock_ledger_service.py','def reverse',evidence='review'),
+    edge('governance.approval','automation.alert','审批待办与状态提醒','create_request建待办；approve/reject处理提示','审批不得自批，非pending不重复批准','services/approval_service.py','def approve'),
+    edge('governance.approval','finance.actual','审批状态不是支付凭证','执行器只在action已注册时调用','approved但未注册执行器不证明真实付款；必须核对动作回执','services/approval_service.py','def approve',kind='protect'),
+    edge('shipping.confirmed_month','sync.factory','月份说明进入工厂表投影','须另走原同步程序并读回','apply_confirmed_months不发送消息/不同步；月未知日不得造某天','services/factory_shipping_confirmation_service.py','def read_confirmed_months'),
+    edge('shipping.confirmed_month','factory.sheet','保留已有生产安排','精确原授权且生命周期无冲突','修改发货月份不取消生产、不重发图、不改其他订单','services/factory_shipping_confirmation_service.py','def apply_confirmed_months',kind='protect'),
+    edge('governance.source_index','governance.relationships','扩展变更核查候选范围','反向导入引用有界展开，未识别路径仍输出','代码依赖不是数据传播；缺源码和解析异常不能清零','services/business_relationship_service.py','def review_changes'),
+    edge('governance.auth','governance.relationships','复用工具页角色限制','管理员或操作员；仅GET元数据','不读取订单，不调用发送、报名、库存和财务执行器','api/admin.py','def business_relationship_changes',kind='boundary'),
     edge('order.child','order.purchase_facts','读取有效购买行','排除母单汇总/服务/全退，部分退款保留','数量未知不填1；无子行编码不猜','services/order_purchase_facts.py','def _filter_lines'),
     edge('order.purchase_facts','finance.estimate','按全部有效行计算成本','缺价/数量或护栏失败','保留原估值并待核实，不回退首SKU','services/order_cost_service.py','def recompute_and_save'),
     edge('order.purchase_facts','finance.sales_sku','逐子SKU统计购买件数','同一母单现金仅一次','未分摊金额单列；子单待分摊不是零售价','services/order_purchase_facts.py','def sales_projections'),
@@ -201,6 +223,22 @@ EDGES = [
 ]
 
 FLOWS = [
+    {'id':'finished-stock','name':'成品现货 → 母单扣库/备货入库 → 冲正与子SKU覆盖核查',
+     'steps':['order.parent','order.child','stock.finished','stock.ship_movement','factory.order','stock.restock','stock.reversal','shipping.fulfilled']},
+    {'id':'approval','name':'人工审批 → 注册执行器 → 独立结果与告警核对',
+     'steps':['governance.auth','governance.approval','automation.alert','finance.actual','governance.change']},
+    {'id':'maintenance','name':'程序变更 → 依赖候选 → 业务影响与保护检查',
+     'steps':['governance.auth','governance.source_index','governance.relationships','governance.change','governance.backup']},
+    {'id':'automation','name':'定时与文件 → 固定程序 → 分项收口与告警',
+     'steps':['automation.timer','automation.batch','automation.agent','order.file','automation.closeout','factory.receipt','sync.readback','automation.alert']},
+    {'id':'sync','name':'数量/制单事实 → 工厂表 → 独立读回与手工字段保护',
+     'steps':['quantity.reply','factory.sheet','factory.receipt','sync.factory','sync.readback','sync.manual','sync.generic']},
+    {'id':'after','name':'子单退款 → 售后 → 退回入库与费用核对',
+     'steps':['order.refund','after.case','after.return','stock.inbound','after.payment','finance.profit']},
+    {'id':'settlement','name':'实际账单 → 月结支付 → 冲销与会计期间',
+     'steps':['finance.actual','finance.freight','finance.profit','settlement.payment','settlement.reverse','settlement.period','settlement.expense']},
+    {'id':'marketing','name':'推广样品与评价 → 费用/订单及系统权限边界',
+     'steps':['marketing.promo','marketing.review','order.child','finance.profit','governance.auth']},
     {'id':'reporting','name':'全部子单 → 销量 → 财务及大盘 → 缓存核验',
      'steps':['order.child','order.purchase_facts','finance.estimate','finance.sales_sku','finance.dashboard','finance.cache','stock.demand']},
     {'id':'order','name':'订单 → 数量确认 → 制单 → 工厂表',

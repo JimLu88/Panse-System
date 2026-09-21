@@ -41,6 +41,25 @@ def business_relationship_field(model: str, field: str,
         raise HTTPException(422, '模型或字段不在本系统目录中') from exc
 
 
+@router.get('/business-relationships/source-index')
+def business_relationship_source_index(_: object = Depends(require_role('admin', 'operator'))):
+    from app.services.business_relationship_index import source_index
+    from app.services.business_relationship_service import APP_ROOT
+    return source_index(APP_ROOT)
+
+
+@router.get('/business-relationships/changes')
+def business_relationship_changes(paths: str, depth: int = 6,
+                                  _: object = Depends(require_role('admin', 'operator'))):
+    from app.services.business_relationship_service import review_changes
+    if len(paths) > 30000:
+        raise HTTPException(422, '最多100条项目内相对路径')
+    try:
+        return review_changes(paths.splitlines(), depth=depth)
+    except ValueError as exc:
+        raise HTTPException(422, '请使用项目内相对路径，每行一条，最多100条；展开层数1至12') from exc
+
+
 class IntegrationConfigOut(BaseModel):
     provider: str
     base_url: str
