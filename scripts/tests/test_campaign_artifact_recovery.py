@@ -57,6 +57,20 @@ def test_reuses_real_bundle_bytes_without_second_generation(case):
     assert case.a.db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]==0
 
 
+def test_consumed_claim_does_not_repartition_when_old_offer_observation_expires(case):
+    from campaign_submission_gate import verify_claim,validated_body
+    result=ensure_generated(case.args,case.a);bid=result['entry_bundle_id']
+    cid=case.a.claim(bid,'signup',transport='dedicated_edge_v1');jid='b'*64
+    consume_claim(case.a,cid,jid)
+    case.a.discount_offers=Mock(side_effect=ValueError('offer_availability_readback_stale'))
+    original=verify_claim(case.a,cid,dispatched_job=jid)
+    assert original['verified_claim'] and original['platform_write'] is False
+    case.a.discount_offers.assert_not_called()
+    with pytest.raises(ValueError,match='readback_stale'):validated_body(case.a,bid,'signup')
+    Path(original['file']['path']).write_bytes(b'changed')
+    with pytest.raises(ValueError,match='upload_file_changed'):verify_claim(case.a,cid,dispatched_job=jid)
+
+
 def test_legacy_complete_artifact_adopted_not_regenerated(case):
     first=_generate(case.args,case.a)
     assert ensure_generated(case.args,case.a,adopt_only=True)==first

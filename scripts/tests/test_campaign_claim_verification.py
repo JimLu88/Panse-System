@@ -57,10 +57,11 @@ class ClaimVerificationTests(unittest.TestCase):
                     consume_claim(self.authority,self.claim,job)
 
     def test_existing_dispatch_verification_is_readonly_and_exact_job_only(self):
-        with patch('campaign_submission_gate.validated_body',return_value=(self.body,{})):
+        with patch('campaign_submission_gate.validated_body',return_value=(self.body,{})) as validation:
             consume_claim(self.authority,self.claim,'b'*64)
             before=tuple(self.db.execute('SELECT * FROM claim_transports').fetchone())
             result=verify_claim(self.authority,self.claim,dispatched_job='b'*64)
+            validation.assert_called_with(self.authority,'bundle','signup',revalidate_reuse=False)
             self.assertTrue(result['verified_claim'])
             self.assertFalse(result['platform_write'])
             self.assertEqual(tuple(self.db.execute('SELECT * FROM claim_transports').fetchone()),before)
