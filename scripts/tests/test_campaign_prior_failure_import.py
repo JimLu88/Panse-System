@@ -27,23 +27,30 @@ def test_import_only_latest_exact_window_failed_unprotected(tmp_path,monkeypatch
     assert adopt.call_count==1
 
 
-@pytest.mark.parametrize('legacy',[False,True])
+@pytest.mark.parametrize('legacy',[False,True,'feedback'])
+@pytest.mark.parametrize('segmented',[False,True])
 @pytest.mark.parametrize('restored',[False,True])
 @pytest.mark.parametrize('bad',[None,'hash','window','claim','price','scope','outside','report_hash'])
-def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeypatch,bad,legacy,restored):
+def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeypatch,bad,legacy,restored,segmented):
     db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
     db.execute('CREATE TABLE attempts(id,item,status,bundle_id)')
     db.execute('INSERT INTO attempts VALUES(?,?,?,?)',('c:1','1','failed','b'))
     f=Path(persist(tmp_path/'submitted.xlsx',{}));report=Path(persist(tmp_path/'report.xlsx',{}))
     body={'campaign':'1/2/3','start':'start','end':'end','signup_rows':[{'item':'1','sku':'10','activity_price':'100'}],
           'files':[{'path':str(f),'sha256':file_sha(f)}],'target':'big'}
+    if segmented:
+        body.update(start='discount-start',end='discount-end')
+        import campaign_segmented_time
+        monkeypatch.setattr(campaign_segmented_time,'phase_window',lambda b,p: {'start':'start','end':'end'})
     doc={'schema':'campaign_entry_terminal_v1','claim_id':'wrong' if bad=='claim' else 'c','campaign':'1/2/3',
          'phase':'signup','start':'wrong' if bad=='window' else 'start','end':'end','terminal':True,'batch_id':'99',
          'items':[{'item':'1','status':'failed'}],'file_sha256':file_sha(f),
          'source_report':str(report),'source_report_sha256':file_sha(report)}
     if restored:doc['source_report']=str(tmp_path/'missing.xlsx')
     if bad=='report_hash':doc['source_report_sha256']='bad'
-    if legacy:doc['official_report_path']=doc.pop('source_report');doc['official_report_sha256']=doc.pop('source_report_sha256')
+    if legacy=='feedback':
+        doc['feedback']={'path':doc.pop('source_report'),'sha256':doc.pop('source_report_sha256'),'batch':'99'}
+    elif legacy:doc['official_report_path']=doc.pop('source_report');doc['official_report_sha256']=doc.pop('source_report_sha256')
     source=Path(persist(tmp_path/'terminal.json',doc))
     ref={'path':str(source),'sha256':'bad' if bad=='hash' else file_sha(source),'batch':'99'}
     rows=[{'id':'c:1','item':'1','status':'failed','bundle_id':'b','evidence':json.dumps(ref)}]
@@ -86,6 +93,21 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
     {'source_report':'x','source_report_sha256':'a','official_report_path':'x','official_report_sha256':'b'}])
 def test_conflicting_or_missing_report_reference_rejected(doc):
     with pytest.raises(ValueError):importer.report_reference(doc)
+
+
+@pytest.mark.parametrize('feedback',[
+    {},{'path':'x','sha256':'a','batch':'98'},'invalid',
+    {'path':'x','batch':'99'},
+])
+def test_nested_feedback_requires_complete_exact_batch(feedback):
+    with pytest.raises(ValueError):
+        importer.report_reference({'batch_id':'99','feedback':feedback})
+
+
+def test_nested_feedback_must_agree_with_legacy_reference():
+    with pytest.raises(ValueError):
+        importer.report_reference({'batch_id':'99','source_report':'a','source_report_sha256':'s',
+            'feedback':{'path':'b','sha256':'s','batch':'99'}})
 
 
 @pytest.mark.parametrize('change',[{'state':'running'},{'operation':'signup'},{'job_id':'wrong'},

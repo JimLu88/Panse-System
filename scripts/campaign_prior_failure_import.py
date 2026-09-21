@@ -20,6 +20,12 @@ def report_reference(terminal):
             if not terminal.get(path_key) or not terminal.get(sha_key):
                 raise ValueError('prior_report_reference_incomplete')
             refs.append((terminal[path_key],terminal[sha_key]))
+    feedback=terminal.get('feedback')
+    if feedback is not None:
+        if (not isinstance(feedback,dict) or not feedback.get('path') or not feedback.get('sha256')
+                or str(feedback.get('batch'))!=str(terminal.get('batch_id'))):
+            raise ValueError('prior_feedback_reference_invalid')
+        refs.append((feedback['path'],feedback['sha256']))
     if not refs or any(r!=refs[0] for r in refs):
         raise ValueError('prior_report_reference_missing_or_conflicting')
     return refs[0]
@@ -77,11 +83,15 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
         return path
     source=checked(ref['path'],ref['sha256']);terminal=load(source)
     body=a.get_bundle(rows[0]['bundle_id'])
+    from campaign_segmented_time import phase_window
+    # The original validated bundle owns its price segment. Signup receipts
+    # belong to the official activity window, not that discount segment.
+    signup_window=phase_window(body,'signup')
     identity=('/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id')),p['start'],p['end'])
     if (terminal.get('schema')!='campaign_entry_terminal_v1' or terminal.get('claim_id')!=claim
             or terminal.get('phase')!='signup' or terminal.get('terminal') is not True
             or tuple(terminal.get(k) for k in ('campaign','start','end'))!=identity
-            or tuple(body.get(k) for k in ('campaign','start','end'))!=identity
+            or (body.get('campaign'),signup_window['start'],signup_window['end'])!=identity
             or str(terminal.get('batch_id'))!=str(ref['batch'])):
         raise ValueError('prior_terminal_identity_mismatch')
     claimed=list(a.db.execute('SELECT * FROM attempts WHERE id LIKE ?', (claim+':%',)))
