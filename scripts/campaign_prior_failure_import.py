@@ -31,18 +31,24 @@ def report_reference(terminal):
     return refs[0]
 
 
-def restored_report(transport,payload,batch,sha):
-    """Status-only lookup of an already downloaded exact-batch, same-byte file."""
+def retained_report(transport,payload,batch):
+    """Read an existing exact activity/batch job, never start a new download."""
     from campaign_continuous_policy import fingerprint
     bound={'identity':transport.identity(payload),'batch':str(batch)}
     jid=fingerprint(['feedback',bound]);job=transport.edge.status(jid)
     result=job.get('result') or {}
     if (job.get('job_id')!=jid or job.get('operation')!='feedback' or job.get('state')!='finished'
             or result.get('state')!='downloaded' or str(result.get('batch'))!=str(batch)
-            or result.get('sha256')!=sha):
+            or not result.get('path') or not result.get('sha256')):
         raise ValueError('prior_same_sha_report_not_recovered')
-    # checked() below also verifies actual bytes and allowed resolved roots.
-    return result['path'],{k:v for k,v in job.items() if k!='ok'}
+    return result['path'],result['sha256'],{k:v for k,v in job.items() if k!='ok'}
+
+
+def restored_report(transport,payload,batch,sha):
+    """A missing previously pinned file requires the very same bytes."""
+    path,actual,job=retained_report(transport,payload,batch)
+    if actual!=sha:raise ValueError('prior_same_sha_report_not_recovered')
+    return path,job
 
 
 def import_prior(transport,payload,items,*,readback=False):
@@ -103,11 +109,20 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
     files=[f for f in body['files'] if f['sha256']==terminal['file_sha256']]
     if len(files)!=1:raise ValueError('prior_submitted_file_binding_missing')
     checked(files[0]['path'],files[0]['sha256'])
-    report_path,report_sha=report_reference(terminal)
     recovery=None
-    try:raw=checked(report_path,report_sha)
-    except FileNotFoundError:
-        report_path,recovery=restored_report(transport,payload,ref['batch'],report_sha)
+    has_reference=(terminal.get('feedback') is not None or any(k in terminal for k in (
+        'source_report','source_report_sha256','official_report_path','official_report_sha256')))
+    if has_reference:
+        report_path,report_sha=report_reference(terminal)
+        try:raw=checked(report_path,report_sha)
+        except FileNotFoundError:
+            report_path,recovery=restored_report(transport,payload,ref['batch'],report_sha)
+            raw=checked(report_path,report_sha)
+    else:
+        # A batch terminal may precede its separately completed feedback job.
+        # Require its deterministic identity and all original scope/price
+        # checks below; do not rewrite the older terminal to attach a file.
+        report_path,report_sha,recovery=retained_report(transport,payload,ref['batch'])
         raw=checked(report_path,report_sha)
     parsed=parse_feedback(raw.read_bytes(),expected_sha=report_sha,batch=str(ref['batch']),
                           expected_items=sorted(original))
@@ -120,7 +135,7 @@ def adopt_report(transport,payload,claim,rows,*,readback=False):
     if recovery is not None:
         persist(transport.root/'prior-import'/(str(ref['batch'])+'-restored-report.json'),
                 {'source_terminal':str(source),'source_terminal_sha256':ref['sha256'],
-                 'original_report_reference':list(report_reference(terminal)),'recovered':recovery,
+                 'original_report_reference':list(report_reference(terminal)) if has_reference else None,'recovered':recovery,
                  'report_sha256':report_sha,'claims_changed':False,'platform_write':False})
     snapshot=load(transport.root/'resolved-snapshot.json')
     # Current frozen ERP version/bases, original submitted price and official

@@ -27,7 +27,7 @@ def test_import_only_latest_exact_window_failed_unprotected(tmp_path,monkeypatch
     assert adopt.call_count==1
 
 
-@pytest.mark.parametrize('legacy',[False,True,'feedback'])
+@pytest.mark.parametrize('legacy',[False,True,'feedback','retained'])
 @pytest.mark.parametrize('segmented',[False,True])
 @pytest.mark.parametrize('restored',[False,True])
 @pytest.mark.parametrize('bad',[None,'hash','window','claim','price','scope','outside','report_hash'])
@@ -48,7 +48,9 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
          'source_report':str(report),'source_report_sha256':file_sha(report)}
     if restored:doc['source_report']=str(tmp_path/'missing.xlsx')
     if bad=='report_hash':doc['source_report_sha256']='bad'
-    if legacy=='feedback':
+    if legacy=='retained':
+        doc.pop('source_report');doc.pop('source_report_sha256')
+    elif legacy=='feedback':
         doc['feedback']={'path':doc.pop('source_report'),'sha256':doc.pop('source_report_sha256'),'batch':'99'}
     elif legacy:doc['official_report_path']=doc.pop('source_report');doc['official_report_sha256']=doc.pop('source_report_sha256')
     source=Path(persist(tmp_path/'terminal.json',doc))
@@ -67,6 +69,8 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
     monkeypatch.setattr(importer,'parse_feedback',Mock(return_value=parsed))
     norm=Mock(return_value=[{'item':'1','kind':'custom_price'}]);monkeypatch.setattr(importer,'normalize_errors',norm)
     payload={'identity':dict(campaign_id='1',phase_id='2',sign_record_id='3',start='start',end='end',official_rate='.12')}
+    if bad=='report_hash' and legacy=='retained':
+        t.edge.status.return_value['result']['sha256']='bad'
     if bad:
         with pytest.raises(ValueError):importer.adopt_report(t,payload,'c',rows)
         norm.assert_not_called()
@@ -76,7 +80,7 @@ def test_adoption_checks_claim_file_report_and_current_snapshot(tmp_path,monkeyp
         assert norm.call_args.kwargs['erp_rows']==['current']
         assert norm.call_args.kwargs['actual_discounts']==[]
         assert file_sha(source)==ref['sha256']
-        assert t.edge.status.call_count==int(restored)
+        assert t.edge.status.call_count==int(restored or legacy=='retained')
         assert importer.adopt_report(t,payload,'c',rows)==result
         initial=Path(tmp_path/'reports/99.json').read_bytes()
         norm.return_value=[{'item':'1','kind':'custom_price','fixed_original':'1000','floor':'200'}]
