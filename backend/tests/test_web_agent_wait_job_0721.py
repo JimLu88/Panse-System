@@ -18,7 +18,8 @@ def test_wait_job_keeps_terminal_auth_error(monkeypatch):
     response = {"ok": False, "error": "token invalid"}
     monkeypatch.setattr(web_agent_service, "get_job", lambda db, job_id: response)
 
-    assert web_agent_service.wait_job(object(), "job1", timeout_s=30) == response
+    result = web_agent_service.wait_job(object(), "job1", timeout_s=30)
+    assert result == {**response, "status": "error", "error_code": "job_status_unavailable"}
 
 
 def test_product_export_recovery_uses_readonly_record_endpoint(monkeypatch):

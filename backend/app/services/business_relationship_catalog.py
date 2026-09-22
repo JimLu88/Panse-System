@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-21.3'
+VERSION = '2026-09-22.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('automation.order_owner','订单原批次运行者核验','automation','recover_order_receipt','services/agent_ingest_service.py','def recover_order_receipt','running文件不等于任务存活；同attempt核对运行者，未知或中断不盲重导，不改财务或已推单'),
     node('stock.finished','成品现货与规格选择','stock','ProductInventory.physical_qty / sku','services/product_stock_ledger_service.py','def _pick_stock_row','现存规格回退分支需核实；不能视为精确子SKU库存证明'),
     node('stock.ship_movement','母单发货扣成品现货','stock','ProductStockMovement reason=ship entity=order','services/product_stock_ledger_service.py','def record_shipment','当前入口读取母单product_code/sku/qty，不证明多子SKU均已扣库'),
     node('stock.restock','备货单到货入成品库','stock','FactoryOrder.source_order_id / qty','services/product_stock_ledger_service.py','def record_restock_receipt','客户单MTO不计入可售现货'),
@@ -210,6 +211,8 @@ EDGES = [
     edge('sync.generic','sync.factory','两类表同步不等价','专用表单向/通用表按绑定','不得继承通用双向写回规则','models/feishu_sync.py',kind='boundary'),
     edge('quantity.reply','sync.readback','更新确认后的工厂投影','图回执独立；表失败保留','不能因表失败重发正式图','services/factory_quantity_request_service.py','def handle_reply'),
     edge('automation.batch','automation.agent','交给固定程序执行','一次持久批次','AI不逐步操控浏览器','services/web_agent_service.py',evidence='review'),
+    edge('automation.agent','automation.order_owner','读取原订单运行者状态','原batch/attempt/date严格一致','网络失败不是空闲；Web Agent跨程序实际加载需另验','services/web_agent_service.py','def order_receipt_status',evidence='review'),
+    edge('automation.order_owner','sync.freshness','完整终态才恢复原批报表','三报表角色/路径/hash匹配','中断或未知进入维护；不重复导入已绑定文件','services/agent_ingest_service.py','def recover_order_receipt'),
     edge('automation.agent','order.file','取回报表证据','batch/attempt/hash匹配','超时结果未知不重复拉取','services/web_agent_service.py',evidence='review'),
     edge('automation.batch','automation.closeout','恢复已导入批次','身份与日期一致','历史批次不改当天状态','services/order_delivery_completion_service.py'),
     edge('automation.closeout','factory.receipt','完成待发图片','精确发送账本保护','已送达/未知不重放','services/order_delivery_completion_service.py'),

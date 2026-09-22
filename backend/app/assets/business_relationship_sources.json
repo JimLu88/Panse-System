@@ -1,6 +1,6 @@
 {
-  "version": "2026-09-21.3",
-  "reviewed_at": "2026-09-21T07:49:30.972549+00:00",
+  "version": "2026-09-22.1",
+  "reviewed_at": "2026-09-22T07:06:19.321075+00:00",
   "sources": {
     "backend/app/api/admin.py": "c1e10c6a08f790e814db6b511d2c09fc869ae8891f9c14649bde652741dc4489",
     "backend/app/api/web_agent.py": "27543949b7efced87a8888ac0add62a6e653393c677d4956ee15e79895e26097",
@@ -34,11 +34,11 @@
     "backend/app/models/taobao_listing.py": "3408c4ee3fec07d611d623f83c005f0a305a301005b6c97fc504179c07130dd3",
     "backend/app/services/accounting_period_service.py": "ce5fafbbecc6bad20090011028f697caf34154fffddb32b47949d695996f0b0d",
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
-    "backend/app/services/agent_ingest_service.py": "bcfc58b863fc9a2a68ffb04512b53d7b21b029545c726022fcf37128d6b34e3d",
+    "backend/app/services/agent_ingest_service.py": "bf39ba81fd887a465d3d09438d01373331ebfd5c14df823102206800e569bf33",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
-    "backend/app/services/automation_pipeline_service.py": "65e408b2f3de5151d4cf374c9c0947624b4d2a470bb610912ccf5a1c03718783",
+    "backend/app/services/automation_pipeline_service.py": "702e89ff66a9166e61478b4ff6bcae530283302506fd8eb4843aafb1501fa1ad",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "32a451f4c970bf564095986f58d4783d3d8d5fda5843d954a11bfbf2e0ac2547",
+    "backend/app/services/business_relationship_catalog.py": "c68bae143eeda0f09b31896e9bef03a5cab988075a77398628ac1d8cddaf0bef",
     "backend/app/services/business_relationship_index.py": "3fe59dfb01482d53d8b648b5385936312302a421fd0e3a4edaef0ec8c748a929",
     "backend/app/services/business_relationship_service.py": "247ca3e4e757c1d27f704a82b912d1bb2beaeac4846ac94ccf0abf1c66d562fe",
     "backend/app/services/campaign_automation_service.py": "1045ac6e09a71b2fed81a109dd803f6a89c450631c593e670718894b6beff859",
@@ -82,10 +82,10 @@
     "backend/app/services/remote_report_service.py": "6fba28eea67a6b4e5e53e2330e6b92e4256a53229dd3efa317a11725f4b52d3e",
     "backend/app/services/sales_analytics.py": "2886b733e4eecc5f8d3362d715c79b41f5cc152f251a0e66d90d499205c6f0cf",
     "backend/app/services/sales_rollup_service.py": "a71e84e81bb685eae5d3445e2d519ffe84d33f7e68cafecf0e5cfd962cb1ec40",
-    "backend/app/services/scheduler.py": "0aeed97af85eccdce00295a94bd87ae35b50c49b24303b77f89fb87e4ae2fab5",
+    "backend/app/services/scheduler.py": "180be47f7cfa804737313482a8ceb4e73e5183bc8a005787bd78c8720ca59a2b",
     "backend/app/services/shipment_service.py": "0ece15887653479dc5aba6d181cf474dbf6c766258f75d260883dedcf522391a",
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "17db313b467b2714a5def173498152241486b2ba3f6b8289fb9726bc7d2b69de",
-    "backend/app/services/web_agent_service.py": "13b57adc35df5c7f3a700bbba0a60249c008a8b2efa2ecbabb06700873e351de"
+    "backend/app/services/web_agent_service.py": "0287c38fb94fe14791753ef1d6d9461374ba9db9f0f97c5c15393b81d21f002a"
   }
 }

@@ -932,7 +932,7 @@ def _job_web_agent_daily(db: Session) -> dict:
             r["_run_status"] = "fail"
             r["_error"] = (
                 "订单取数未完成：发货报表没有下载并进入ERP；"
-                "当前没有对应的加密文件，所以企业微信不会要求提交发货密码。"
+                "当前没有对应的加密文件，因此尚未到飞书提交发货口令的步骤。"
                 f"本轮只收到 {len(artifacts)}/3 份报表，系统将在下一重试时段重新拉取完整三报表"
             )
         else:
@@ -1711,14 +1711,23 @@ def _job_pull_catchup(db: Session) -> dict:
         )
 
     recovered = ai.recover_order_receipt(db)
+    if recovered.get("reason") == "order_export_owner_unavailable":
+        # A normal, bounded wake to read the original receipt; never starts export.
+        online = web_agent_service.ensure_online(db, reason="order_receipt_owner_check", wait_s=75)
+        if online.get("online"):
+            recovered = ai.recover_order_receipt(db)
+    if recovered.get("reason") == "order_export_terminal_pending":
+        recovered = ai.recover_order_receipt(db)
     if recovered.get("recovered"):
         ai.finalize_order_pull_after_shipping_password(db, on=date.today())
     if recovered.get("reason") == "order_export_running":
         return {"skipped": "order_pull_in_progress", "_run_status": "skipped"}
     if recovered.get("reason") in ("invalid_order_receipt", "order_export_receipt_missing",
-                                   "receipt_artifact_ingest_failed"):
+                                   "receipt_artifact_ingest_failed", "order_export_interrupted",
+                                   "order_export_unknown", "order_export_owner_unavailable",
+                                   "order_export_terminal_pending", "order_export_partial"):
         return _finish({"_run_status": "fail",
-                        "_error": "订单原批次回执需要程序核对，未重启取数：" + recovered["reason"]})
+                        "_error": "订单执行已中断或运行者无法核实；保留原文件，交程序维护核对后续接，不盲目重导：" + recovered["reason"]})
     if ai.order_data_fresh(db, not_before_hour=18):
         # 数据新鲜不等于图片已送达。即使口令回调或 18:30 日报在发送阶段中断，
         # 每小时补跑仍用 pushed 幂等标记收口，不重复发已成功的图片。
@@ -1766,7 +1775,7 @@ def _job_pull_catchup(db: Session) -> dict:
             error = (
                 f"加密发货报表待飞书口令 {len(pending_password)} 份: "
                 + ",".join(pending_password[:5])
-                + "；请在企业微信 ERP 应用发送“发货密码：xxxx”，收到后自动解密，下个小时继续"
+                + "；请在本飞书 ERP 提醒群回复发货口令，收到后自动解密并续接原批次"
             )
         return _finish({
             "waiting": "shipping_password",

@@ -1778,3 +1778,6 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
   Web-Agent route. The existing Taobao-profile busy gate and bounded wait still
   prevent overlap with order pulling; all identity, price, CAS, one-shot,
   terminal and readback gates remain unchanged.
+# 2026-09-22 订单运行者核验修复（发布验收另记）
+
+原9月21日订单在18:14共用Web Agent维护重启后失去内存任务，running回执造成19/20/21点补跑跳过。现在原attempt需活跃运行者证明；中断/旧未知/部分文件进入维护，不把它当正常运行，也不盲重导。等待错误不再变成空白status；完整迟到回执仍按原批次/hash恢复，慢任务/网络短超时不误判结束。补跑状态核验离线只作一次正常wake，不启动导出。关系图新增运行者→报表完整性关联。136项相关回归通过；未重算财务、未重发制单、未改原回执。配套WA需安装后正式上线核验，不能据此称昨日订单已送达。

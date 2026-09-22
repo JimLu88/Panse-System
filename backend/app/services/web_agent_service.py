@@ -163,6 +163,13 @@ def get_job(db: Session, job_id: str) -> dict:
     return _get(db, f"/api/jobs/{job_id}")
 
 
+def order_receipt_status(db: Session, attempt: str) -> dict:
+    import re
+    if not re.fullmatch(r"[a-f0-9]{32}", attempt):
+        return {"ok": False, "status": "unknown"}
+    return _get_raw(db, f"/api/orders/receipts/{attempt}/status", timeout=10)
+
+
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
@@ -1339,7 +1346,7 @@ def wait_job(db: Session, job_id: str, *, timeout_s: int = 900,
                     "Connection aborted", "timed out")):
                 time.sleep(poll_s)
                 continue
-            return last
+            return {**last, "status": "error", "error_code": "job_status_unavailable"}
         time.sleep(poll_s)
     last["status"] = "timeout"
     return last

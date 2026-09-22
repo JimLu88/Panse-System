@@ -1980,7 +1980,24 @@ def recover_order_receipt(db: Session, *, on=None) -> dict:
                 or receipt.get("order_attempt_id") != attempt
                 or receipt.get("order_business_date") != target.isoformat()):
             raise ValueError("receipt identity mismatch")
+        if receipt.get("status") == "running":
+            live = web_agent_service.order_receipt_status(db, attempt)
+            if live.get("ok") is not True:
+                return {"recovered": False, "reason": "order_export_owner_unavailable"}
+            if (live.get("order_attempt_id") != attempt or live.get("order_batch_id") != batch
+                    or live.get("order_business_date") != target.isoformat()):
+                raise ValueError("live receipt identity mismatch")
+            if live.get("status") == "running":
+                return {"recovered": False, "reason": "order_export_running"}
+            if live.get("status") == "done":
+                # Atomic writer may have completed during our owner query.
+                # Read fresh bytes on the next pass rather than use stale files.
+                return {"recovered": False, "reason": "order_export_terminal_pending"}
+            return {"recovered": False, "reason": "order_export_interrupted"
+                    if live.get("status") == "interrupted" else "order_export_unknown"}
         if receipt.get("status") != "done":
+            if receipt.get("artifacts"):
+                return {"recovered": False, "reason": "order_export_partial"}
             return {"recovered": False, "reason": "order_export_" + str(receipt.get("status"))}
         files = receipt.get("artifacts") or []
         if len(files) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
@@ -2600,7 +2617,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         final = web_agent_service.wait_job(
             db, r["job"], timeout_s=5400 if task_id == "taobao_orders" else 1800,
         )
-        status = (final.get("status") or "").lower()
+        status = (final.get("status") or "error").lower()
         job_result = final.get("result") or {}
         task_artifacts = _job_downloads(job_result)
         task_artifact_roles = _job_artifact_roles(job_result)
