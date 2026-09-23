@@ -1,4 +1,5 @@
 from copy import deepcopy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -6,6 +7,47 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import pytest
 import campaign_discount_availability as mod
 from campaign_entry_authority import file_sha, Authority
+
+
+@pytest.mark.parametrize('fault',[None,'missing_audit','wrong_folder','old_video','new_video',
+    'new_capture','old_click','wrong_phase','wrong_disposition'])
+def test_recovered_offer_readback_requires_same_job_audit_and_two_intact_recordings(tmp_path,fault):
+    import sqlite3
+    jid='a'*64;root=tmp_path;folder=root/jid
+    old_video=folder/'recording'/'original'/'recording.mp4'
+    new_video=folder/'read-recovery-1'/'recording'/'new'/'recording.mp4'
+    old_video.parent.mkdir(parents=True);new_video.parent.mkdir(parents=True)
+    old_video.write_bytes(b'old-recording');new_video.write_bytes(b'new-recording')
+    proof=folder/'read-recovery-1'/'discount-readback.json';proof.write_text('{}')
+    failure=folder/'failure-disposition.json'
+    failure.write_text(json.dumps(dict(job_id=jid,operation='discount_readback',
+        disposition=dict(action='manual_program_repair'))))
+    old=dict(error='TimeoutError',automatic_retry=False,
+        program_location=[dict(file='campaign_bound_transfers.py',function='execute',line=352)],
+        failure_disposition_path=str(failure),recording=dict(events=0,video=str(old_video),
+            video_sha256=hashlib.sha256(old_video.read_bytes()).hexdigest()))
+    result=dict(evidence_path=str(proof),recording=dict(active=False,frames=8,capture_errors=0,
+        error=None,video=str(new_video),video_sha256=hashlib.sha256(new_video.read_bytes()).hexdigest()))
+    with sqlite3.connect(root/'jobs.sqlite') as db:
+        db.execute('CREATE TABLE campaign_offer_availability_navigation_recovery(id TEXT,previous_result TEXT)')
+        if fault!='missing_audit':db.execute('INSERT INTO campaign_offer_availability_navigation_recovery VALUES(?,?)',
+                                             (jid,json.dumps(old)))
+    if fault=='wrong_folder':result['evidence_path']=str(folder/'other'/'discount-readback.json')
+    elif fault=='old_video':old_video.write_bytes(b'changed')
+    elif fault=='new_video':new_video.write_bytes(b'changed')
+    elif fault=='new_capture':result['recording']['capture_errors']=1
+    elif fault=='old_click':old['recording']['events']=1
+    elif fault=='wrong_phase':old['program_location'][0]['line']=353
+    elif fault=='wrong_disposition':failure.write_text(json.dumps(dict(job_id=jid,operation='discount_readback',
+        disposition=dict(action='automatic_retry'))))
+    if fault in ('old_click','wrong_phase'):
+        with sqlite3.connect(root/'jobs.sqlite') as db:
+            db.execute('UPDATE campaign_offer_availability_navigation_recovery SET previous_result=? WHERE id=?',
+                       (json.dumps(old),jid))
+    if fault:
+        with pytest.raises(ValueError):mod._verified_navigation_recovery(root,jid,result)
+    else:
+        mod._verified_navigation_recovery(root,jid,result)
 
 
 @pytest.mark.parametrize('fault',[None,'write','job','campaign','window','stale','future','filter','no_user_removal','scope','terminal','price_proof','order'])

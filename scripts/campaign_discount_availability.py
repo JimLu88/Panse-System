@@ -6,11 +6,46 @@ request carries the user's existing removal instruction and the fixed query
 has verified an unfiltered exact-ID absence.
 """
 import json
+import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 TRANSFER_ROOT=Path('D:/AI/畔色ERP系统/Web-Agent程序/data/output/campaign-transfers')
+
+
+def _verified_navigation_recovery(root,job_id,result):
+    """Accept only the same-job recorded pre-read recovery, never a loose subpath."""
+    folder=(root/job_id).resolve()
+    proof=(folder/'read-recovery-1'/'discount-readback.json').resolve()
+    if Path(result.get('evidence_path','')).resolve()!=proof:
+        raise ValueError('offer_availability_readback_changed')
+    try:
+        db=sqlite3.connect((root/'jobs.sqlite').as_uri()+'?mode=ro',uri=True)
+        try:row=db.execute('SELECT previous_result FROM campaign_offer_availability_navigation_recovery WHERE id=?',(job_id,)).fetchone()
+        finally:db.close()
+    except sqlite3.Error as exc:
+        raise ValueError('offer_availability_recovery_audit_missing') from exc
+    if not row:raise ValueError('offer_availability_recovery_audit_missing')
+    old=json.loads(row[0]);previous=old.get('recording') or {};current=result.get('recording') or {}
+    old_video=Path(previous.get('video') or '').resolve()
+    video=Path(current.get('video') or '').resolve()
+    failure=(folder/'failure-disposition.json').resolve()
+    try:disposition=json.loads(failure.read_text(encoding='utf-8'))
+    except (OSError,ValueError) as exc:raise ValueError('offer_availability_recovery_audit_changed') from exc
+    if (old.get('error')!='TimeoutError' or old.get('automatic_retry') is not False
+            or not any(f.get('file')=='campaign_bound_transfers.py' and f.get('function')=='execute'
+                       and f.get('line')==352 for f in old.get('program_location',[]))
+            or previous.get('events')!=0 or old.get('failure_disposition_path')!=str(failure)
+            or disposition.get('job_id')!=job_id or disposition.get('operation')!='discount_readback'
+            or disposition.get('disposition',{}).get('action')!='manual_program_repair'
+            or not old_video.is_file() or not old_video.is_relative_to(folder/'recording')
+            or hashlib.sha256(old_video.read_bytes()).hexdigest()!=previous.get('video_sha256')
+            or current.get('active') is not False or not current.get('frames')
+            or current.get('capture_errors')!=0 or current.get('error')
+            or not video.is_file() or not video.is_relative_to(folder/'read-recovery-1'/'recording')
+            or hashlib.sha256(video.read_bytes()).hexdigest()!=current.get('video_sha256')):
+        raise ValueError('offer_availability_recovery_audit_changed')
 
 
 def verified_scope(ref, *, now=None):
@@ -48,7 +83,11 @@ def verified_scope(ref, *, now=None):
             or scope['campaign']!='/'.join(identity[k] for k in ('campaign_id','phase_id','sign_record_id'))
             or result.get('shop_name')!=scope['shop']):raise ValueError('offer_availability_read_scope_changed')
     proof=Path(result['evidence_path']).resolve(strict=True)
-    if proof!=root/job_id/'discount-readback.json' or file_sha(proof)!=doc['readback_sha256']:
+    if proof==(root/job_id/'read-recovery-1'/'discount-readback.json').resolve():
+        _verified_navigation_recovery(root,job_id,result)
+    elif proof!=(root/job_id/'discount-readback.json').resolve():
+        raise ValueError('offer_availability_readback_changed')
+    if file_sha(proof)!=doc['readback_sha256']:
         raise ValueError('offer_availability_readback_changed')
     saved=load(proof)
     if any(saved.get(k)!=result.get(k) for k in saved):raise ValueError('offer_availability_result_mismatch')
