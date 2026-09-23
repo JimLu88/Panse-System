@@ -54,6 +54,8 @@ def verified_scope(ref, *, now=None):
     if any(saved.get(k)!=result.get(k) for k in saved):raise ValueError('offer_availability_result_mismatch')
     rows=saved['rows'];requested={r['offer_id'] for r in payload['offers']}
     if len(rows)!=len(requested) or {r['offer_id'] for r in rows}!=requested:raise ValueError('offer_availability_incomplete_read')
+    if doc.get('observed_at') is not None and doc['observed_at']!=max(r['observed_at'] for r in rows):
+        raise ValueError('offer_availability_order_evidence_changed')
     accepted=[];now=now or datetime.now(timezone.utc)
     for row in rows:
         age=(now-datetime.fromisoformat(row['observed_at'])).total_seconds()
@@ -63,25 +65,41 @@ def verified_scope(ref, *, now=None):
                 and row.get('search_value')==row['offer_id'] and doc.get('user_removed_old_offers') is True)
         if (paused or absent) and row.get('platform_write') is False:accepted.append(row['offer_id'])
     if sorted(accepted)!=sorted(doc['offer_ids']):raise ValueError('offer_availability_not_proven')
-    return dict(scope,offer_ids=accepted,old_window=payload['price_window'])
+    return dict(scope,offer_ids=accepted,requested_offer_ids=sorted(requested),
+                observed_at=max(r['observed_at'] for r in rows),old_window=payload['price_window'])
 
 
 def overlay(authority, offers):
-    refs=[dict(path=s['path'],sha256=s['sha256']) for s in authority.sources() if s['kind']=='discount_availability']
+    sources=[s for s in authority.sources() if s['kind']=='discount_availability']
+    # The newest verified exact-ID status must be considered before older
+    # immutable receipts whose 30-minute window has expired.
+    sources.sort(key=lambda s:s['document'].get('observed_at',''),reverse=True)
+    refs=[dict(path=s['path'],sha256=s['sha256']) for s in sources]
     for offer in offers:
         if refs:offer['availability_refs']=refs
     return offers
 
 
 def inactive_for_window(offer,campaign,start,end):
+    latest=None;stale=False
+    platform_id=offer.get('platform_offer_id',offer['offer_id'])
     for ref in offer.get('availability_refs',[]):
         from campaign_entry_authority import load,file_sha
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('offer_availability_receipt_changed')
-        target=load(ref['path'])['scope']
+        document=load(ref['path']);target=document['scope']
         if (campaign,start,end)!=(target['campaign'],target['start'],target['end']):continue
-        scope=verified_scope(ref)
+        try:scope=verified_scope(ref)
+        except ValueError as exc:
+            if str(exc)!='offer_availability_readback_stale':raise
+            if platform_id in document.get('offer_ids',[]):stale=True
+            continue
         if ((campaign,start,end)!=(scope['campaign'],scope['start'],scope['end'])
                 or (start,end)==(offer['start'],offer['end'])):continue
-        if ((offer['start'],offer['end'])==(scope['old_window']['start'],scope['old_window']['end'])
-                and offer.get('platform_offer_id',offer['offer_id']) in scope['offer_ids']):return True
+        if platform_id not in scope['requested_offer_ids']:continue
+        inactive=((offer['start'],offer['end'])==(scope['old_window']['start'],scope['old_window']['end'])
+                  and platform_id in scope['offer_ids'])
+        observed=datetime.fromisoformat(scope['observed_at'])
+        if latest is None or observed>latest[0]:latest=(observed,inactive)
+    if latest is not None:return latest[1]
+    if stale:raise ValueError('offer_availability_readback_stale')
     return False
