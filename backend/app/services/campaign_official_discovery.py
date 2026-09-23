@@ -11,6 +11,15 @@ SHOP = '畔色木作'
 CARD = re.compile(
     r'(?m)^([^\n]+)\n(?:新\n)?(报名中|可报名|不可报|售卖中|已结束|报名截止|已关闭)\n'
     r'(20\d{2}\.\d{1,2}\.\d{1,2}-(?:20\d{2}\.)?\d{1,2}\.\d{1,2})$')
+NATIONAL_2026_TITLE = '2026年国庆狂欢-淘宝'
+
+
+def valid_detail_title(title):
+    # The exact observed National Day page uses a suffix instead of the
+    # usual "年淘宝..." prefix. Keep this exception byte-exact, not a broad
+    # title guess that could route to another campaign.
+    return isinstance(title,str) and (title == NATIONAL_2026_TITLE or bool(
+        re.fullmatch(r'(?:20\d{2}年|\d{2}年)淘宝[^\n]{1,60}',title)))
 
 
 def checked_snapshot(result, *, title=None):
@@ -85,6 +94,9 @@ def detail(result, title):
 
 def observe(db, *, title=None):
     from app.services import web_agent_service
+    if title is not None and not valid_detail_title(title):
+        return {'ok': False, 'error': 'exact_visible_campaign_title_required',
+                'legacy_fallback': False, 'platform_write': False}
     # On-demand start is bounded; the scheduler's persisted 72-hour timestamp
     # prevents repeated wake attempts when the user must restore login/service.
     online = web_agent_service.ensure_online(db, reason='campaign_official_discovery', wait_s=60)
@@ -93,9 +105,6 @@ def observe(db, *, title=None):
                 'legacy_fallback': False, 'platform_write': False}
     body = {'stage': 'detail' if title is not None else 'home', 'expected_shop': SHOP}
     if title is not None:
-        if not isinstance(title, str) or not re.fullmatch(r'(?:20\d{2}年|\d{2}年)淘宝[^\n]{1,60}', title):
-            return {'ok': False, 'error': 'exact_visible_campaign_title_required',
-                    'legacy_fallback': False, 'platform_write': False}
         body['title'] = title
     result = web_agent_service._post_raw(db, '/api/campaign/continuous/observe', body, timeout=30)
     try:

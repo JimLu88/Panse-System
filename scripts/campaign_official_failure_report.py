@@ -18,6 +18,7 @@ LIST = re.compile(r'您的sku[：:]\s*(.*?)\s+在管控期标价为([\d.]+)元')
 APPROVED = re.compile(r'需小于审核通过值[（(]([\d.]+)[）)].*?skuId[：:]\s*(\d+)', re.I)
 INVALID = re.compile(r'SKUID\s*=\s*(\d+)不属于当前商品或已下架', re.I)
 DOWN_ONLY = re.compile(r'当前商品活动价可下调不可上调[，,\s]*skuId[：:]\s*(\d+)',re.I)
+NO_SALES_VERDICT = re.compile(r'您的资质[：:\s]*近60天销售件数\s*0\s*件')
 
 
 def attributes(name):
@@ -109,9 +110,10 @@ def parse_feedback(raw, *, expected_sha, batch, expected_items, official_counts=
         names = defaultdict(list)
         for row in group['rows']:
             names[attributes(row['name'])].append(row)
-        # No-sales is a product-wide terminal for this campaign only. Preserve
-        # all raw reasons, but do not repair prices on an ineligible product.
-        if any('动销' in m and '不予准入' in m for m in group['messages']):
+        # The standard rule paragraph appears even when this product failed
+        # only its price check. Require the official product-specific zero-
+        # sales verdict before excluding the whole item from this campaign.
+        if any(NO_SALES_VERDICT.search(m) for m in group['messages']):
             errors.append(dict(item=item,sku='',kind='no_sales',terminal='failed',batch=str(batch),
                 message='\n'.join(group['messages']),official_evidence={'sha256':actual_sha,
                 'sheet':'商品SKU导入列表','product_row':group['rows'][0]['row']}))
