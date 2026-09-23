@@ -10,6 +10,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import campaign_generation_checkpoint as checkpoint
 from campaign_continuous_policy import fingerprint
 import campaign_failure_remediation
+from campaign_entry_authority import file_sha
 
 
 def make_action(tmp_path,code,*,context=False,overlay=False,owner=None):
@@ -61,3 +62,34 @@ def test_owned_checkpoint_requires_controller_owned_mode(tmp_path,monkeypatch):
     monkeypatch.setattr(campaign_failure_remediation,'verified_code_aliases',lambda snapshot:None)
     assert checkpoint.can_rebuild(folder) is False
     assert checkpoint.can_rebuild(folder,allow_owned=True) is True
+
+
+def test_typeerror_after_projection_is_only_local_signed_exclusion_retry(tmp_path,monkeypatch):
+    folder=make_action(tmp_path,'TypeError',overlay=True)
+    evidence=tmp_path/'exclusion.json';evidence.write_text('{"official":true}')
+    ref={'path':str(evidence),'sha256':file_sha(evidence)}
+    saved=json.loads((folder/'request.json').read_text())
+    saved['payload']['corrections']={'100':[{'repair':{'kind':'exclude_ineligible_sku',
+                                                    'scope_evidence':ref}}]}
+    (folder/'request.json').write_text(json.dumps(saved))
+    with sqlite3.connect(folder.parents[3]/'controller.sqlite3') as db:
+        db.execute('UPDATE continuous_campaign_actions SET payload_sha=? WHERE id=?',
+                   (fingerprint(saved['payload']),folder.name))
+    master=tmp_path/'master.xlsx';master.write_bytes(b'master')
+    projected=folder/'fixed-master-current-skus.xlsx';projected.write_bytes(b'projected')
+    overlay=folder/'official-mapping-overlay.json'
+    (folder/'snapshot-with-id-overlay.json').write_text(json.dumps({
+        'official_mapping_overlay':{'path':str(overlay),'sha256':file_sha(overlay)}}))
+    (folder/'fixed-projection.json').write_text(json.dumps({
+        'master_path':str(master),'master_sha256':file_sha(master),
+        'projection_path':str(projected),'projection_sha256':file_sha(projected),
+        'platform_write':False}))
+    checked=[]
+    monkeypatch.setattr(campaign_failure_remediation,'excluded_pairs',
+                        lambda refs:checked.append(refs) or {('100','sku')})
+    monkeypatch.setattr(campaign_failure_remediation,'mapped_erp_rows',
+                        lambda snapshot:checked.append(snapshot))
+    assert checkpoint.can_rebuild(folder) is True
+    assert checked[0]==[ref] and isinstance(checked[1],dict)
+    projected.write_bytes(b'changed')
+    assert checkpoint.can_rebuild(folder) is False

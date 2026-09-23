@@ -34,4 +34,35 @@ def can_rebuild(folder, *, allow_owned=False):
         from campaign_failure_remediation import verified_code_aliases
         verified_code_aliases(load(folder.parents[1]/'resolved-snapshot.json'))
         return True
+    if diagnostic==('TypeError',):
+        # The fixed-template projection was written, but the legacy context
+        # builder treated a signed exclusion {path,sha256} as a Path. This is
+        # still before files/, a bundle, or any platform claim. Verify the
+        # exact local inputs and official exclusion before rebuilding.
+        if ((folder/'files-input-context.json').exists() or (folder/'claim.json').exists()
+                or not (folder/'fixed-projection.json').is_file()
+                or not (folder/'fixed-master-current-skus.xlsx').is_file()
+                or not (folder/'snapshot-with-id-overlay.json').is_file()
+                or not (folder/'official-mapping-overlay.json').is_file()):
+            return False
+        from campaign_entry_authority import file_sha
+        projection=load(folder/'fixed-projection.json')
+        if (projection.get('platform_write') is not False
+                or projection.get('projection_path')!=str(folder/'fixed-master-current-skus.xlsx')
+                or file_sha(projection['projection_path'])!=projection.get('projection_sha256')
+                or file_sha(projection['master_path'])!=projection.get('master_sha256')):
+            return False
+        snapshot=load(folder/'snapshot-with-id-overlay.json')
+        overlay=snapshot.get('official_mapping_overlay') or {}
+        if (overlay.get('path')!=str(folder/'official-mapping-overlay.json')
+                or file_sha(overlay['path'])!=overlay.get('sha256')):
+            return False
+        refs={tuple(sorted(d['repair']['scope_evidence'].items()))
+              for decisions in saved['payload'].get('corrections',{}).values()
+              for d in decisions if d.get('repair',{}).get('kind')=='exclude_ineligible_sku'}
+        if not refs:return False
+        from campaign_failure_remediation import excluded_pairs, mapped_erp_rows
+        if not excluded_pairs([dict(ref) for ref in refs]):return False
+        mapped_erp_rows(snapshot)
+        return True
     return False

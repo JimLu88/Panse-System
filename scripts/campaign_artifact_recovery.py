@@ -14,8 +14,18 @@ def input_context(args):
     def ref(path):
         if not path:
             return None
+        if isinstance(path, dict):
+            if set(path) != {'path', 'sha256'}:
+                raise ValueError('artifact_evidence_reference_invalid')
+            expected = path['sha256']
+            path = path['path']
+        else:
+            expected = None
         path = Path(path)
-        return {'path': str(path.resolve()), 'sha256': file_sha(path)}
+        actual = file_sha(path)
+        if expected is not None and actual != expected:
+            raise ValueError('artifact_evidence_reference_changed')
+        return {'path': str(path.resolve()), 'sha256': actual}
 
     def items(value):
         return sorted(set(value.split(','))) if value is not None else None

@@ -12,7 +12,7 @@ from unittest.mock import Mock
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from campaign_artifact_recovery import ensure_generated
+from campaign_artifact_recovery import ensure_generated, input_context
 from campaign_continuous_flow import Store, run, Blocked
 from campaign_continuous_policy import RULE_SHA, ENTRY, fingerprint
 from campaign_continuous_transport import CampaignTransport, persist
@@ -55,6 +55,17 @@ def test_reuses_real_bundle_bytes_without_second_generation(case):
     assert ensure_generated(case.args,case.a,generator=forbidden)==first
     assert [(p,p.read_bytes(),p.stat().st_mtime_ns) for p,_,_ in before]==before
     assert case.a.db.execute('SELECT COUNT(*) FROM attempts').fetchone()[0]==0
+
+
+def test_signed_exclusion_reference_is_bound_without_type_error(case):
+    source=case.root/'official-exclusion.json';source.write_text('{"fixture":true}')
+    ref={'path':str(source),'sha256':file_sha(source)}
+    case.args.sku_exclusion_receipts=[ref]
+    context=input_context(case.args)
+    assert context['exclusions']==[{'path':str(source.resolve()),'sha256':ref['sha256']}]
+    source.write_text('{"changed":true}')
+    with pytest.raises(ValueError,match='artifact_evidence_reference_changed'):
+        input_context(case.args)
 
 
 def test_consumed_claim_does_not_repartition_when_old_offer_observation_expires(case):
