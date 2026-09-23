@@ -147,6 +147,71 @@ def excluded_pairs(refs):
     return result
 
 
+def _verified_legacy_backup_alias(snapshot, document, row):
+    """Recheck old signed alias receipts against their pinned official export.
+
+    Older receipts pinned the complete export at document level rather than
+    repeating a source on each row. They are not amended or trusted by suffix.
+    """
+    from campaign_product_scope import parse_export
+    item,sku,code=(str(row[k]) for k in ('item','sku','official_sku_code'))
+    erp=[r for r in snapshot['all_erp_rows'] if r['code']==row['erp_code']
+         and item in {str(r.get('item')),str(r.get('product_item_id')),
+                      *map(str,r.get('product_alt_item_ids') or [])}
+         and sku in {str(r.get('sku')),*map(str,r.get('alt') or [])}]
+    if len(erp)!=1:raise ValueError('backup_alias_erp_binding_not_unique')
+
+    if document.get('official_export_evidence'):
+        ref=document['official_export_evidence']
+        path=Path(ref['path']).resolve(strict=True)
+        if file_sha(path)!=ref['sha256']:raise ValueError('backup_alias_source_changed')
+        export=load(path)
+        files=export.get('files') or []
+        if (export.get('state')!='downloaded' or item not in export.get('observed_item_ids',[])
+                or len(files)!=export.get('page_count')
+                or len(set(export['observed_item_ids']))!=export.get('observed_total')):
+            raise ValueError('backup_alias_official_export_incomplete')
+        matching=[f for f in files if item in f.get('scope',{}).get('item_ids',[])]
+        if len(matching)!=1 or matching[0]['scope'].get('on_sale') is not True:
+            raise ValueError('backup_alias_official_item_not_unique')
+        source=matching[0]
+    elif document.get('source') and document.get('source_sha256'):
+        path=Path(document['source']).resolve(strict=True)
+        if path.name!='scope.json' or file_sha(path)!=document['source_sha256']:
+            raise ValueError('backup_alias_source_changed')
+        scope=load(path)
+        facts=[f for f in scope.get('sku_facts',[]) if
+               (str(f['facts']['item']),str(f['facts']['sku']),str(f['facts']['sku_code']))==(item,sku,code)]
+        if (scope.get('complete') is not True or len(facts)!=1
+                or scope.get('observed_item_count')!=len(scope.get('platform_rows',[]))
+                or item not in {str(p['item']) for p in scope['platform_rows']}):
+            raise ValueError('backup_alias_official_scope_incomplete')
+        export=load(path.with_name('result.json'))
+        files=export.get('files') or []
+        source_shas={s['sha256'] for s in facts[0]['sources']}
+        if (export.get('state')!='downloaded' or len(files)!=export.get('page_count')
+                or export.get('observed_total')!=scope['observed_item_count']
+                or set(export.get('observed_item_ids',[]))!={str(p['item']) for p in scope['platform_rows']}):
+            raise ValueError('backup_alias_official_export_incomplete')
+        matching=[f for f in files if f.get('sha256') in source_shas
+                  and item in f.get('scope',{}).get('item_ids',[])]
+        if len(matching)!=1 or matching[0]['scope'].get('on_sale') is not True:
+            raise ValueError('backup_alias_official_item_not_unique')
+        source=matching[0]
+        if source['sha256'] not in set(scope['source_sha256'] if isinstance(scope['source_sha256'],list)
+                                       else [scope['source_sha256']]):
+            raise ValueError('backup_alias_scope_file_changed')
+    else:
+        raise ValueError('backup_alias_provenance_missing')
+
+    raw=Path(source['path']).resolve(strict=True)
+    if raw.parent!=path.parent or file_sha(raw)!=source['sha256']:
+        raise ValueError('backup_alias_source_changed')
+    found=[r for r in parse_export(raw.read_bytes()) if
+           (r['item'],r['sku'],r['sku_code'])==(item,sku,code)]
+    if len(found)!=1:raise ValueError('backup_alias_not_in_official_export')
+
+
 def verified_code_aliases(snapshot):
     """Exact registered backup codes only; never strip a B1/B2 suffix by guess."""
     result=set()
@@ -162,9 +227,11 @@ def verified_code_aliases(snapshot):
         if doc.get('status')!='verified_partial_mapping_restored':raise ValueError('backup_alias_not_verified')
         for row in doc['restored']:
             if not row.get('official_sku_code'):continue
-            if not row.get('alias_evidence'):raise ValueError('backup_alias_provenance_missing')
-            for source in row['alias_evidence']:
-                if file_sha(source['path'])!=source['sha256']:raise ValueError('backup_alias_source_changed')
+            if row.get('alias_evidence'):
+                for source in row['alias_evidence']:
+                    if file_sha(source['path'])!=source['sha256']:raise ValueError('backup_alias_source_changed')
+            else:
+                _verified_legacy_backup_alias(snapshot,doc,row)
             result.add((row['item'],row['sku'],row['erp_code'],row['official_sku_code']))
     return result
 
