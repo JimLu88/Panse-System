@@ -1,0 +1,106 @@
+{
+  "schema": "campaign_user_established_fixed_baseline_v1",
+  "established_at": "2026-09-23T12:19:36+08:00",
+  "source_thread_id": "01a03341-b2cd-7810-92f3-66fad189521d",
+  "user_verbatim": "定制sku的话可以。",
+  "authorization_provenance": "Direct reply to the immediately preceding exact list of seven custom SKU IDs and current ERP prices.",
+  "scope": "Only these seven exact item/SKU/code/price rows. Existing baselines, ERP daily prices, prior successful or unknown claims, and other products are unchanged.",
+  "first_ever_historical_record_claimed": false,
+  "policy": "Establish each listed current ERP price once as the approved custom original. Keep its exact 20 percent floor across later reductions and verified replacements; never rebase it after a price change.",
+  "erp_readback": {
+    "method": "campaign_price_snapshot.load_rows, NAS PostgreSQL repeatable-read read-only transaction",
+    "checked_at": "2026-09-23T12:19:36+08:00",
+    "total_erp_rows": 713,
+    "exact_matches": 7,
+    "all_custom_and_on_sale": true,
+    "all_prices_equal_user_list": true,
+    "database_write": false,
+    "platform_write": false
+  },
+  "rows": [
+    {
+      "item": "717780219729",
+      "sku": "5182259562550",
+      "erp_code": "PPS2341003020198",
+      "name": "云起升降桌-樱桃木其他尺寸定制咨询",
+      "current_erp_daily": "1000.00",
+      "fixed_original_record": "1000.00",
+      "fixed_floor": "200.00",
+      "minimum_submittable_price": "200.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "717780219729",
+      "sku": "5182259562551",
+      "erp_code": "PPS2341003020199",
+      "name": "云起升降桌-黑胡桃木材质定制咨询",
+      "current_erp_daily": "2000.00",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "minimum_submittable_price": "400.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793135173033",
+      "sku": "6222325235939",
+      "erp_code": "PPS2421004051398",
+      "name": "畔色实木餐桌-尺寸微定制",
+      "current_erp_daily": "1500.00",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "minimum_submittable_price": "300.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793135173033",
+      "sku": "5436201349833",
+      "erp_code": "PPS2421004051399",
+      "name": "畔色实木餐桌-定制专拍",
+      "current_erp_daily": "2000.00",
+      "fixed_original_record": "2000.00",
+      "fixed_floor": "400.00",
+      "minimum_submittable_price": "400.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793128577437",
+      "sku": "5436206809703",
+      "erp_code": "PPS2421006050199",
+      "name": "畔色圆桌-定制专拍",
+      "current_erp_daily": "5000.00",
+      "fixed_original_record": "5000.00",
+      "fixed_floor": "1000.00",
+      "minimum_submittable_price": "1000.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "797139954559",
+      "sku": "6221853678797",
+      "erp_code": "PPS2438002051099",
+      "name": "拉手床头柜-整装尺寸微定制",
+      "current_erp_daily": "1500.00",
+      "fixed_original_record": "1500.00",
+      "fixed_floor": "300.00",
+      "minimum_submittable_price": "300.00",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    },
+    {
+      "item": "793554793170",
+      "sku": "5605000579544",
+      "erp_code": "PPS2438003050113",
+      "name": "洞洞板床头柜-整装黑胡桃木",
+      "current_erp_daily": "2897.00",
+      "fixed_original_record": "2897.00",
+      "fixed_floor": "579.40",
+      "minimum_submittable_price": "579.40",
+      "floor_provenance": "user_established_exact_current_erp_price_20260923",
+      "first_ever_historical_record_claimed": false
+    }
+  ]
+}
