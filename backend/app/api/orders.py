@@ -422,6 +422,29 @@ def repush_factory(order_id: int, db: Session = Depends(get_db)):
     return r
 
 
+class LegacySingleLineDeliveryRequest(BaseModel):
+    expected_order_no: str
+    sub_order_no: str
+    dry_run: bool = True
+
+
+@router.post("/{order_id}/deliver-unsent-legacy-single-line")
+def deliver_unsent_legacy_single_line(
+    order_id: int, request: LegacySingleLineDeliveryRequest, db: Session = Depends(get_db),
+):
+    """Explicit, one-order recovery; preserves the old baseline and never scans peers."""
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(404, "order not found")
+    if order.order_no != request.expected_order_no:
+        raise HTTPException(409, "order identity changed")
+    from app.services import order_sheet_archive_service as sheets
+    return sheets.deliver_unsent_legacy_single_line(
+        db, order_no=order.order_no, sub_order_no=request.sub_order_no,
+        dry_run=request.dry_run,
+    )
+
+
 class CostLineOut(BaseModel):
     material_code: str
     material_name: Optional[str]

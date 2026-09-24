@@ -1760,6 +1760,91 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
             "factory_no": o.factory_no, "order_label": order_flags.factory_label(o)}
 
 
+def deliver_unsent_legacy_single_line(
+    db: Session, *, order_no: str, sub_order_no: str, dry_run: bool = True,
+) -> dict:
+    """Recover one verified, never-delivered pre-numbering order via the child-line sender.
+
+    The ordinary repush endpoint deletes the old render before trying to send and
+    cannot deliver an unactivated order dated before the numbering cutoff.  This
+    opt-in route leaves that historical render intact.  It refuses any prior or
+    uncertain delivery, any sibling import line, or a mismatched child identity.
+    """
+    from app.services import order_flags
+    from app.services import order_line_delivery_service as lines
+
+    order = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if order is None:
+        return {"ok": False, "error": "订单不存在"}
+    if (order.order_date is None or order.order_date >= _AUTO_NUMBER_SINCE
+            or order.factory_no is not None or order.is_refill):
+        return {"ok": False, "error": "不是未编号的历史正式订单"}
+    if not _is_active_factory_order(order) or not _is_paid(order) or _is_refunded(order):
+        return {"ok": False, "error": "订单未处于可生产的已付款状态"}
+    if order_flags.is_factory_remote(order) or order_flags.is_remote(order):
+        return {"ok": False, "error": "订单仍处于远期挂起"}
+    if not _addr_ok_for_factory(order) and not _can_push_production_only_without_address(order):
+        return {"ok": False, "error": "收货地址不完整，未发送"}
+    imported = db.execute(select(OrderDetail).where(
+        OrderDetail.order_no == order_no, OrderDetail.source == "import",
+    )).scalars().all()
+    if len(imported) != 1 or str(imported[0].sub_order_no or "") != sub_order_no:
+        return {"ok": False, "error": "导入子单不是唯一且精确匹配，未发送"}
+    line = imported[0]
+    if (not line.sku_code or not line.qty or int(line.qty) <= 0
+            or not lines.line_is_factory_eligible(db, line, order)):
+        return {"ok": False, "error": "子单SKU、数量或生产资格未通过"}
+    if (line.factory_delivery_required or line.factory_no is not None
+            or line.factory_delivery_state not in (None, "", "failed")
+            or line.factory_delivery_message_id):
+        return {"ok": False, "error": "子单已有发送任务、工厂编号或结果不明，未重发"}
+    historical = db.execute(select(ImportedFile).where(
+        ImportedFile.kind.in_(("order_sheet", "order_sheet_sent")),
+    )).scalars().all()
+    old_sheets = []
+    for record in historical:
+        summary = record.row_summary or {}
+        record_no = str(summary.get("order_no") or "") or _order_no_from_name(record.original_filename)
+        if record_no != order_no:
+            continue
+        if record.kind == "order_sheet_sent" or summary.get("pushed") is True:
+            return {"ok": False, "error": "已有送达证据，未重复发送"}
+        if str(summary.get("delivery_state") or "") in {
+            "sending", "sending_caption", "sending_image", "uncertain", "sent",
+        }:
+            return {"ok": False, "error": "历史发送结果不明，未重复发送"}
+        old_sheets.append(record.id)
+    if not old_sheets:
+        return {"ok": False, "error": "缺少历史制单图基线，未自动补推"}
+    result = {"ok": True, "order_no": order_no, "sub_order_no": sub_order_no,
+              "old_sheet_ids_preserved": old_sheets, "dry_run": dry_run}
+    if dry_run:
+        return result
+
+    # Claim only this verified row. The line sender then makes its own atomic
+    # rendering/sending claim and holds uncertain outcomes against replay.
+    claimed = db.execute(update(OrderDetail).where(
+        OrderDetail.id == line.id,
+        OrderDetail.factory_delivery_required.is_(False),
+        OrderDetail.factory_no.is_(None),
+        or_(OrderDetail.factory_delivery_state.is_(None),
+            OrderDetail.factory_delivery_state.in_(("", "failed"))),
+        OrderDetail.factory_delivery_message_id.is_(None),
+    ).values(factory_delivery_required=True))
+    if claimed.rowcount != 1:
+        db.rollback()
+        return {"ok": False, "error": "子单状态已变化，未发送"}
+    db.commit()
+    delivery = reconcile_order_line_delivery(db, limit=1, only_sub_order_nos={sub_order_no})
+    db.expire_all()
+    line = db.execute(select(OrderDetail).where(OrderDetail.id == line.id)).scalar_one()
+    return {**result, "dry_run": False,
+            "ok": line.factory_delivery_state == "sent" and bool(line.factory_delivery_message_id),
+            "delivery": delivery, "factory_no": line.factory_no,
+            "delivery_state": line.factory_delivery_state,
+            "message_id": line.factory_delivery_message_id}
+
+
 def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | None" = None) -> dict:
     """已推工厂、但现在已延期/远期(挂起)的单 → 作废旧工厂号 + 通知工厂勿做 + 清号挂起 (用户 2026-07-08)。
 
