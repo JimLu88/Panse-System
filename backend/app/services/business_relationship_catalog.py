@@ -111,6 +111,8 @@ NODES = [
     node('finance.dashboard','月度大盘销售占比','finance','sales_mix','services/dashboard_monthly_service.py','def sales_mix'),
     node('finance.cache','销售缓存与来源指纹','finance','SalesDailyRollup','services/sales_rollup_service.py','def query_summary'),
     node('finance.closeout','限定派生修复与待核实台账','finance','source-bound closeout','services/multi_child_closeout_service.py','def apply'),
+    node('finance.source_recovery','单账户登录续跑证据','finance','finance_task_success','services/agent_ingest_service.py','def start_pending_scans',note='主力号恢复只更新本账户；不代表聚合账单、万师傅等其他来源成功'),
+    node('finance.pipeline_completion','全部流水来源完成','finance','flow_pull.success','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',note='全部所需来源具备当日持久入库证据才关闭总任务'),
     node('stock.demand','逐子SKU需求预测','stock','DemandObservation','services/inventory_demand_service.py','def load_observations'),
 ]
 
@@ -125,6 +127,7 @@ EDGES = [
     edge('marketing.feedback_read','marketing.feedback_judgment','完整新内容进入语义判读','两个来源登录、分页、范围和身份核验完成','失败不是零负面；未判读回答不视为好评。跨程序来源及定时启用另行验收','services/feedback_notification_service.py','def capability',kind='boundary',evidence='review'),
     edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
     edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),
+    edge('finance.source_recovery','finance.pipeline_completion','按全来源证据收口','逐来源入库成功','单账户扫码成功不能抹掉其他来源失败或隔离文件','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',kind='protect'),
     edge('order.parent','stock.ship_movement','读取母单扣成品现货','有产品/订单ID且原事件尚未记账、有正现货','核对母单qty与全部有效子行；无现货no-op不等于已发齐','services/product_stock_ledger_service.py','def record_shipment'),
     edge('order.child','stock.ship_movement','多子SKU库存覆盖缺口','当前函数读取母单product_code/sku/qty','逐子SKU实际库存扣减未在此入口证明，不能用图或表已同步替代','services/product_stock_ledger_service.py','def record_shipment',kind='gap',evidence='gap'),
     edge('stock.finished','stock.ship_movement','选择可扣现货行','SKU精确匹配优先，否则回退现货最多行','规格回退不等于精确匹配；扣减上限为现存量','services/product_stock_ledger_service.py','def _pick_stock_row',evidence='review'),

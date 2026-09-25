@@ -1111,7 +1111,7 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
     }]
 
 
-def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):
+def test_successful_main_flow_scan_does_not_close_other_sources(monkeypatch):
     dummy = _DummyDb()
     saved_values: dict[str, str] = {}
     recovered: list[tuple[str, str]] = []
@@ -1187,9 +1187,7 @@ def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):
     scan_result = json.loads(saved_values[ai.KEY_SCAN_RESULTS])
     assert scan_result[ai.MAIN_ALIPAY_FLOW_TASK]["status"] == "success"
     assert datetime.fromisoformat(state[ai.STATE_MAIN_ALIPAY_FLOW])
-    assert recovered == [
-        ("flow_pull", "扫码后主力号流水已下载并完成入库"),
-    ]
+    assert recovered == []
     assert ingest_calls[0] == {"only_paths": ["main-flow.xlsx"]}
     assert ingest_calls[1] == {}
 
@@ -1261,7 +1259,7 @@ def test_main_flow_current_import_ignores_historical_global_failures(monkeypatch
         "pending": 0,
         "errors": 0,
     }
-    assert recovered == ["flow_pull"]
+    assert recovered == []
 
 
 def test_main_flow_download_does_not_close_retry_when_ingest_fails(monkeypatch):

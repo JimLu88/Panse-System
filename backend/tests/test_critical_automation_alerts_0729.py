@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -16,6 +17,23 @@ from app.services import (
 
 
 TZ = timezone(timedelta(hours=8))
+
+
+@pytest.mark.parametrize('missing', ['wanshifu', 'wechat_bill', 'all_except_main'])
+def test_single_account_recovery_cannot_close_incomplete_finance(db_session, monkeypatch, missing):
+    pipeline.record_failure(db_session, 'flow_pull', '流水待修复', retry_slots=[])
+    now = datetime.now().isoformat(timespec='seconds')
+    tasks = set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS)
+    fresh = ({agent_ingest_service.MAIN_ALIPAY_FLOW_TASK} if missing == 'all_except_main' else tasks - {missing})
+    monkeypatch.setattr(scheduler, '_fresh_finance_browser_tasks', lambda db: fresh)
+    settings_service.set_value(db_session, agent_ingest_service.KEY_STATE, json.dumps({
+        agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW: now,
+        agent_ingest_service.STATE_MAIN_ALIPAY_FLOW: now,
+    }))
+    db_session.flush()
+    result = scheduler._reconcile_finance_success_from_persisted_evidence(db_session)
+    assert 'flow_pull' not in result['closed']
+    assert pipeline._load(db_session)['pipelines']['flow_pull']['success'] is False
 
 
 def _at(hour: int, minute: int = 0) -> datetime:

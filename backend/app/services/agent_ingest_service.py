@@ -675,20 +675,8 @@ def start_pending_scans(db: Session) -> dict:
                 state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
                 _save_json(d, KEY_STATE, state)
                 d.commit()
-                # 扫码是原财务失败链的人工续跑。成功证据落地后当场销账，
-                # 后续定时器便不会继续拿旧 failures 弹重试通知。
-                try:
-                    from app.services import automation_pipeline_service
-
-                    automation_pipeline_service.record_success(
-                        d,
-                        "flow_pull",
-                        success_detail="扫码后主力号流水已下载并完成入库",
-                    )
-                    d.commit()
-                except Exception:  # noqa: BLE001
-                    d.rollback()
-                    _log.exception("扫码成功后关闭主力号流水重试链失败")
+                # Only this account recovered. The shared flow pipeline closes
+                # below, after ALL finance sources have persisted evidence.
             if done:
                 # 余额扫码也要用已落库的逐账户日期关闭 waiting_input；否则虽然
                 # 截图已成功，定时器仍会保留旧的“等待扫码”状态。这里只采信
@@ -712,6 +700,7 @@ def start_pending_scans(db: Session) -> dict:
                         "bal_taobao_aggregate": "淘宝聚合账户余额",
                         "bal_ads": "推广账户余额",
                         "bal_wanshifu": "万师傅余额",
+                        "wanshifu": "万师傅账单",
                         "taobao_orders": "淘宝订单报表",
                     }
                     detail = "\n".join(
@@ -720,7 +709,11 @@ def start_pending_scans(db: Session) -> dict:
                     )
                     notify_service.notify(
                         d,
-                        detail + "\n失败任务已保留；请在本飞书提醒群 @Panse System 回复“扫码”重试。",
+                        detail + (
+                            "\n失败任务已保留；万师傅需确认淘宝授权，不是重新扫码。其他失败按上方具体原因处理。"
+                            if any("授权" in item["reason"] for item in failures)
+                            else "\n失败任务已保留；请在本飞书提醒群 @Panse System 回复“扫码”重试。"
+                        ),
                         level="warn",
                         title="畔色 ERP | 扫码续跑未完成",
                         wechat_allowed=True,
