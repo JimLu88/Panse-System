@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-22.1'
+VERSION = '2026-09-25.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -27,6 +27,9 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('marketing.feedback_read','千牛口碑只读巡检','marketing','Web-Agent feedback_patrol capture / official review rating / question-answer IDs','services/feedback_notification_service.py','def capability','外部程序 app/browser/feedback_patrol.py：中差评全部分页、所有问题下已展示回答；首次已有内容与新增分开。接口来源指纹不等于外部采集验收。'),
+    node('marketing.feedback_judgment','新增问答语义判断与内容去重','marketing','source + stable id + content revision / sentiment + reason','services/feedback_notification_service.py','def send_digest','外部固定发件箱与一次批量语义判读；问题不是回答；否定句、混合反馈、不确定需区分。无新内容静默，不自动回复或投诉。'),
+    node('sync.feedback_receipt','口碑飞书提醒群回执','sync','feedback_notice:<sha256> / message_id / sent or unknown','services/feedback_notification_service.py','def send_digest','先持久占位再发送；只发提醒群，不回退微信或工厂订单群。超时/崩溃未知不重发，不用HTTP成功代替message_id。'),
     node('automation.order_owner','订单原批次运行者核验','automation','recover_order_receipt','services/agent_ingest_service.py','def recover_order_receipt','running文件不等于任务存活；同attempt核对运行者，未知或中断不盲重导，不改财务或已推单'),
     node('stock.finished','成品现货与规格选择','stock','ProductInventory.physical_qty / sku','services/product_stock_ledger_service.py','def _pick_stock_row','现存规格回退分支需核实；不能视为精确子SKU库存证明'),
     node('stock.ship_movement','母单发货扣成品现货','stock','ProductStockMovement reason=ship entity=order','services/product_stock_ledger_service.py','def record_shipment','当前入口读取母单product_code/sku/qty，不证明多子SKU均已扣库'),
@@ -119,6 +122,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('marketing.feedback_read','marketing.feedback_judgment','完整新内容进入语义判读','两个来源登录、分页、范围和身份核验完成','失败不是零负面；未判读回答不视为好评。跨程序来源及定时启用另行验收','services/feedback_notification_service.py','def capability',kind='boundary',evidence='review'),
+    edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
+    edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),
     edge('order.parent','stock.ship_movement','读取母单扣成品现货','有产品/订单ID且原事件尚未记账、有正现货','核对母单qty与全部有效子行；无现货no-op不等于已发齐','services/product_stock_ledger_service.py','def record_shipment'),
     edge('order.child','stock.ship_movement','多子SKU库存覆盖缺口','当前函数读取母单product_code/sku/qty','逐子SKU实际库存扣减未在此入口证明，不能用图或表已同步替代','services/product_stock_ledger_service.py','def record_shipment',kind='gap',evidence='gap'),
     edge('stock.finished','stock.ship_movement','选择可扣现货行','SKU精确匹配优先，否则回退现货最多行','规格回退不等于精确匹配；扣减上限为现存量','services/product_stock_ledger_service.py','def _pick_stock_row',evidence='review'),
@@ -295,6 +301,8 @@ EDGES += [
 ]
 
 FLOWS = [
+    {'id':'customer-feedback','name':'店铺口碑：每周两次 → 中差评/问大家 → 去重判读 → 飞书提醒',
+     'steps':['marketing.feedback_read','marketing.feedback_judgment','sync.feedback_receipt']},
     {'id':'campaign-execution','name':'活动报名程序：官方发现 → ERP准备 → Web Agent → 官方对账 → 飞书',
      'steps':['campaign.entry','campaign.window','campaign.files','campaign.controller','campaign.attempt','campaign.receipt','campaign.reconcile','sync.campaign_terminal']},
     {'id':'campaign-exceptions','name':'活动失败处理：价格规则 → 基线 → 人工轮换 → 映射与重新核对',

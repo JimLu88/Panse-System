@@ -243,6 +243,26 @@ class AgentNotify(BaseModel):
     image_b64: Optional[str] = None  # 二维码/文件预览 PNG (base64)
 
 
+class FeedbackNotice(BaseModel):
+    notice_id: str
+    text: str
+
+
+@router.get('/feedback-notify-capabilities')
+def feedback_notify_capabilities(db: Session = Depends(get_db)):
+    from app.services.feedback_notification_service import capability
+    return capability(db)
+
+
+@router.post('/feedback-notify')
+def feedback_notify(payload: FeedbackNotice, db: Session = Depends(get_db)):
+    from app.services.feedback_notification_service import send_digest
+    try:
+        return send_digest(db, payload.notice_id, payload.text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 @router.get('/campaign-notify-capabilities')
 def campaign_notify_capabilities(db: Session = Depends(get_db)):
     return {'protocol':'campaign-terminal-feishu-v1',

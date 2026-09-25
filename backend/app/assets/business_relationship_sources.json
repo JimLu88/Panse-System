@@ -1,9 +1,9 @@
 {
-  "version": "2026-09-22.1",
+  "version": "2026-09-25.1",
   "reviewed_at": "2026-09-22T07:06:19.321075+00:00",
   "sources": {
     "backend/app/api/admin.py": "c1e10c6a08f790e814db6b511d2c09fc869ae8891f9c14649bde652741dc4489",
-    "backend/app/api/web_agent.py": "27543949b7efced87a8888ac0add62a6e653393c677d4956ee15e79895e26097",
+    "backend/app/api/web_agent.py": "3767391ffb07821babbeafd4c18ffeaa94dbb8db5b8dd483fbf9f80ae39a0ee2",
     "backend/app/dependencies.py": "d19f42bcd180520024064cda93af307dae8459972172712fc7ff9fe99efc3ee7",
     "backend/app/models/accounting_period.py": "50a75843947ea423698c9a54e043544b95859663bc97b8d5492aacfb32b17ebc",
     "backend/app/models/aftersales_payment.py": "5136b1dd1dfe603171beae455cc662fba6c8480ce3995bc55771b9c238ef2aab",
@@ -38,7 +38,8 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "702e89ff66a9166e61478b4ff6bcae530283302506fd8eb4843aafb1501fa1ad",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "c68bae143eeda0f09b31896e9bef03a5cab988075a77398628ac1d8cddaf0bef",
+    "backend/app/services/business_relationship_catalog.py": "f90d5594440df215a93ef3cac9de36385e6f6c9ee7a9131d303fd962b8c0d89c",
+    "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
     "backend/app/services/business_relationship_index.py": "3fe59dfb01482d53d8b648b5385936312302a421fd0e3a4edaef0ec8c748a929",
     "backend/app/services/business_relationship_service.py": "247ca3e4e757c1d27f704a82b912d1bb2beaeac4846ac94ccf0abf1c66d562fe",
     "backend/app/services/campaign_automation_service.py": "1045ac6e09a71b2fed81a109dd803f6a89c450631c593e670718894b6beff859",
