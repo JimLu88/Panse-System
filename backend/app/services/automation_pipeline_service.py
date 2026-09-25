@@ -64,9 +64,6 @@ _EXECUTION_FAILURE_PATTERNS = (
     "网络异常",
     "pc离线",
     "web-agent离线",
-    "503",
-    "502",
-    "429",
     "rate limit",
     "限流",
     "验证码",
@@ -154,7 +151,18 @@ def classify_failure(error: str) -> dict[str, str]:
             "reason": "deterministic_program_error",
             "retry_policy": "stop_and_review",
         }
-    if any(pattern in normalized for pattern in _EXECUTION_FAILURE_PATTERNS):
+    if any(pattern in normalized for pattern in (
+        "本sku专属尺寸未核实", "主订单汇总被作为子订单发送",
+    )):
+        return {
+            "owner": "execution",
+            "label": "订单资料与历史凭证核对",
+            "reason": "order_evidence_review_required",
+            "retry_policy": "wait_for_input",
+        }
+    # Bare substrings also match long order/SKU identifiers (e.g. ...5037339).
+    if (any(pattern in normalized for pattern in _EXECUTION_FAILURE_PATTERNS)
+            or re.search(r"(?<![\w])(?:503|502|429)(?![\w])", normalized)):
         return {
             "owner": "execution",
             "label": "执行端",
@@ -530,15 +538,16 @@ def record_failure(
 
     failures = int(entry.get("failures") or 0) + 1
     safe_error = _safe_error(error)
-    routing = classify_failure(safe_error)
+    routing = classify_failure(error)
     future_slots = sorted(_now(x) for x in retry_slots if _now(x) > current)
     program_failure = routing["owner"] == "program_maintenance"
+    evidence_blocked = routing["retry_policy"] == "wait_for_input"
     next_retry = (
         future_slots[0]
-        if not program_failure and future_slots and failures < max_failures
+        if not program_failure and not evidence_blocked and future_slots and failures < max_failures
         else None
     )
-    final = program_failure or failures >= max_failures or next_retry is None
+    final = program_failure or evidence_blocked or failures >= max_failures or next_retry is None
     label = PIPELINE_LABELS[pipeline]
 
     maintenance_item = None
@@ -560,6 +569,15 @@ def record_failure(
             "修复完成后再由正常计划或明确批准的补跑恢复。"
         )
         event = "program-maintenance"
+    elif evidence_blocked:
+        _supersede_pending_failure_notifications(state, pipeline, day, current)
+        text = (
+            f"⚠️ {day}【{label}】需要核对订单资料或历史凭证\n"
+            f"原因：{safe_error}\n"
+            "已停止对此问题按小时重试；已送达记录保留，不自动作废或整批重发。\n"
+            "核实缺项后仅补发确实未送达的子订单；历史凭证未核清不视为全部完成。"
+        )
+        event = "evidence-review"
     elif final:
         text = (
             f"❌ {day}【{label}】今日失败\n"
@@ -594,7 +612,7 @@ def record_failure(
         "failures": failures,
         "success": False,
         "final": final,
-        "waiting_input": False,
+        "waiting_input": evidence_blocked,
         "last_error": safe_error,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": next_retry.isoformat() if next_retry else None,
