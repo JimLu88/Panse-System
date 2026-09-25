@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-25.1'
+VERSION = '2026-09-26.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -88,6 +88,7 @@ NODES = [
     node('finance.actual','实际成本及账单','finance','Order.actual_cost / financial bills','services/order_financials.py','def physical_cost_breakdown'),
     node('finance.profit','利润与期间汇总','finance','net_profit / accounting_summary','services/order_financials.py','def accounting_summary'),
     node('finance.freight','整单运装费用','finance','LogisticsBill / installation bills','models/finance.py'),
+    node('finance.agg_settlement','聚合结算逐笔收支','finance','OrderSettlement.pay_no / order_no / income / expense','services/settlement_import_service.py','def import_bill','新旧账单订单列均须识别；按支付流水号幂等，非订单流水不得编造订单关联'),
     node('settlement.payment','支付流水与月结','settlement','FactorySettlementPayment','services/factory_settlement_service.py','def settle_month'),
     node('settlement.reverse','结算冲销','settlement','reverse_settlement','services/factory_settlement_service.py','def reverse_settlement'),
     node('settlement.period','会计期间与锁定','settlement','AccountingPeriod.status','models/accounting_period.py'),
@@ -124,6 +125,8 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('finance.agg_settlement','order.parent','以母订单号关联收款凭据','账单含淘宝订单编号或主订单id','原单号逐笔核对；没有订单列则拒绝导入，不将扣款或保证金误当订单收款','services/settlement_import_service.py','def import_bill'),
+    edge('finance.agg_settlement','automation.alert','为缺收款异常提供复核依据','同订单有聚合结算记录','按订单号核对后销账；流水入库不自动证明净额或全部结算正确','services/exception_recheck_service.py','def _check_order_missing_alipay'),
     edge('marketing.feedback_read','marketing.feedback_judgment','完整新内容进入语义判读','两个来源登录、分页、范围和身份核验完成','失败不是零负面；未判读回答不视为好评。跨程序来源及定时启用另行验收','services/feedback_notification_service.py','def capability',kind='boundary',evidence='review'),
     edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
     edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),

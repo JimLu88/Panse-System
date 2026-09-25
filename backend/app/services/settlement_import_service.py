@@ -68,7 +68,11 @@ def import_bill(db: Session, content: bytes, source: str = "wechat") -> dict:
 
     i_time = idx("入账时间", "交易时间")
     i_pay = idx("支付流水号", "流水号")
-    i_order = idx("淘宝订单编号", "订单编号", "商家订单号")
+    # 聚合结算旧版导出使用「主订单id」，新版使用「淘宝订单编号」。
+    # 缺失订单列时不得导入成一批无法关联订单的孤立流水。
+    i_order = idx("淘宝订单编号", "订单编号", "商家订单号", "主订单id", "主订单ID", "主订单号")
+    if i_order is None:
+        return {"error": "未找到订单号列(淘宝订单编号/主订单id)", "inserted": 0, "updated": 0}
     i_type = idx("入账类型", "交易分类")
     i_in = idx("收入金额", "收入")
     i_out = idx("支出金额", "支出")
