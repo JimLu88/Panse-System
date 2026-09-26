@@ -129,3 +129,11 @@ discount_bytes = fill_single_discount_rows(
 - `reserve_inventory_complete`、`reserve_inventory_evidence`：完整的当前范围证据才可确认缺口；ERP alt 为空、名称搜索无结果或历史记录不构成该证据。
 
 输出 `create_reserve_needed` 仅是确认缺口，仍非写入授权；当前一次性授权单独由执行回执限定两场失败范围。工具不要求每天运行，也不列入两表报名入口。
+# 2026-09-26 商品 SKU 导出固定复用入口
+
+先运行 `python scripts/campaign_sku_fact_store.py query`，自动找到已登记的最新原表、导出时间、
+索引更新时间、校验值和真实行数。已有本次原表时不要再次向用户索要或重复导出。
+新 `campaign_price_snapshot.py` 快照自动绑定这一版本；既有价格快照通过
+`campaign_sku_fact_store.py bind --snapshot <原快照> --output <新副本>` 固定同一证据。
+制表 `build_rows` 已读取绑定事实，保留 ERP 价格/主映射不变。完整合同见
+`campaign-sku-fact-store.md`。读取原件不表示在售范围或启用 SKU 已核验；冲突/空值不猜配。

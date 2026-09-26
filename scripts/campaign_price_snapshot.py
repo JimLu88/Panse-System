@@ -113,6 +113,8 @@ def main():
         snapshot=authority.resolve_snapshot(snapshot)
     finally:
         authority.close()
+    from campaign_sku_fact_store import bind_latest
+    snapshot = bind_latest(snapshot)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('x', encoding='utf-8') as stream:
         json.dump(snapshot, stream, ensure_ascii=False, indent=2)

@@ -60,6 +60,8 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
         raise ValueError('price_snapshot_changed')
     from campaign_failure_remediation import mapped_erp_rows
     erp=mapped_erp_rows(snapshot)
+    from campaign_sku_fact_store import FactResolver
+    facts = FactResolver(dict(snapshot, all_erp_rows=erp))
     index = {}
     for row in erp:
         item_ids = set(str(x) for x in [row.get('item'),row.get('product_item_id'),*(row.get('product_alt_item_ids') or [])] if x)
@@ -85,6 +87,12 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
         if not needs_signup and not needs_discount:
             continue
         matches = index.get(pair, [])
+        matches, fact_issue, fact_evidence = facts.resolve(*pair, matches)
+        if fact_issue:
+            issues.append(dict(**row_common, error=fact_issue, source=fact_evidence))
+            continue
+        if fact_evidence:
+            row_common['sku_fact_evidence'] = fact_evidence
         if len(matches) != 1:
             issues.append(dict(**row_common,error='erp_mapping_missing_or_not_unique',matches=len(matches)))
             continue
