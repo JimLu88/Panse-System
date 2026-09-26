@@ -89,6 +89,7 @@ NODES = [
     node('finance.actual','实际成本及账单','finance','Order.actual_cost / financial bills','services/order_financials.py','def physical_cost_breakdown'),
     node('finance.profit','利润与期间汇总','finance','net_profit / accounting_summary','services/order_financials.py','def accounting_summary'),
     node('finance.freight','整单运装费用','finance','LogisticsBill / installation bills','models/finance.py'),
+    node('finance.installation_lines','安装订单全部商品明细','finance','WanshifuOrder product_category / product_model / remark','services/wanshifu_order_service.py','def _coalesce_order_records','一个安装订单可有多行商品；保留全部类别型号，整单服务费不重复累加；订单级字段冲突在写入前阻断'),
     node('finance.agg_settlement','聚合结算逐笔收支','finance','OrderSettlement.pay_no / order_no / income / expense','services/settlement_import_service.py','def import_bill','新旧账单订单列均须识别；按支付流水号幂等，非订单流水不得编造订单关联'),
     node('settlement.payment','支付流水与月结','settlement','FactorySettlementPayment','services/factory_settlement_service.py','def settle_month'),
     node('settlement.reverse','结算冲销','settlement','reverse_settlement','services/factory_settlement_service.py','def reverse_settlement'),
@@ -129,6 +130,7 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('finance.installation_lines','finance.freight','保留商品明细并归一整单费用','万师傅导出包含同单多商品','全部明细保留；整单费用只记一次；不把商品序号当购买数量','services/wanshifu_order_service.py','def _coalesce_order_records'),
     edge('product.sku','product.taobao_links','按精确编码读取当前淘宝映射','产品精选/全列/SKU展开','不拼接不同款式ID，不用历史备用SKU；缺失与冲突可见','services/product_taobao_links.py','def build_link_maps'),
     edge('finance.agg_settlement','order.parent','以母订单号关联收款凭据','账单含淘宝订单编号或主订单id','原单号逐笔核对；没有订单列则拒绝导入，不将扣款或保证金误当订单收款','services/settlement_import_service.py','def import_bill'),
     edge('finance.agg_settlement','automation.alert','为缺收款异常提供复核依据','同订单有聚合结算记录','按订单号核对后销账；流水入库不自动证明净额或全部结算正确','services/exception_recheck_service.py','def _check_order_missing_alipay'),

@@ -1097,6 +1097,8 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
         from app.services import wanshifu_order_service
         wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True)
         rep = wanshifu_order_service.import_workbook(db, wb)
+        if rep.errors:
+            return ("wanshifu_orders", "error", _report_to_dict(rep))
         return ("wanshifu_orders", "imported", _report_to_dict(rep))
     if category == "balance":
         return _ocr_balance_to_db(db, path, raw)

@@ -42,6 +42,7 @@ _VERIFIED_NO_RE = re.compile(r"\d{15,}")
 # 表头第 2 行字段名 → 模型字段 (按列名取, 不按列号 — 万师傅加列不怕)
 _HEADER_MAP = {
     "订单编号": "wsf_order_no",
+    "商品序号": "product_sequence",
     "服务类目/类型": "service_type",
     "订单状态": "status",
     "商品类别": "product_category",
@@ -142,6 +143,35 @@ def parse_workbook(wb) -> tuple[list[dict], list[str]]:
     return out, missing
 
 
+def _coalesce_order_records(records: list[dict]) -> tuple[list[dict], list[str]]:
+    """One order total, all product lines. Conflicting order facts stop before writes."""
+    grouped: dict[str, dict] = {}
+    errors: list[str] = []
+    product_keys = {"product_category", "product_model", "product_sequence"}
+    for rec in records:
+        no = rec["wsf_order_no"]
+        target = grouped.setdefault(no, {"wsf_order_no": no, "_product_lines": []})
+        line = tuple(_s(rec.get(k)) for k in ("product_sequence", "product_category", "product_model"))
+        if any(line) and line not in target["_product_lines"]:
+            target["_product_lines"].append(line)
+        for key, value in rec.items():
+            if key in product_keys or _s(value) is None:
+                continue
+            norm = _dec if key in {"net_amount", "service_fee"} else (_dt if key in {"created_time", "finished_time"} else _s)
+            if key in target and norm(target[key]) != norm(value):
+                errors.append(f"万师傅订单 {no} 多行的 {key} 冲突，未导入，请核对原始报表")
+            else:
+                target[key] = value
+    for target in grouped.values():
+        lines = target["_product_lines"]
+        for key, index, limit in (("product_category", 1, 64), ("product_model", 2, 255)):
+            target[key] = (" / ".join(line[index] or "（未填）" for line in lines)
+                           if any(line[index] for line in lines) else None)
+            if target[key] and len(target[key]) > limit:
+                errors.append(f"万师傅订单 {target['wsf_order_no']} 商品明细超过字段长度，未导入，禁止截断")
+    return list(grouped.values()), errors
+
+
 def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> WsfImportReport:
     rep = WsfImportReport()
     recs, missing = parse_workbook(wb)
@@ -149,6 +179,10 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
         rep.errors.append(f"表头缺关键列 {missing}, 请确认是万师傅「订单导出」文件")
         return rep
     rep.parsed = len(recs)
+    recs, conflicts = _coalesce_order_records(recs)
+    if conflicts:
+        rep.errors.extend(conflicts)
+        return rep
     existing = {o.wsf_order_no: o for o in db.execute(select(WanshifuOrder)).scalars().all()}
     # 全部淘宝订单号 (用于判定「常用备注」里的单号是否真实存在 → 可直接配对)
     valid_order_nos = {no for (no,) in db.execute(select(Order.order_no)).all() if no}
@@ -187,6 +221,10 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
             remark_bits.append(f"淘宝单号:{tb_no}")
         if ww:
             remark_bits.append(f"旺旺号:{ww}")
+        if len(rec.get("_product_lines", [])) > 1:
+            remark_bits.append("原报表商品明细（非数量）:" + "; ".join(
+                f"序号={seq or '未填'},类别={category or '未填'},型号={model or '未填'}"
+                for seq, category, model in rec["_product_lines"]))
         if remark_bits:
             vals["remark"] = "; ".join(remark_bits)
         # 备注单号命中真实订单 → 直接配对 (权威, 覆盖启发式; 不覆盖人工指定)
