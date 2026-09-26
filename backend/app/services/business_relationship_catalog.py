@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-26.2'
+VERSION = '2026-09-26.3'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -116,7 +116,7 @@ NODES = [
     node('finance.pipeline_completion','全部流水来源完成','finance','flow_pull.success','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',note='全部所需来源具备当日持久入库证据才关闭总任务'),
     node('sync.review_refill','评价程序补单跟踪同步','sync','POST review-order-tracks / confirmed order_no','api/refill_sync.py','def sync_review_order_tracks','外部日期仅作订单后到时的暂存值；不继承人工财务记录覆盖权限'),
     node('after.refill_record','补单财务记录','after','RefillRecord.refill_date / order_amount / commission','models/finance.py','class RefillRecord','评价自动记录以ERP订单日期和实付为最终口径；人工记录不得被自动回填覆盖'),
-    node('finance.refill_transfer','刷单转款逐日对账','finance','refill_transfer:业务日-订单额/佣金','services/reconciliation_service.py','def run_refill_transfer','按业务日分别核对本金和佣金；部分付款保持待核，不能自动销账'),
+    node('finance.refill_transfer','刷单转款逐日对账','finance','refill_transfer:业务日-订单额/佣金','services/reconciliation_service.py','def run_refill_transfer','按业务日分别核对本金和佣金；徐晶晶按备注取业务日，核定替代收款方仅在两笔金额唯一精确匹配时认领'),
     node('stock.demand','逐子SKU需求预测','stock','DemandObservation','services/inventory_demand_service.py','def load_observations'),
 ]
 
@@ -137,7 +137,7 @@ EDGES = [
     edge('marketing.review','sync.review_refill','仅同步已确认的补单订单号','评价程序已确认且订单号有效','接口接收不证明订单报表已经入库；缺订单时保留待后续回填','api/refill_sync.py','def sync_review_order_tracks',kind='boundary'),
     edge('sync.review_refill','after.refill_record','幂等生成评价补单记录','同订单号未有记录，或已有评价自动记录','人工财务记录只补空白识别字段，不覆盖人工核定日期和金额','api/refill_sync.py','def sync_review_order_tracks',kind='protect'),
     edge('order.parent','after.refill_record','订单后到时回填业务日和实付','记录明确标记为评价系统自动同步且订单号精确匹配','Order.order_date和paid_amount为最终口径；不得据金额相似匹配其他订单','services/order_sync_service.py','def repair_review_refill_records'),
-    edge('after.refill_record','finance.refill_transfer','按业务日汇总订单额和佣金','非晶晶代付记录已排除','订单额与佣金分开核对；缺流水为待补依据，不冒充已付款','services/reconciliation_service.py','def run_refill_transfer'),
+    edge('after.refill_record','finance.refill_transfer','按业务日汇总订单额和佣金','徐晶晶备注日期，或核定替代收款方两笔金额唯一匹配最近三日差额','替代收款方必须本金与佣金成对且精确匹配；不唯一或单边金额不自动认领','services/reconciliation_service.py','def run_refill_transfer'),
     edge('finance.refill_transfer','automation.alert','写入并复核对账差异','逐日差额超过阈值','只有重算明确对平才自动关闭；部分付款和来源缺失继续保留','services/reconciliation_service.py','def _autoclose_resolved_diffs',kind='protect'),
     edge('order.parent','stock.ship_movement','读取母单扣成品现货','有产品/订单ID且原事件尚未记账、有正现货','核对母单qty与全部有效子行；无现货no-op不等于已发齐','services/product_stock_ledger_service.py','def record_shipment'),
     edge('order.child','stock.ship_movement','多子SKU库存覆盖缺口','当前函数读取母单product_code/sku/qty','逐子SKU实际库存扣减未在此入口证明，不能用图或表已同步替代','services/product_stock_ledger_service.py','def record_shipment',kind='gap',evidence='gap'),

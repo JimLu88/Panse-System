@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal, Optional
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.finance import (
@@ -561,7 +562,190 @@ def run_refill_compensation(
 # 支付宝流水 remark = '{月.日}-b流水'(当日订单额汇总) / '{月.日}-Y'(当日佣金汇总), 两笔分开转。
 # 本规则核对: 账上该转(补单按 refill_date 汇总) ↔ 实际转(支付宝转徐晶晶), 订单额/佣金各一条。
 
-_REFILL_PAYEE = "%晶晶%"   # 中间人对手方 LIKE (用户拍板 2026-06-19: 每次都是徐晶晶; 用 LIKE 兼容 sqlite 测试)
+_REFILL_PAYEE = "%晶晶%"   # 中间人对手方 LIKE (用 LIKE 兼容掩码和 sqlite 测试)
+_ALT_REFILL_PAYEES = ("俩仟万设计理念店",)
+_ALT_REFILL_LOOKBACK_DAYS = 3
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
+
+@dataclass(frozen=True)
+class _AlternateRefillAssignment:
+    flow_id: int
+    business_date: date
+    kind: Literal["order_amount", "commission"]
+    amount: Decimal
+
+
+def _money(value) -> Decimal:
+    return Decimal(str(value or 0)).quantize(Decimal("0.01"))
+
+
+def _refill_expected_totals(
+    db: Session,
+) -> tuple[dict[date, Decimal], dict[date, Decimal], dict[date, Decimal], dict[date, Decimal]]:
+    """返回全部补单与徐晶晶常规批次口径，供替代收款方精确补齐差额。"""
+    from collections import defaultdict
+
+    all_amt: dict[date, Decimal] = defaultdict(Decimal)
+    all_comm: dict[date, Decimal] = defaultdict(Decimal)
+    regular_amt: dict[date, Decimal] = defaultdict(Decimal)
+    regular_comm: dict[date, Decimal] = defaultdict(Decimal)
+    rows = db.execute(
+        select(
+            RefillRecord.refill_date,
+            RefillRecord.order_amount,
+            RefillRecord.commission,
+            RefillRecord.fee_remark,
+        ).where(RefillRecord.refill_date.isnot(None))
+    ).all()
+    for business_date, amount, commission, fee_remark in rows:
+        all_amt[business_date] += Decimal(amount or 0)
+        all_comm[business_date] += Decimal(commission or 0)
+        if "非晶晶代付" in str(fee_remark or ""):
+            continue
+        regular_amt[business_date] += Decimal(amount or 0)
+        regular_comm[business_date] += Decimal(commission or 0)
+    return all_amt, all_comm, regular_amt, regular_comm
+
+
+def _dated_refill_transfers(db: Session) -> tuple[dict[date, Decimal], dict[date, Decimal]]:
+    """解析带业务日备注的徐晶晶本金/佣金转款。"""
+    from collections import defaultdict
+
+    paid_amt: dict[date, Decimal] = defaultdict(Decimal)
+    paid_comm: dict[date, Decimal] = defaultdict(Decimal)
+    rows = db.execute(
+        select(AlipayFlow.amount, AlipayFlow.remark, AlipayFlow.transaction_time).where(
+            AlipayFlow.counterparty.like(_REFILL_PAYEE), AlipayFlow.amount < 0,
+        )
+    ).all()
+    for amount, remark, transaction_time in rows:
+        match = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s*-?\s*(\S+)", remark or "")
+        if not match:
+            continue
+        month, day, transfer_type = int(match.group(1)), int(match.group(2)), match.group(3)
+        year = transaction_time.year if transaction_time else date.today().year
+        if transaction_time and month > transaction_time.month + 1:
+            year -= 1
+        try:
+            business_date = date(year, month, day)
+        except ValueError:
+            continue
+        value = abs(Decimal(amount or 0))
+        if transfer_type.startswith("Y"):
+            paid_comm[business_date] += value
+        elif "b" in transfer_type or "流水" in transfer_type:
+            paid_amt[business_date] += value
+    return paid_amt, paid_comm
+
+
+def _local_payment_date(value: datetime) -> date:
+    if value.tzinfo is None:
+        return value.date()
+    return value.astimezone(_CN_TZ).date()
+
+
+def _infer_alternate_refill_assignments(
+    db: Session,
+    all_amt: dict[date, Decimal],
+    all_comm: dict[date, Decimal],
+    dated_amt: dict[date, Decimal],
+    dated_comm: dict[date, Decimal],
+) -> list[_AlternateRefillAssignment]:
+    """保守识别无业务备注的替代收款方批次。
+
+    同账户、同收款方、同付款日必须恰好两笔；两笔金额需与最近三日某一补单业务日
+    扣除已识别徐晶晶转款后的「本金差额 + 佣金差额」唯一、精确匹配，否则不自动认领。
+    人工锁定为其他分类的流水不参与。
+    """
+    from collections import defaultdict
+
+    from app.services import field_change_service
+
+    payee_filters = [
+        AlipayFlow.counterparty.like(f"%{payee}%") for payee in _ALT_REFILL_PAYEES
+    ]
+    rows = db.execute(
+        select(AlipayFlow).where(
+            AlipayFlow.amount < 0,
+            AlipayFlow.transaction_time.isnot(None),
+            or_(*payee_filters),
+        )
+    ).scalars().all()
+    locked = field_change_service.human_pks(
+        db, table="alipay_flows", field="reconciliation_type",
+    )
+    groups: dict[tuple[str, str, date], list[AlipayFlow]] = defaultdict(list)
+    for flow in rows:
+        if str(flow.id) in locked and flow.reconciliation_type != "refill_transfer":
+            continue
+        if flow.reconciliation_type not in (None, "boguan_payment", "refill_transfer"):
+            continue
+        payment_date = _local_payment_date(flow.transaction_time)
+        key = (flow.account or "", (flow.counterparty or "").strip(), payment_date)
+        groups[key].append(flow)
+
+    assignments: list[_AlternateRefillAssignment] = []
+    candidate_days = sorted(set(all_amt) | set(all_comm))
+    for (_account, _counterparty, payment_date), flows in groups.items():
+        if len(flows) != 2:
+            continue
+        values = [_money(abs(Decimal(flow.amount or 0))) for flow in flows]
+        matches: list[tuple[date, AlipayFlow, AlipayFlow]] = []
+        for business_date in candidate_days:
+            lag = (payment_date - business_date).days
+            if lag < 0 or lag > _ALT_REFILL_LOOKBACK_DAYS:
+                continue
+            expected_amt = _money(all_amt.get(business_date, 0) - dated_amt.get(business_date, 0))
+            expected_comm = _money(all_comm.get(business_date, 0) - dated_comm.get(business_date, 0))
+            if expected_amt <= 0 or expected_comm <= 0:
+                continue
+            if values[0] == expected_amt and values[1] == expected_comm:
+                matches.append((business_date, flows[0], flows[1]))
+            elif values[1] == expected_amt and values[0] == expected_comm:
+                matches.append((business_date, flows[1], flows[0]))
+        if len(matches) != 1:
+            continue
+        business_date, amount_flow, commission_flow = matches[0]
+        assignments.extend([
+            _AlternateRefillAssignment(
+                flow_id=amount_flow.id,
+                business_date=business_date,
+                kind="order_amount",
+                amount=abs(Decimal(amount_flow.amount or 0)),
+            ),
+            _AlternateRefillAssignment(
+                flow_id=commission_flow.id,
+                business_date=business_date,
+                kind="commission",
+                amount=abs(Decimal(commission_flow.amount or 0)),
+            ),
+        ])
+    return assignments
+
+
+def reclassify_alternate_refill_transfers(db: Session) -> dict:
+    """把唯一精确匹配的替代收款方批次从博冠货款纠正为补单转款。"""
+    all_amt, all_comm, _, _ = _refill_expected_totals(db)
+    dated_amt, dated_comm = _dated_refill_transfers(db)
+    assignments = _infer_alternate_refill_assignments(
+        db, all_amt, all_comm, dated_amt, dated_comm,
+    )
+    by_id = {row.flow_id: row for row in assignments}
+    flows = db.execute(
+        select(AlipayFlow).where(AlipayFlow.id.in_(by_id))
+    ).scalars().all() if by_id else []
+    updated = 0
+    for flow in flows:
+        if flow.reconciliation_type != "refill_transfer":
+            flow.reconciliation_type = "refill_transfer"
+            updated += 1
+    db.flush()
+    return {
+        "matched": len(assignments),
+        "updated": updated,
+        "business_days": sorted({str(row.business_date) for row in assignments}),
+    }
 
 
 def run_refill_transfer(
@@ -571,47 +755,20 @@ def run_refill_transfer(
     record_exceptions: bool = True,
 ) -> ReconciliationResult:
     """刷单对账: 当日补单 Σ订单额/Σ佣金 ↔ 支付宝转徐晶晶的 b流水/Y 两笔 (按业务日逐日核)。"""
-    import re
-    from collections import defaultdict
-
-    # 1. 账上该转: 补单(刷单)按 refill_date 汇总 — 订单额 / 佣金。
-    # 非晶晶代付 (2026-07-10): 个别补单的本金/佣金走别的渠道直接转刷手/团队(实测 4-15 水冰月一笔
-    # 246.38+10 另付), 不进徐晶晶批次 → 标 fee_remark 含"非晶晶代付"的记录从本核对剔除, 防假差。
-    ref_amt: dict[date, Decimal] = defaultdict(Decimal)
-    ref_comm: dict[date, Decimal] = defaultdict(Decimal)
-    for d, amt, comm, frm in db.execute(
-        select(RefillRecord.refill_date, RefillRecord.order_amount, RefillRecord.commission,
-               RefillRecord.fee_remark)
-        .where(RefillRecord.refill_date.isnot(None))
-    ).all():
-        if "非晶晶代付" in str(frm or ""):
-            continue
-        ref_amt[d] += Decimal(amt or 0)
-        ref_comm[d] += Decimal(comm or 0)
-
-    # 2. 实际转: 支付宝转徐晶晶(amount<0), remark '{月.日}-{Y佣金 / b流水订单额}' 解析到业务日
-    tr_amt: dict[date, Decimal] = defaultdict(Decimal)
-    tr_comm: dict[date, Decimal] = defaultdict(Decimal)
-    for amt, rk, tt in db.execute(
-        select(AlipayFlow.amount, AlipayFlow.remark, AlipayFlow.transaction_time)
-        .where(AlipayFlow.counterparty.like(_REFILL_PAYEE), AlipayFlow.amount < 0)
-    ).all():
-        m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s*-?\s*(\S+)", rk or "")
-        if not m:
-            continue
-        mo, da, typ = int(m.group(1)), int(m.group(2)), m.group(3)
-        yr = tt.year if tt else date.today().year
-        if tt and mo > tt.month + 1:    # remark 月份超前于转账月份 → 跨年(上一年)
-            yr -= 1
-        try:
-            bd = date(yr, mo, da)
-        except ValueError:
-            continue
-        val = abs(Decimal(amt or 0))
-        if typ.startswith("Y"):
-            tr_comm[bd] += val
-        elif "b" in typ or "流水" in typ:
-            tr_amt[bd] += val
+    # 1. 账上该转。常规口径排除另渠道记录；若替代收款方两笔与「全部记录 - 已识别转款」
+    # 唯一精确匹配，则把该业务日恢复为全部记录口径。
+    all_amt, all_comm, ref_amt, ref_comm = _refill_expected_totals(db)
+    tr_amt, tr_comm = _dated_refill_transfers(db)
+    alternate = _infer_alternate_refill_assignments(
+        db, all_amt, all_comm, tr_amt, tr_comm,
+    )
+    alternate_days = {row.business_date for row in alternate}
+    for business_date in alternate_days:
+        ref_amt[business_date] = all_amt[business_date]
+        ref_comm[business_date] = all_comm[business_date]
+    for row in alternate:
+        target = tr_amt if row.kind == "order_amount" else tr_comm
+        target[row.business_date] += row.amount
 
     # 3. 逐业务日对比: 订单额一条 + 佣金一条
     diffs: list[ReconciliationDiff] = []
@@ -629,11 +786,11 @@ def run_refill_transfer(
             if ref > 0 and tr == 0:
                 diffs.append(ReconciliationDiff(
                     key=key, expected=ref, actual=None, diff=None, severity="not_available",
-                    message=f"刷单 {d} {label}: 账上Σ¥{ref}, 尚无转徐晶晶记录(待转或支付宝流水未导)"))
+                    message=f"刷单 {d} {label}: 账上Σ¥{ref}, 尚无已识别补单转款(待转或支付宝流水未导)"))
                 continue
             diff = tr - ref
             sev = _classify(diff, base=ref, abs_floor=Decimal("1"), pct=Decimal("0.01"))
-            msg = f"刷单 {d} {label}: 账上Σ¥{ref} ↔ 实际转徐晶晶¥{tr}, 差¥{diff}"
+            msg = f"刷单 {d} {label}: 账上Σ¥{ref} ↔ 实际补单转款¥{tr}, 差¥{diff}"
             diffs.append(ReconciliationDiff(
                 key=key, expected=ref, actual=tr, diff=diff, severity=sev, message=msg))
             if sev not in ("ok", "not_available") and record_exceptions:
@@ -1544,6 +1701,26 @@ def _xjj_commission_paid_by_month(db: Session, ps: Optional[date], pe: Optional[
     return out
 
 
+def _refill_commission_paid_by_month(
+    db: Session, ps: Optional[date], pe: Optional[date],
+) -> dict[str, Decimal]:
+    """徐晶晶备注转款 + 唯一精确匹配的替代收款方佣金，按补单业务月汇总。"""
+    out = _xjj_commission_paid_by_month(db, ps, pe)
+    all_amt, all_comm, _, _ = _refill_expected_totals(db)
+    dated_amt, dated_comm = _dated_refill_transfers(db)
+    assignments = _infer_alternate_refill_assignments(
+        db, all_amt, all_comm, dated_amt, dated_comm,
+    )
+    for row in assignments:
+        if row.kind != "commission":
+            continue
+        if (ps and row.business_date < ps) or (pe and row.business_date > pe):
+            continue
+        key = _month_key(row.business_date) or "(无日期)"
+        out[key] = out.get(key, Decimal("0")) + row.amount
+    return out
+
+
 def _run_prepay(db: Session, *, rule: RuleName, category: str,
                 billed_by_month: dict[str, Decimal],
                 ps: Optional[date], pe: Optional[date], record_exceptions: bool,
@@ -1615,11 +1792,11 @@ def run_refill_commission_payout(db: Session, *, period_start=None, period_end=N
     if period_end:
         stmt = stmt.where(RefillRecord.refill_date <= period_end)
     billed = _sum_by_month(db.execute(stmt).all())
-    xjj = _xjj_commission_paid_by_month(db, period_start, period_end)   # 徐晶晶支付宝Y转账 = 实付凭据
+    paid = _refill_commission_paid_by_month(db, period_start, period_end)
     return _run_prepay(db, rule="refill_commission_payout", category="refill_commission",
                        billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions,
                        noun="补单佣金", source_hint="补单记录(佣金字段)",
-                       extra_paid_by_month=xjj, paid_hint="代付台账+徐晶晶支付宝Y转账")
+                       extra_paid_by_month=paid, paid_hint="代付台账+已识别补单佣金转款")
 
 
 def run_refill_express_payout(db: Session, *, period_start=None, period_end=None,

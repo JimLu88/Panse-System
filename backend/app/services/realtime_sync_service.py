@@ -67,6 +67,8 @@ def _do_resync() -> dict:
         _step("backfill_code_by_title", lambda d: order_sync_service.backfill_code_from_taobao_title(d))
         # ── 0b) 评价补单可能先于订单到达：订单入库后纠正业务日/实付金额，再进入对账。 ──
         _step("repair_review_refills", lambda d: order_sync_service.repair_review_refill_records(d))
+        # ── 0c) 替代收款方两笔金额与补单本金/佣金差额唯一精确匹配时，纠正误归类。 ──
+        _step("repair_alt_refill_transfers", lambda d: reconciliation_service.reclassify_alternate_refill_transfers(d))
         # ── 1) 支付宝流水归类/核销/配单 (原「重新核销」「归类流水」「自动配流水」按钮) ──
         _step("smart_match", lambda d: smart_matching_service.run(d) and None)
         # 明确写“打包费”且账期唯一的付款先归到打包月结，避免被工厂付款/采购路由抢走。
