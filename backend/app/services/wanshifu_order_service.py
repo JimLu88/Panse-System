@@ -258,6 +258,14 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
             existing[rec["wsf_order_no"]] = obj
             rep.inserted += 1
         else:
+            # Extra product lines must not erase retained/manual remarks or old
+            # Taobao references absent from today's platform export.
+            if len(rec.get("_product_lines", [])) > 1 and old.remark:
+                incoming = vals.get("remark") or ""
+                if incoming and incoming not in old.remark:
+                    vals["remark"] = old.remark + "; " + incoming
+                else:
+                    vals["remark"] = old.remark
             # 重导更新非空字段 (状态/完工时间会推进)
             changed = False
             for k, v in vals.items():
