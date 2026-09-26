@@ -195,3 +195,132 @@ def test_absent_registry_is_optional(tmp_path):
 def test_explicit_timezone_required(time):
     with pytest.raises(ValueError):
         facts.timestamp(time)
+
+
+def alias_snapshot(tmp_path, root, row, *, sku='200', code='PPS001B1'):
+    proof = tmp_path/'alias-proof.json'
+    proof.write_text('{"saved":true}', encoding='utf-8')
+    receipt = tmp_path/'alias-receipt.json'
+    receipt.write_text(json.dumps(dict(status='verified_partial_mapping_restored', restored=[dict(
+        item='101', sku=sku, erp_code='PPS001', official_sku_code=code,
+        alias_evidence=[dict(path=str(proof), sha256=hashlib.sha256(proof.read_bytes()).hexdigest())])])), encoding='utf-8')
+    bound = facts.bind_latest(snapshot([row]), root=root)
+    bound['verified_code_alias_sources'] = [dict(path=str(receipt), sha256=hashlib.sha256(receipt.read_bytes()).hexdigest())]
+    return bound, proof, receipt
+
+
+def test_exact_verified_backup_alias_reused_by_generator(tmp_path):
+    _, root, _ = fixture(tmp_path, code='PPS001B1', attributes='颜色定制')
+    row = erp(sku='200', sku_name='颜色定制咨询')
+    bound, _, _ = alias_snapshot(tmp_path, root, row)
+    res = facts.FactResolver(bound)
+    found, issue, evidence = res.resolve('101','200',[row])
+    assert found == [row] and issue is None
+    assert evidence['resolution'] == 'verified_code_alias' and evidence['alias_sources']
+    a, d, i = build_rows(bound, [dict(item='101',sku='200',state='')], Decimal('.15'),'big',{})
+    assert len(a)==1 and not d and not i and a[0]['erp_code']=='PPS001'
+
+
+@pytest.mark.parametrize('part', ['proof', 'receipt'])
+def test_alias_tamper_fails_closed(tmp_path, part):
+    _, root, _ = fixture(tmp_path, code='PPS001B1')
+    bound, proof, receipt = alias_snapshot(tmp_path, root, erp(sku='200'))
+    (proof if part=='proof' else receipt).write_text('changed', encoding='utf-8')
+    with pytest.raises(ValueError, match='changed'):
+        facts.FactResolver(bound)
+
+
+@pytest.mark.parametrize('alias_sku,alias_code', [('201','PPS001B1'),('200','PPS001B2')])
+def test_alias_must_match_exact_pair_and_raw_code(tmp_path, alias_sku, alias_code):
+    _, root, _ = fixture(tmp_path, code='PPS001B1')
+    row = erp(sku='200')
+    bound, _, _ = alias_snapshot(tmp_path, root, row, sku=alias_sku, code=alias_code)
+    assert facts.FactResolver(bound).resolve('101','200',[row])[1]=='current_export_conflicts_with_erp_binding'
+
+
+def test_alias_does_not_override_new_real_raw_code_owner(tmp_path):
+    _, root, _ = fixture(tmp_path, code='PPS001B1')
+    row = erp(sku='200')
+    bound, _, _ = alias_snapshot(tmp_path, root, row)
+    bound['all_erp_rows'].append(erp(code='PPS001B1',sku='201'))
+    assert facts.FactResolver(bound).resolve('101','200',[row])[1]=='current_export_conflicts_with_erp_binding'
+
+
+@pytest.mark.parametrize('bound_identity,same_spec,custom,allowed', [
+    (True,True,False,True), (False,True,False,False),
+    (True,False,False,False), (True,True,True,False)])
+def test_numeric_legacy_requires_existing_ordinary_identity_and_exact_spec(tmp_path, bound_identity, same_spec, custom, allowed):
+    attrs='适用人数:双人位2米;颜色分类:奶霜白;'
+    _, root, _ = fixture(tmp_path, code='001', attributes=attrs)
+    row=erp(sku='200',custom=custom,sku_name=attrs if same_spec else '双人位2.3米')
+    res=facts.FactResolver(facts.bind_latest(snapshot([row]),root=root))
+    found, issue, evidence=res.resolve('101','200',[row] if bound_identity else [])
+    assert (issue is None)==allowed
+    if allowed:
+        assert found==[row] and evidence['resolution']=='verified_bound_legacy_prefix'
+
+
+@pytest.mark.parametrize('attributes,name', [
+    ('定制颜色（联系客服）,免安装','颜色定制'), ('其它定制','其它定制'),
+    ('差价','差价'), ('其他样块','其他样块请咨询客服'),
+    ('颜色定制','颜色定制咨询'), ('定制专拍','定制专拍'),
+    ('红橡木(咨询客服)','红橡木(咨询客服)'), ('洞石背板','洞石背板'),
+    ('追加配件联系客服','配件-竖隔板'), ('插座配件单拍咨询客服','插座配件单拍咨询客服'),
+    ('定制咨询（联系客服）','其他定制')])
+def test_existing_exact_custom_binding_does_not_require_keyword_whitelist(tmp_path, attributes, name):
+    _,root,_=fixture(tmp_path,attributes=attributes)
+    row=erp(sku='200',sku_name=name)
+    res=facts.FactResolver(facts.bind_latest(snapshot([row]),root=root))
+    assert res.resolve('101','200',[row])[:2]==([row],None)
+    assert res.resolve('101','200',[])[1]=='custom_code_meaning_unverified'
+
+
+@pytest.mark.parametrize('attributes', ['微调尺寸（联系客服）','微调尺寸（联系客服）,免安装'])
+def test_micro_size_synonym(tmp_path, attributes):
+    _,root,_=fixture(tmp_path,attributes=attributes)
+    row=erp(sku='200',sku_name='尺寸微定制')
+    res=facts.FactResolver(facts.bind_latest(snapshot([row]),root=root))
+    assert res.resolve('101','200',[row])[:2]==([row],None)
+
+
+def test_real_material_conflict_still_blocks_even_existing_binding(tmp_path):
+    _,root,_=fixture(tmp_path,attributes='白色岩板定制咨询')
+    row=erp(sku='200',sku_name='其他尺寸定制')
+    res=facts.FactResolver(facts.bind_latest(snapshot([row]),root=root))
+    assert res.resolve('101','200',[row])[1]=='merchant_code_semantic_conflict'
+
+
+def test_multiple_existing_candidates_not_collapsed_by_code(tmp_path):
+    _,root,_=fixture(tmp_path)
+    row=erp(sku='200')
+    res=facts.FactResolver(facts.bind_latest(snapshot([row]),root=root))
+    assert res.resolve('101','200',[row,row])[1]=='current_export_conflicts_with_erp_binding'
+
+
+def test_custom_conflict_not_a_discount_only_gate_but_signup_retains_it(tmp_path):
+    _,root,_=fixture(tmp_path,attributes='白色岩板定制咨询')
+    bound=facts.bind_latest(snapshot([erp(sku_name='其他尺寸定制'),
+        erp(code='PPS002',sku='201',custom=False)]),root=root)
+    ids=[dict(item='101',sku=s,state='') for s in ('200','201')]
+    a,d,i=build_rows(bound,ids,Decimal('.1'),'medium',{},signup_items=set(),discount_items={'101'})
+    assert not a and not i and len(d)==1 and d[0]['sku']=='201' and d[0]['deduct']=='90'
+    a,d,i=build_rows(bound,ids,Decimal('.1'),'medium',{})
+    assert len(i)==1 and i[0]['error']=='merchant_code_semantic_conflict'
+    assert len(a)==len(d)==1
+
+
+def test_mixed_custom_ordinary_conflict_not_skipped(tmp_path):
+    _,root,_=fixture(tmp_path,code='PPS002')
+    bound=facts.bind_latest(snapshot([erp(sku='200'),erp(code='PPS002',custom=False)]),root=root)
+    a,d,i=build_rows(bound,[dict(item='101',sku='200',state='')],Decimal('.1'),'medium',{},signup_items=set())
+    assert not a and not d and i[0]['error']=='current_export_conflicts_with_erp_binding'
+
+
+@pytest.mark.parametrize('kind', ['blank','unknown_classification','duplicate_code','duplicate_binding'])
+def test_uncertain_classification_cannot_be_skipped(tmp_path, kind):
+    _,root,_=fixture(tmp_path,code='' if kind=='blank' else 'PPS001')
+    row=erp(custom=None if kind=='unknown_classification' else True)
+    rows=[row,row] if kind=='duplicate_code' else [row]
+    res=facts.FactResolver(facts.bind_latest(snapshot(rows),root=root))
+    existing=[row,row] if kind=='duplicate_binding' else []
+    assert res.custom_only('101','200',existing) is False

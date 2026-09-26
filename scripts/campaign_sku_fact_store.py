@@ -211,7 +211,7 @@ def semantic_issue(fact, erp):
         return None
     def signature(text):
         materials = {m for m in ('樱桃木','黑胡桃木','白橡木','白蜡木','榉木','松木','岩板') if m in text}
-        intent = ('micro' if '微定制' in text else 'size' if '尺寸' in text else
+        intent = ('micro' if '微定制' in text or '微调尺寸' in text else 'size' if '尺寸' in text else
                   'material' if materials or '材质' in text else '')
         return materials, intent
     a, ai = signature(fact['attributes'])
@@ -229,9 +229,15 @@ class FactResolver:
         self.facts = defaultdict(list)
         self.by_code = defaultdict(list)
         self.reference = snapshot.get('sku_fact_source')
+        self.aliases = set()
+        self.alias_sources = snapshot.get('verified_code_alias_sources', []) + snapshot.get('catalog_repair_sources', [])
         for row in self.rows:
             self.by_code[row['code']].append(row)
         if self.reference:
+            # Reuse the existing receipt AND source verification. A suffix is
+            # never permission to invent a code or a physical SKU binding.
+            from campaign_failure_remediation import verified_code_aliases
+            self.aliases = verified_code_aliases(snapshot)
             _, rows = read_version(self.reference['sha256'], root=self.reference['root'])
             for row in rows:
                 if row['sku']:
@@ -250,9 +256,27 @@ class FactResolver:
         if not code:
             # Never erase a valid ERP binding; absence cannot establish a new one.
             return existing, None if existing else 'merchant_code_blank', evidence
-        if existing and any(r['code'] != code for r in existing):
+        if len(existing) > 1:
             return [], 'current_export_conflicts_with_erp_binding', evidence
-        candidates = self.by_code.get(code, [])
+        canonical = code
+        if existing and existing[0]['code'] != code:
+            row = existing[0]
+            if (item, sku, row['code'], code) in self.aliases:
+                canonical = row['code']
+                evidence.update(resolution='verified_code_alias', alias_sources=self.alias_sources)
+            elif (code.isascii() and code.isdigit() and row['code'] == 'PPS' + code
+                  and row.get('custom') is False
+                  and fact['attributes'].strip() and fact['attributes'].strip() == (row.get('sku_name') or '').strip()):
+                # This legacy spelling is already supported by catalog repair.
+                # Only an existing exact physical binding + identical specs can
+                # use it; never find a new SKU by adding PPS to numeric text.
+                canonical = row['code']
+                evidence['resolution'] = 'verified_bound_legacy_prefix'
+            else:
+                return [], 'current_export_conflicts_with_erp_binding', evidence
+            if self.by_code.get(code):
+                return [], 'current_export_conflicts_with_erp_binding', evidence
+        candidates = self.by_code.get(canonical, [])
         if len(candidates) != 1:
             return [], 'merchant_code_missing_or_ambiguous_in_erp', evidence
         candidate = candidates[0]
@@ -261,9 +285,41 @@ class FactResolver:
         if item not in items:
             return [], 'merchant_code_product_alias_not_proven', evidence
         issue = semantic_issue(fact, candidate)
+        if issue == 'custom_code_meaning_unverified' and existing and existing[0] == candidate:
+            # Exact physical identity and verified code already establish this
+            # binding. A limited keyword list cannot invalidate colors, samples,
+            # accessories, or other known custom rows. Definite conflicts above
+            # still fail; unbound rows still require positive semantic evidence.
+            evidence.setdefault('resolution', 'existing_exact_binding')
+            evidence['semantic_check'] = 'no_known_conflict_existing_identity'
+            issue = None
         if issue:
             return [], issue, evidence
         return [candidate], None, evidence
+
+    def custom_only(self, item, sku, existing):
+        """Classification only, NOT a resolved identity or price authorization.
+
+        Discount-only generation does not consume custom identities/prices. It
+        can omit a row when all available exact binding/code candidates agree
+        it is custom. Unknown or mixed classification remains an issue. Full
+        signup/audit always goes through resolve and retains genuine conflicts.
+        """
+        if len(existing) > 1:
+            return False
+        candidates = list(existing)
+        facts = self.facts.get((item, sku), [])
+        if len(facts) > 1 or (facts and 'duplicate_item_sku' in facts[0]['issues']):
+            return False
+        if facts:
+            code = facts[0]['merchant_code'].strip()
+            code_rows = self.by_code.get(code, [])
+            if len(code_rows) > 1:
+                return False
+            candidates += code_rows
+        return bool(candidates) and all(r.get('custom') is True and item in {
+            str(r.get('item')), str(r.get('product_item_id')),
+            *map(str, r.get('product_alt_item_ids') or [])} for r in candidates)
 
 
 def main():

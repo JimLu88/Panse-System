@@ -87,6 +87,8 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
         if not needs_signup and not needs_discount:
             continue
         matches = index.get(pair, [])
+        if not needs_signup and facts.custom_only(*pair, matches):
+            continue  # Custom mapping problems are irrelevant to ordinary-only discounts.
         matches, fact_issue, fact_evidence = facts.resolve(*pair, matches)
         if fact_issue:
             issues.append(dict(**row_common, error=fact_issue, source=fact_evidence))

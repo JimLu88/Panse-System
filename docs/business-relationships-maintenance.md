@@ -60,6 +60,12 @@ python -m app.cli.business_relationships --flow order
 
 ## 当前诚实覆盖边界
 
+2026-09-27 本机消费者补查：已验证编码别名凭证 → FactResolver 精确身份核对 →
+全量报名对应审计 / 普通款立减计算两个分支。前者保留全部真实冲突；后者只对确定普通款
+计价，确定定制且不需报名的行不形成普通款门槛。普通/定制混合、跨商品或未知不猜配。
+不改ERP主映射/价格，不影响订单、库存、财务和飞书写入；运行图仍明确未建模，
+此次仅更新本机链路说明，未假称关系图新节点或生产业务已完成。
+
 2026-09-26 本机商品 SKU 事实索引新增链路：用户原始导出 → `scripts/campaign_sku_fact_store.py`
 版本化字节证据 → `campaign_price_snapshot.py` 的 `sku_fact_source` →
 `campaign_generate_current_files.py` 按精确商品/SKU读取。版本、日期、空编码、重复和语义冲突
