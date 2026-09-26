@@ -175,6 +175,49 @@ def correction_html(db,item,line):
     return sheets.render_html(sheet).replace('<body>','<body>'+banner,1)
 
 
+def _sales_fact_matches_pricing(db, fact, pricing):
+    """Verify a historical purchase SKU without trusting a parent-SKU fallback.
+
+    Older sales exports sometimes contain the exact item title and option but no
+    internal PPS code.  In that case require an exact listing option, a single
+    product identity, and an unambiguous pricing SKU.  A conflicting internal
+    PPS code in the export is never overridden by today's listing table.
+    """
+    from app.models.pricing import PricingSku
+    from app.models.taobao_listing import TaobaoListing
+
+    if pricing is None:
+        return False
+    source_code = str(fact.get('sku_code') or '').strip()
+    if source_code == pricing.sku_code:
+        return True
+    if source_code and db.scalar(select(PricingSku.id).where(PricingSku.sku_code == source_code)):
+        return False
+    title = str(fact.get('product_name') or '').strip()
+    option = str(fact.get('sku') or '').strip()
+    if not title or not option:
+        return False
+
+    def option_values(spec):
+        return [part.split(':', 1)[-1].strip() for part in str(spec or '').split(';') if part.strip()]
+
+    listings = [row for row in db.scalars(select(TaobaoListing).where(
+        TaobaoListing.title == title, TaobaoListing.matched.is_(True)))
+        if option in option_values(row.sku_spec)]
+    if not listings:
+        return False
+    product_codes = {row.product_code for row in listings}
+    if product_codes != {pricing.product_code}:
+        return False
+    listed_codes = {row.sku_code for row in listings if row.sku_code}
+    if listed_codes:
+        return listed_codes == {pricing.sku_code}
+    candidates = set(db.scalars(select(PricingSku.sku_code).where(
+        PricingSku.product_code == pricing.product_code,
+        PricingSku.taobao_title == title, PricingSku.sku == option)))
+    return candidates == {pricing.sku_code}
+
+
 def all_product_financial_plan(db):
     """All-product derived-cost repair, only exact source/SKU/quantity matches."""
     from decimal import Decimal
@@ -213,9 +256,10 @@ def all_product_financial_plan(db):
         for line in lines:
             fact=expected[str(line.sub_order_no)]
             pricing=db.scalar(select(PricingSku).where(PricingSku.sku_code==line.sku_code)) if line.sku_code else None
-            if (line_is_refunded(line) or fact.get('sku_code')!=line.sku_code or not line.sku_code
+            if (line_is_refunded(line) or not line.sku_code
                 or int(fact.get('qty') or 0)!=line.qty or pricing is None
                 or pricing.physical_cost is None
+                or not _sales_fact_matches_pricing(db,fact,pricing)
                 or any(w in str(fact.get('sku') or '') for w in ('定制','咨询','差价','补拍'))):
                 verified=False;break
         if not verified:
