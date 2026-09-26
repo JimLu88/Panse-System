@@ -26,11 +26,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
 import GalleryModal from '../components/GalleryModal';
 import { CUTE_IMG } from '../components/ProductThumb';
-import { PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct, updateSkuShippingMeasurements } from '../api/client';
+import { ProductPricingSku as PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct, updateSkuShippingMeasurements } from '../api/client';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { CatalogCard } from '../components/MobileCards';
 import ProductDimensionFinalActions from '../components/ProductDimensionFinalActions';
+import ProductTaobaoLinks from '../components/ProductTaobaoLinks';
 
 const PRODUCT_FIELDS: PresetField[] = [
   { key: 'code', label: '编码', group: '字段' },
@@ -39,6 +40,7 @@ const PRODUCT_FIELDS: PresetField[] = [
   { key: 'category', label: '类目', group: '字段' },
   { key: 'remark', label: '备注', group: '字段' },
   { key: 'image', label: '图片', group: '字段' },
+  { key: 'taobao_links', label: '淘宝链接', group: '字段' },
 ];
 const PRODUCT_PRESETS = [
   { name: '常用', fields: ['code', 'name', 'category', 'image'] },
@@ -119,7 +121,7 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
         dataSource={data}
         size="small"
         pagination={false}
-        scroll={{ x: 1450 }}
+        scroll={{ x: 1750 }}
         columns={[
           {
             title: '图片', width: 64,
@@ -132,7 +134,9 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
             },
           },
           { title: 'SKU 编码', dataIndex: 'sku_code', width: 120 },
-          { title: 'SKU', dataIndex: 'sku', ellipsis: true },
+          { title: 'SKU', dataIndex: 'sku', width: 200, ellipsis: true },
+          { title: '淘宝链接', key: 'taobao_links', width: 190,
+            render: (_: unknown, row: PricingSku) => <ProductTaobaoLinks row={row} /> },
           { title: '尺寸分类', dataIndex: 'size_category', width: 100 },
           { title: '产品重量', dataIndex: 'product_weight_kg', width: 110,
             render: (v: number) => measureText(v, 3, 'kg') },
@@ -312,7 +316,7 @@ export default function ProductsPage() {
     setColW((prev) => ({ ...prev, [key]: w }));
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
   const applyView = (cols: any[]) =>
-    visibleKeys === null ? cols : cols.filter((c: any) => c.key === 'actions' || visibleKeys.includes(c.key));
+    visibleKeys === null ? cols : cols.filter((c: any) => ['actions', 'taobao_links'].includes(c.key) || visibleKeys.includes(c.key));
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', q, category, brand],
@@ -377,6 +381,8 @@ export default function ProductsPage() {
 
   const mkResize = (key: string) => () => ({ width: colW[key], onResize: handleResize(key) });
   const columns = [
+    { title: '淘宝链接', key: 'taobao_links', width: 190,
+      render: (_: unknown, row: Product) => <ProductTaobaoLinks row={row} /> },
     {
       title: '编码', dataIndex: 'code', key: 'code', width: colW.code, ellipsis: true,
       onHeaderCell: mkResize('code'),
@@ -676,7 +682,9 @@ export default function ProductsPage() {
             meta={p.category ?? undefined}
             onGallery={() => setGalleryFor(p.code)}
             dimensionActions={(
-              <ProductDimensionFinalActions productCode={p.code} assetCount={p.dimension_asset_count} />
+              <Space direction="vertical"><ProductTaobaoLinks row={p} />
+                <ProductDimensionFinalActions productCode={p.code} assetCount={p.dimension_asset_count} />
+              </Space>
             )}
             onEdit={() => {
               setEditTarget(p);

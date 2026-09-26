@@ -71,3 +71,5 @@ class ProductOut(BaseModel):
     semi_group: Optional[str] = None
     dimension_asset_count: int = 0
     dimension_review_count: int = 0
+    taobao_links: list[dict] = Field(default_factory=list)
+    taobao_link_status: str = '缺淘宝商品映射'

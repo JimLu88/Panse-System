@@ -1088,7 +1088,7 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
     if category == "settlement":
         from app.services import settlement_import_service
         rep = settlement_import_service.import_bill(db, raw, source="agent")
-        return ("settlement", "imported", _report_to_dict(rep))
+        return ("settlement", "error" if rep.get("error") else "imported", _report_to_dict(rep))
     if category == "promotion":
         rep = _import_wanxiangtai_csv(db, raw)
         return ("promotion", "imported" if "error" not in rep else "unsupported", rep)

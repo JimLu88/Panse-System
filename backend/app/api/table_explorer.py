@@ -411,6 +411,13 @@ def get_table_data(
                 ).scalars():
                     promo_map[pr.sku_code] = pr
 
+    link_map = {}
+    if entity in ('product', 'pricing_sku'):
+        from app.services.product_taobao_links import build_link_maps
+        products, skus = build_link_maps(db)
+        link_map = products if entity == 'product' else skus
+        columns.append(ColumnMeta(key='taobao_links', label='淘宝链接', type='taobao_links', is_core=True))
+        columns.append(ColumnMeta(key='taobao_link_status', label='淘宝链接状态', type='str', is_core=True))
     rows: list[dict[str, Any]] = []
     for r in records:
         row: dict[str, Any] = {}
@@ -427,6 +434,8 @@ def get_table_data(
                         if c.key in ("id", "sku_code", "created_at", "updated_at"):
                             continue
                         row[c.key] = _serialize_value(getattr(ext_obj, c.key, None))
+        if link_map:
+            row.update(link_map.get(r.code if entity == 'product' else r.sku_code, {}))
         rows.append(row)
 
     return TableDataOut(

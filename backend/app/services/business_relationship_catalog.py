@@ -44,6 +44,7 @@ NODES = [
     node('npd.materialize','设计正式建档','npd','materialize_project','services/npd_service.py','def materialize_project'),
     node('product.identity','产品身份','product','Product.code','models/product.py','class Product'),
     node('product.sku','规格身份','product','PricingSku.sku_code / product_code','models/pricing.py','class PricingSku'),
+    node('product.taobao_links','产品与逐款淘宝链接','product','Product.taobao_id / PricingSkuPromo.taobao_item_id / taobao_sku_id','services/product_taobao_links.py','def build_link_maps','只读投影；SKU冲突不生成链接；商品链接与款式链接明确区分；不改变价格、库存、订单或历史备用ID'),
     node('product.dimensions','精确规格尺寸','product','PricingSku.size_info / verified_dimensions','services/factory_production_evidence.py','def verified_dimensions','不以其他变体或产品默认图替代'),
     node('product.custom','定制变体','product','CustomVariant.dimension_overrides','models/custom_variant.py'),
     node('bom.material','物料单价','bom','Material.price','models/material.py'),
@@ -128,6 +129,7 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('product.sku','product.taobao_links','按精确编码读取当前淘宝映射','产品精选/全列/SKU展开','不拼接不同款式ID，不用历史备用SKU；缺失与冲突可见','services/product_taobao_links.py','def build_link_maps'),
     edge('finance.agg_settlement','order.parent','以母订单号关联收款凭据','账单含淘宝订单编号或主订单id','原单号逐笔核对；没有订单列则拒绝导入，不将扣款或保证金误当订单收款','services/settlement_import_service.py','def import_bill'),
     edge('finance.agg_settlement','automation.alert','为缺收款异常提供复核依据','同订单有聚合结算记录','按订单号核对后销账；流水入库不自动证明净额或全部结算正确','services/exception_recheck_service.py','def _check_order_missing_alipay'),
     edge('marketing.feedback_read','marketing.feedback_judgment','完整新内容进入语义判读','两个来源登录、分页、范围和身份核验完成','失败不是零负面；未判读回答不视为好评。跨程序来源及定时启用另行验收','services/feedback_notification_service.py','def capability',kind='boundary',evidence='review'),

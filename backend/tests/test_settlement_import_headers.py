@@ -35,3 +35,13 @@ def test_missing_order_header_fails_without_writes(db_session):
     assert result["inserted"] == 0
     assert "error" in result
     assert db_session.execute(select(OrderSettlement)).scalars().all() == []
+
+
+def test_agent_ingest_does_not_mark_invalid_bill_imported(db_session):
+    from pathlib import Path
+    from app.services.agent_ingest_service import _import_one
+    kind, status, report = _import_one(db_session, 'settlement', Path('bill.xlsx'), _bill(None))
+    assert kind == 'settlement'
+    assert status == 'error'
+    assert report['error']
+    assert db_session.execute(select(OrderSettlement)).scalars().all() == []
