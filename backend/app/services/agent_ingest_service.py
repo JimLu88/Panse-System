@@ -1683,6 +1683,14 @@ def run_ingest(
     _save_json(db, KEY_STATE, state)
     _save_json(db, KEY_LAST_INGEST, report)
     db.commit()
+    if report["imported"]:
+        # 定时订单/流水入库完成后，用独立 Session 做补单事实回填和全量对账；
+        # 防抖器会合并同批连续更新，避免每个文件各跑一遍。
+        try:
+            from app.services import realtime_sync_service
+            realtime_sync_service.trigger("agent-ingest")
+        except Exception:
+            _log.warning("agent ingest 后财务重算触发失败", exc_info=True)
     return report
 
 

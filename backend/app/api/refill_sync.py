@@ -17,11 +17,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.finance import RefillRecord
 from app.models.order import Order
-from app.services import order_cost_service
+from app.services import order_cost_service, order_sync_service
 
 router = APIRouter(prefix="/api/refill-sync", tags=["refill-sync"])
 
-REVIEW_SYNC_REMARK = "评价系统补单跟踪自动同步"
+REVIEW_SYNC_REMARK = order_sync_service.REVIEW_SYNC_REMARK
 REVIEW_REFILL_COMMISSION = Decimal("15.00")
 
 
@@ -58,6 +58,7 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
     }
 
     created = filled = commission_filled = flagged = already_marked = 0
+    date_repaired = amount_repaired = 0
     missing_orders: list[str] = []
     for no, item in normalized.items():
         order = orders.get(no)
@@ -66,7 +67,8 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
             record = RefillRecord(
                 order_no=no,
                 buyer_nick=order.customer_name if order else None,
-                refill_date=item.placed_date or (order.order_date if order else None) or date.today(),
+                # ERP 订单已经存在时，财务日期以订单事实为准；评价程序日期只在订单后到时暂存。
+                refill_date=(order.order_date if order else None) or item.placed_date or date.today(),
                 product_code=order.product_code if order else None,
                 product_name=item.product_name or (order.product_name if order else None),
                 sku=order.sku if order else None,
@@ -81,10 +83,15 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
             created += 1
         else:
             # 已有人工财务记录不覆盖，只补空白的基础识别字段。
-            before = (record.refill_date, record.product_name, record.product_code, record.sku,
-                      record.commission)
+            before = (record.refill_date, record.order_amount, record.product_name,
+                      record.product_code, record.sku, record.commission)
+            repaired: set[str] = set()
+            if order is not None:
+                repaired = order_sync_service.apply_review_refill_order_truth(record, order)
+                date_repaired += int("refill_date" in repaired)
+                amount_repaired += int("order_amount" in repaired)
             if record.refill_date is None:
-                record.refill_date = item.placed_date or (order.order_date if order else None)
+                record.refill_date = (order.order_date if order else None) or item.placed_date
             if not record.product_name:
                 record.product_name = item.product_name or (order.product_name if order else None)
             if not record.product_code and order:
@@ -95,8 +102,8 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
             if (record.remark or "").strip() == REVIEW_SYNC_REMARK and not record.commission:
                 record.commission = item.commission
                 commission_filled += 1
-            after = (record.refill_date, record.product_name, record.product_code, record.sku,
-                     record.commission)
+            after = (record.refill_date, record.order_amount, record.product_name,
+                     record.product_code, record.sku, record.commission)
             if after != before:
                 filled += 1
 
@@ -117,6 +124,8 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
         "created": created,
         "filled": filled,
         "commission_filled": commission_filled,
+        "date_repaired": date_repaired,
+        "amount_repaired": amount_repaired,
         "flagged": flagged,
         "already_marked": already_marked,
         "missing_orders": missing_orders,
@@ -128,4 +137,11 @@ def sync_review_order_tracks_api(
     payload: ReviewOrderTrackBatchIn,
     db: Session = Depends(get_db),
 ):
-    return sync_review_order_tracks(db, payload.items)
+    result = sync_review_order_tracks(db, payload.items)
+    # 数据已提交后后台重跑回填及全量对账；失败只影响自查，不回滚已接收的来源记录。
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger("refill-sync:review-order-tracks")
+    except Exception:  # pragma: no cover - 调度失败由日志/下一轮定时任务兜底
+        pass
+    return result

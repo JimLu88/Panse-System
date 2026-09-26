@@ -3,9 +3,15 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 
-from app.api.refill_sync import ReviewOrderTrackIn, sync_review_order_tracks
+from app.api.refill_sync import (
+    ReviewOrderTrackBatchIn,
+    ReviewOrderTrackIn,
+    sync_review_order_tracks,
+    sync_review_order_tracks_api,
+)
 from app.models.finance import RefillRecord
 from app.models.order import Order
+from app.services import order_sync_service
 
 
 def test_review_order_track_sync_is_persistent_and_idempotent(db_session):
@@ -39,7 +45,8 @@ def test_review_order_track_sync_is_persistent_and_idempotent(db_session):
 
     record = db_session.scalar(select(RefillRecord).where(RefillRecord.order_no == order.order_no))
     assert record is not None
-    assert record.refill_date == date(2026, 7, 20)
+    assert record.refill_date == date(2026, 7, 21)
+    assert record.order_amount == Decimal("100")
     assert record.product_name == "评价系统产品名"
     assert record.commission == Decimal("15.00")
     # RefillRecord 的既有事件钩子会把 sync_key 统一改成财务侧稳定业务键。
@@ -88,3 +95,67 @@ def test_review_order_track_sync_keeps_record_until_order_arrives(db_session):
     assert result["flagged"] == 0
     assert result["missing_orders"] == ["3310000000000000002"]
     assert db_session.scalar(select(func.count()).select_from(RefillRecord)) == 1
+
+
+def test_review_order_track_sync_repairs_date_and_amount_when_order_arrives_later(db_session):
+    order_no = "3310000000000000003"
+    sync_review_order_tracks(
+        db_session,
+        [ReviewOrderTrackIn(order_no=order_no, placed_date=date(2026, 9, 17))],
+    )
+    record = db_session.scalar(select(RefillRecord).where(RefillRecord.order_no == order_no))
+    assert record.refill_date == date(2026, 9, 17)
+    assert record.order_amount is None
+
+    order = Order(
+        platform="淘宝", order_no=order_no, order_date=date(2026, 9, 15),
+        paid_amount=Decimal("23.00"), status="signed", is_refill=False,
+    )
+    db_session.add(order)
+    db_session.commit()
+
+    result = order_sync_service.repair_review_refill_records(db_session)
+    assert result["records_updated"] == 1
+    assert result["date_repaired"] == 1
+    assert result["amount_repaired"] == 1
+    assert result["orders_flagged"] == 1
+    assert record.refill_date == date(2026, 9, 15)
+    assert record.order_amount == Decimal("23.00")
+    assert order.is_refill is True
+
+
+def test_review_order_truth_never_overwrites_manual_finance_record(db_session):
+    order = Order(
+        platform="淘宝", order_no="3310000000000000004",
+        order_date=date(2026, 9, 15), paid_amount=Decimal("23.00"),
+        status="signed", is_refill=False,
+    )
+    manual = RefillRecord(
+        order_no=order.order_no, refill_date=date(2026, 9, 14),
+        order_amount=Decimal("20.00"), commission=Decimal("10.00"),
+        remark="人工财务核定",
+    )
+    db_session.add_all([order, manual])
+    db_session.commit()
+
+    result = order_sync_service.repair_review_refill_records(db_session)
+    assert result["scanned"] == 0
+    assert manual.refill_date == date(2026, 9, 14)
+    assert manual.order_amount == Decimal("20.00")
+    assert order.is_refill is False
+
+
+def test_review_sync_api_schedules_reconciliation_after_commit(db_session, monkeypatch):
+    calls = []
+    from app.services import realtime_sync_service
+    monkeypatch.setattr(realtime_sync_service, "trigger", calls.append)
+
+    result = sync_review_order_tracks_api(
+        ReviewOrderTrackBatchIn(items=[
+            ReviewOrderTrackIn(order_no="3310000000000000005", placed_date=date(2026, 9, 16)),
+        ]),
+        db_session,
+    )
+
+    assert result["created"] == 1
+    assert calls == ["refill-sync:review-order-tracks"]

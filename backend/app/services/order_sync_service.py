@@ -18,7 +18,6 @@ import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -29,6 +28,71 @@ from app.models.order import Order
 from app.services import order_cost_service
 
 _logger = logging.getLogger("panse.order_sync")
+
+REVIEW_SYNC_REMARK = "评价系统补单跟踪自动同步"
+
+
+def apply_review_refill_order_truth(record: RefillRecord, order: Order) -> set[str]:
+    """用已入库订单修正评价程序自动生成的补单记录。
+
+    评价程序可能先于淘宝订单报表到达。此时只能暂存外部下单日期，订单金额也为空；
+    订单随后入库后，以 ERP 的 ``Order.order_date`` / ``paid_amount`` 为最终财务口径。
+    人工录入的补单记录不在这里覆盖。
+    """
+    if (record.remark or "").strip() != REVIEW_SYNC_REMARK:
+        return set()
+
+    changed: set[str] = set()
+    if order.order_date is not None and record.refill_date != order.order_date:
+        record.refill_date = order.order_date
+        changed.add("refill_date")
+    if order.paid_amount is not None and record.order_amount != order.paid_amount:
+        record.order_amount = order.paid_amount
+        changed.add("order_amount")
+    for field_name, value in (
+        ("buyer_nick", order.customer_name),
+        ("product_code", order.product_code),
+        ("product_name", order.product_name),
+        ("sku", order.sku),
+    ):
+        if not getattr(record, field_name) and value:
+            setattr(record, field_name, value)
+            changed.add(field_name)
+    return changed
+
+
+def repair_review_refill_records(db: Session) -> dict[str, int]:
+    """订单后到时回填自动补单，并同步补单标识；幂等，可在每轮实时对账前运行。"""
+    records = db.execute(
+        select(RefillRecord).where(RefillRecord.remark == REVIEW_SYNC_REMARK)
+    ).scalars().all()
+    order_nos = {(row.order_no or "").strip() for row in records if row.order_no}
+    orders = {
+        (row.order_no or "").strip(): row
+        for row in db.execute(select(Order).where(Order.order_no.in_(order_nos))).scalars().all()
+    } if order_nos else {}
+
+    result = {
+        "scanned": len(records), "matched": 0, "records_updated": 0,
+        "date_repaired": 0, "amount_repaired": 0, "orders_flagged": 0,
+    }
+    for record in records:
+        order = orders.get((record.order_no or "").strip())
+        if order is None:
+            continue
+        result["matched"] += 1
+        changed = apply_review_refill_order_truth(record, order)
+        if changed:
+            result["records_updated"] += 1
+            result["date_repaired"] += int("refill_date" in changed)
+            result["amount_repaired"] += int("order_amount" in changed)
+        if not order.is_refill:
+            order.is_refill = True
+            order_cost_service.recompute_and_save(db, order)
+            result["orders_flagged"] += 1
+    db.flush()
+    _logger.info("评价补单订单事实回填: %s", result)
+    return result
 
 
 @dataclass

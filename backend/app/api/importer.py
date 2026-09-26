@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -16,7 +18,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-import io
 
 from app.database import get_db
 from app.dependencies import require_role
@@ -27,6 +28,23 @@ from app.services import excel_importer
 from app.services.excel_schemas import ENTITY_SCHEMAS, list_entity_types
 
 router = APIRouter(prefix="/api/importer", tags=["importer"])
+_log = logging.getLogger("panse.importer")
+
+# 已提交且会改变对账依据的实体。试运行、失败 sheet 和纯商品资料不触发。
+_FINANCE_RECHECK_ENTITIES = frozenset({
+    "account_balance", "aftersales", "alipay_flow", "daily_operations",
+    "factory_order", "factory_reconciliation", "order", "order_details",
+    "outsourcing_expense", "part_purchase", "promotion_flow", "refill_record",
+    "wanshifu_bill",
+})
+
+
+def _schedule_finance_recheck(reason: str) -> None:
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger(reason)
+    except Exception:
+        _log.warning("导入后财务重算触发失败: %s", reason, exc_info=True)
 
 
 # ----------------------------- 元数据 ---------------------------- #
@@ -185,6 +203,8 @@ def commit_import(
         raise HTTPException(400, str(e))
     if not payload.dry_run:
         db.commit()
+        if payload.entity_type in _FINANCE_RECHECK_ENTITIES:
+            _schedule_finance_recheck(f"importer:{payload.entity_type}")
     return ImportReportOut(
         entity_type=report.entity_type, sheet_name=report.sheet_name,
         total_rows=report.total_rows,
@@ -500,6 +520,13 @@ def smart_commit(
         db.commit()
     except Exception:
         db.rollback()
+
+    if any(
+        not item.dry_run and item.entity_type in _FINANCE_RECHECK_ENTITIES
+        and not report.get("skipped") and not report.get("error")
+        for item, report in zip(payload.plan, reports)
+    ):
+        _schedule_finance_recheck("importer:smart-commit")
 
     # 导入后 AI 逻辑核查 + 运营分析 → 后台异步执行, 导入立即返回(不再阻塞 ~6s, 避免界面卡顿/误判崩溃)
     summary = {

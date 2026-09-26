@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-26.1'
+VERSION = '2026-09-26.2'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -114,6 +114,9 @@ NODES = [
     node('finance.closeout','限定派生修复与待核实台账','finance','source-bound closeout','services/multi_child_closeout_service.py','def apply'),
     node('finance.source_recovery','单账户登录续跑证据','finance','finance_task_success','services/agent_ingest_service.py','def start_pending_scans',note='主力号恢复只更新本账户；不代表聚合账单、万师傅等其他来源成功'),
     node('finance.pipeline_completion','全部流水来源完成','finance','flow_pull.success','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',note='全部所需来源具备当日持久入库证据才关闭总任务'),
+    node('sync.review_refill','评价程序补单跟踪同步','sync','POST review-order-tracks / confirmed order_no','api/refill_sync.py','def sync_review_order_tracks','外部日期仅作订单后到时的暂存值；不继承人工财务记录覆盖权限'),
+    node('after.refill_record','补单财务记录','after','RefillRecord.refill_date / order_amount / commission','models/finance.py','class RefillRecord','评价自动记录以ERP订单日期和实付为最终口径；人工记录不得被自动回填覆盖'),
+    node('finance.refill_transfer','刷单转款逐日对账','finance','refill_transfer:业务日-订单额/佣金','services/reconciliation_service.py','def run_refill_transfer','按业务日分别核对本金和佣金；部分付款保持待核，不能自动销账'),
     node('stock.demand','逐子SKU需求预测','stock','DemandObservation','services/inventory_demand_service.py','def load_observations'),
 ]
 
@@ -131,6 +134,11 @@ EDGES = [
     edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
     edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),
     edge('finance.source_recovery','finance.pipeline_completion','按全来源证据收口','逐来源入库成功','单账户扫码成功不能抹掉其他来源失败或隔离文件','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',kind='protect'),
+    edge('marketing.review','sync.review_refill','仅同步已确认的补单订单号','评价程序已确认且订单号有效','接口接收不证明订单报表已经入库；缺订单时保留待后续回填','api/refill_sync.py','def sync_review_order_tracks',kind='boundary'),
+    edge('sync.review_refill','after.refill_record','幂等生成评价补单记录','同订单号未有记录，或已有评价自动记录','人工财务记录只补空白识别字段，不覆盖人工核定日期和金额','api/refill_sync.py','def sync_review_order_tracks',kind='protect'),
+    edge('order.parent','after.refill_record','订单后到时回填业务日和实付','记录明确标记为评价系统自动同步且订单号精确匹配','Order.order_date和paid_amount为最终口径；不得据金额相似匹配其他订单','services/order_sync_service.py','def repair_review_refill_records'),
+    edge('after.refill_record','finance.refill_transfer','按业务日汇总订单额和佣金','非晶晶代付记录已排除','订单额与佣金分开核对；缺流水为待补依据，不冒充已付款','services/reconciliation_service.py','def run_refill_transfer'),
+    edge('finance.refill_transfer','automation.alert','写入并复核对账差异','逐日差额超过阈值','只有重算明确对平才自动关闭；部分付款和来源缺失继续保留','services/reconciliation_service.py','def _autoclose_resolved_diffs',kind='protect'),
     edge('order.parent','stock.ship_movement','读取母单扣成品现货','有产品/订单ID且原事件尚未记账、有正现货','核对母单qty与全部有效子行；无现货no-op不等于已发齐','services/product_stock_ledger_service.py','def record_shipment'),
     edge('order.child','stock.ship_movement','多子SKU库存覆盖缺口','当前函数读取母单product_code/sku/qty','逐子SKU实际库存扣减未在此入口证明，不能用图或表已同步替代','services/product_stock_ledger_service.py','def record_shipment',kind='gap',evidence='gap'),
     edge('stock.finished','stock.ship_movement','选择可扣现货行','SKU精确匹配优先，否则回退现货最多行','规格回退不等于精确匹配；扣减上限为现存量','services/product_stock_ledger_service.py','def _pick_stock_row',evidence='review'),
@@ -333,6 +341,8 @@ FLOWS = [
      'steps':['quantity.reply','factory.sheet','factory.receipt','sync.factory','sync.readback','sync.manual','sync.generic']},
     {'id':'after','name':'子单退款 → 售后 → 退回入库与费用核对',
      'steps':['order.refund','after.case','after.return','stock.inbound','after.payment','finance.profit']},
+    {'id':'refill-reconciliation','name':'评价补单 → 订单事实回填 → 本金/佣金逐日对账 → 异常自愈',
+     'steps':['marketing.review','sync.review_refill','order.parent','after.refill_record','finance.refill_transfer','automation.alert']},
     {'id':'settlement','name':'实际账单 → 月结支付 → 冲销与会计期间',
      'steps':['finance.actual','finance.freight','finance.profit','settlement.payment','settlement.reverse','settlement.period','settlement.expense']},
     {'id':'marketing','name':'推广样品与评价 → 费用/订单及系统权限边界',
