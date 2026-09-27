@@ -22,6 +22,8 @@ SOURCE_SHA = '996ff2b1dcd9ad6df35330bfecf78151bc740af3be440f0fcccd272544e9d486'
 REQUEST_SHA = '10e3743ac0e67538a0bf72eb54ab421efe236bf03b7e8a35f1f3f5e3749fd682'
 CAMPAIGN = 'legacy/itemApply/3172207691'
 WINDOW = {'start':'2026-09-28 00:00:00','end':'2026-09-30 23:59:59'}
+# WINDOW is immutable request provenance, NOT the campaign's target duration.
+TARGET_WINDOW = {'start':'2026-09-28 00:00:00','end':'2026-10-07 19:59:59'}
 TZ = timezone(timedelta(hours=8))
 INPUTS = {
     'calculation': ('outputs/01a067c6-7e83-7483-9a21-84b44ed7299b/super43-closeout-20260927/calculation.json', '99a191d8f43f433039e9a53d1aa5ef727171469269305c4b55d7658965742495'),
@@ -146,13 +148,41 @@ def coverage(data, payload, check):
     return lists
 
 
+def target_intersections(lists, items):
+    """Derive full-period intersections from unfiltered lists; never alter reads.
+
+    This is date analysis, not an extended amount read. Every overlap remains
+    isolated by partition, including newly overlapping offers without amounts.
+    """
+    rows, missing = [], []
+    for item in items:
+        for mode in ('商品级','SKU级'):
+            entry = lists.get((item,mode),{})
+            if entry.get('complete') is not True:
+                missing.append(dict(item=item,mode=mode,error=entry.get('error','not_reached')))
+                continue
+            for offer in entry['offers']:
+                original = offer['start'] <= WINDOW['end'] and WINDOW['start'] <= offer['end']
+                target = offer['start'] <= TARGET_WINDOW['end'] and TARGET_WINDOW['start'] <= offer['end']
+                rows.append(dict(item=item,mode=mode,offer_id=offer['offer_id'],
+                    start=offer['start'],end=offer['end'],
+                    overlaps_original_read_window=original,overlaps_target_window=target,
+                    classification='new_overlap' if target and not original else (
+                        'original_overlap' if original else 'disjoint'),
+                    extended_period_amount_read=False))
+    return dict(method='offline_intersection_of_complete_unfiltered_item_mode_lists',
+                original_read_window=dict(WINDOW),target_window=dict(TARGET_WINDOW),
+                counts=dict(Counter(r['classification'] for r in rows)),offers=rows,
+                missing_lists=missing,new_read_started=False,extended_period_amount_read=False)
+
+
 def future_window(start, now):
     value = datetime.strptime(start,'%Y-%m-%d %H:%M:%S').replace(tzinfo=TZ)
     if value.strftime('%Y-%m-%d %H:%M:%S') != start or now.tzinfo is None:
         raise ValueError('exact_beijing_activation_time_required')
-    if not WINDOW['start'] <= start <= WINDOW['end'] or value <= now:
-        raise ValueError('activation_must_be_future_inside_verified_window_no_backdate')
-    return dict(start=start,end=WINDOW['end'])
+    if not TARGET_WINDOW['start'] <= start < TARGET_WINDOW['end'] or value <= now:
+        raise ValueError('activation_must_be_future_inside_target_window_no_backdate')
+    return dict(start=start,end=TARGET_WINDOW['end'])
 
 
 def custom_price(row, basis):
@@ -360,7 +390,12 @@ def authority_state(snapshot,window,*,lists=None,absence=None):
 def report_text(result):
     lines=['# 超级立减43件集中处理结果','',
            '本地制表，不是报名成功。43件403SKU全部保留在 result.json。活动仍由用户上传。',
-           '原只读窗口：'+str(WINDOW),'本次新优惠生效窗口：'+str(result['effective_window']),
+           '原只读窗口（证据不改写）：'+str(WINDOW),
+           '本次优惠交集核对完整周期：'+str(result['target_window']),
+           '本次新优惠生效窗口：'+str(result['effective_window']),
+           '完整列表按每条优惠实际时间离线重算，不代表已读取延长时段的逐SKU优惠金额。',
+           '新增重叠优惠行数：'+str(result['window_analysis']['counts'].get('new_overlap',0)),
+           '从活动原起点到本次新优惠开始之前，不宣称已被此文件覆盖。旧9月30日补表保持HOLD，未记为已上传。',
            '上传时开始时间必须仍在未来；不能回填已过去的时间。',
            '只上传本目录实际生成的单品立减文件；该文件只包含逐行核验通过且无旧优惠/未知记录的普通SKU。',
            result['signup_reason'],'', '## 统计',json.dumps(result['counts'],ensure_ascii=False),'',
@@ -418,8 +453,9 @@ def prepare(effective_start,output_dir):
     for ref in calc['sources']:pinned(ref['path'],ref['sha256'])
     data,receipt=terminal(PROJECT/'Web-Agent程序/data/output/campaign-transfers',payload)
     lists=coverage(data,payload,load_checker())
+    window_analysis=target_intersections(lists,payload['items'])
     absence=current_batch_absence(payload,receipt)
-    bases,protected,offers,resolved=authority_state(snapshot,window,lists=lists,absence=absence)
+    bases,protected,offers,resolved=authority_state(snapshot,TARGET_WINDOW,lists=lists,absence=absence)
     activity,discounts,errors=build_rows(snapshot,identities,Decimal('.10'),'medium',bases,
         signup_items=set(calc['scope']),discount_items=set(calc['scope']),
         platform_caps={(r['item'],r['sku']):r.get('min_final') for r in identities})
@@ -430,8 +466,12 @@ def prepare(effective_start,output_dir):
     by_pair={(r['item'],r['sku']):r for r in baseline}
     by_pair.update({(r['item'],r['sku']):r for r in activity})
     activity=list(by_pair.values())
-    result=partition(identities,activity,discounts,errors,lists,protected,offers,window)
-    result.update(schema='super43-prepare-only-v1',items=43,skus=403,effective_window=window,
+    result=partition(identities,activity,discounts,errors,lists,protected,offers,TARGET_WINDOW)
+    result.update(schema='super43-prepare-only-v2',items=43,skus=403,effective_window=window,
+        target_window=dict(TARGET_WINDOW),window_analysis=window_analysis,
+        pricing=dict(rate='0.10',target='medium'),prior_short_window_file_status='HOLD_NOT_UPLOADED',
+        past_period_coverage_claimed=False,
+        absence_target_applicability='exact_id_absence_plus_date_unfiltered_complete_lists; original_read_window_unchanged',
         original_read_window=WINDOW,terminal=receipt,platform_write=False,database_write=False,
         business_acceptance=False,upload_owner='user',partial_terminal=data['state']=='partial_readback',
         verified_lists=sum(r['complete'] for r in lists.values()),
@@ -455,7 +495,7 @@ def prepare(effective_start,output_dir):
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--effective-start',required=True,help='Future Beijing time inside the original verified window')
+    parser.add_argument('--effective-start',required=True,help='Future Beijing activation before 2026-10-07 19:59:59; original read provenance unchanged')
     parser.add_argument('--output-dir',type=Path,required=True)
     args=parser.parse_args(argv)
     result=prepare(args.effective_start,args.output_dir)

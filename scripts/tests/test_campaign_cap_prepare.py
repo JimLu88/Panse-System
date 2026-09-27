@@ -119,13 +119,69 @@ def test_unchanged_custom_has_no_discount_and_no_forced_daily_reset():
     assert not r['discount_rows'] and not r['price_changes'] and r['rows'][0]['disposition']=='定制不加单品立减'
 
 
-@pytest.mark.parametrize('start',['2026-09-28 00:00:00','2026-09-27 23:59:59','2026-10-01 00:00:00','2026-09-28 01:00:00'])
+@pytest.mark.parametrize('start',['2026-09-28 00:00:00','2026-09-27 23:59:59','2026-10-07 20:00:00','2026-10-07 19:59:59','2026-09-28 01:00:00'])
 def test_no_backdate_or_window_expansion(start):
     with pytest.raises(ValueError):c.future_window(start,datetime(2026,9,28,1,tzinfo=c.TZ))
 
 
 def test_future_time_accepted():
-    assert c.future_window(START,datetime(2026,9,28,1,tzinfo=c.TZ))['end']==c.WINDOW['end']
+    assert c.future_window(START,datetime(2026,9,28,1,tzinfo=c.TZ))['end']==c.TARGET_WINDOW['end']
+
+
+@pytest.mark.parametrize('start',['2026-10-01 00:00:00','2026-10-07 19:59:58'])
+def test_future_activation_may_use_authorized_extended_period(start):
+    assert c.future_window(start,datetime(2026,9,28,1,tzinfo=c.TZ))==dict(start=start,end='2026-10-07 19:59:59')
+
+
+@pytest.mark.parametrize('start,end,classification',[
+    ('2026-09-28 00:00:00','2026-10-07 19:59:59','original_overlap'),
+    ('2026-10-01 00:00:00','2026-10-02 23:59:59','new_overlap'),
+    ('2026-10-07 19:59:59','2026-10-08 00:00:00','new_overlap'),
+    ('2026-10-07 20:00:00','2026-10-11 23:59:59','disjoint'),
+    ('2026-09-27 00:00:00','2026-09-27 23:59:59','disjoint'),
+])
+def test_full_target_dates_not_original_overlap_flag(start,end,classification):
+    lists=fixture()[4]
+    lists[I,'SKU级']['offers']=[dict(offer(),start=start,end=end,overlaps_requested_window=False)]
+    saved=copy.deepcopy(lists)
+    analysis=c.target_intersections(lists,[I])
+    assert analysis['counts']=={classification:1} and lists==saved
+    assert analysis['extended_period_amount_read'] is False
+    args=list(fixture());args[4]=lists;args[-1]=c.TARGET_WINDOW
+    assert bool(c.partition(*args)['discount_rows'])==(classification=='disjoint')
+
+
+def test_new_overlap_missing_amount_blocks_only_its_item():
+    args=list(fixture());peer='12345678902'
+    for idx in (0,1,2):args[idx].append(dict(args[idx][0],item=peer))
+    args[4].update({(peer,m):dict(complete=True,offers=[]) for m in ('商品级','SKU级')})
+    args[4][I,'SKU级']['offers']=[dict(offer(),start='2026-10-01 00:00:00',end=c.TARGET_WINDOW['end'])]
+    args[-1]=c.TARGET_WINDOW
+    result=c.partition(*args)
+    assert [r['item'] for r in result['discount_rows']]==[peer]
+    assert len(c.target_intersections(args[4],[I,peer])['offers'])==1
+
+
+def test_full_target_analysis_lists_missing_modes_without_inventing_empty():
+    lists=fixture()[4];lists.pop((I,'SKU级'))
+    result=c.target_intersections(lists,[I])
+    assert result['missing_lists']==[dict(item=I,mode='SKU级',error='not_reached')]
+
+
+def test_original_request_window_and_hash_are_not_extended(monkeypatch):
+    args=terminal_fixture(monkeypatch)
+    payload_before=copy.deepcopy(args[-1]);hash_before=c.REQUEST_SHA
+    c.target_intersections(fixture()[4],[I])
+    assert c.validate_terminal(*args)['price_window']==payload_before['price_window']==c.WINDOW
+    assert c.WINDOW['end']=='2026-09-30 23:59:59' and c.REQUEST_SHA==hash_before
+    args[-1]['price_window']=c.TARGET_WINDOW
+    with pytest.raises(ValueError):c.validate_terminal(*args)
+
+
+def test_original_period_overlap_before_future_start_is_not_erased():
+    args=list(fixture());args[-1]=c.TARGET_WINDOW
+    args[4][I,'SKU级']['offers']=[dict(offer(),end='2026-09-28 01:00:00')]
+    assert not c.partition(*args)['discount_rows']
 
 
 def test_full_pages_not_cached_flags_determine_coverage():
@@ -280,6 +336,11 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
     result=c.prepare(START,out)
     assert len(result['rows'])==403 and len(result['discount_rows'])==394
     assert result['verified_lists']==85 and result['partial_terminal'] is True
+    assert result['target_window']==c.TARGET_WINDOW and result['original_read_window']==c.WINDOW
+    assert result['effective_window']['end']=='2026-10-07 19:59:59'
+    assert result['pricing']==dict(rate='0.10',target='medium')
+    assert result['prior_short_window_file_status']=='HOLD_NOT_UPLOADED'
+    assert result['past_period_coverage_claimed'] is False
     assert not result['signup_rows'] and len(result['files'])==1
     generated=(out/result['files'][0]['name']).read_bytes()
     rows=read_rows(generated,'Sheet1')
