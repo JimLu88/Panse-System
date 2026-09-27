@@ -60,6 +60,11 @@ python -m app.cli.business_relationships --flow order
 
 ## 当前诚实覆盖边界
 
+2026-09-28 整批旧单品替换候选：精确本窗口用户授权＋冻结ERP目标＋官方G/P/cap及真实优惠模式
+→ campaign_replacement_audit双分支条件计算 → 全部拟暂停旧优惠成员并集覆盖审计 → 原优惠停用前
+集中缺口。本入口不生成XLSX、不释放上传、不暂停或重报，不写订单/库存/财务/飞书；缺少关系
+catalog映射，不能把CLI未映射理解为无影响。详见campaign-replacement-audit-20260928.md。
+
 2026-09-28 本机恢复试验分流：用户本次精确授权与官方当前活动导出 →
 campaign_recovery_trial 的单品金额修正/超级立减状态恢复分流 → 固定官方模板原价10%文件 →
 同一已交付文件adopt与商品交集防重放 → 官方Z/AA合并终态解析 → 同营销身份、完整SKU及价格读回。
