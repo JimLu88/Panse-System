@@ -26,6 +26,9 @@ def analyze(snapshot, inventory, scope):
 
 def main():
     import sys
+    if sys.argv[1:2] == ['recovery-trial']:
+        from campaign_recovery_trial import main as recovery_trial
+        return recovery_trial(sys.argv[2:])
     if sys.argv[1:2] == ['audit-current']:
         from campaign_official_current import main as audit_current
         return audit_current(sys.argv[2:])
