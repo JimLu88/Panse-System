@@ -230,6 +230,8 @@ class FactResolver:
         self.by_code = defaultdict(list)
         self.reference = snapshot.get('sku_fact_source')
         self.aliases = set()
+        from campaign_custom_correspondence_policy import approved_rows
+        self.correspondence = approved_rows(snapshot.get('registered_custom_correspondence'))
         self.alias_sources = snapshot.get('verified_code_alias_sources', []) + snapshot.get('catalog_repair_sources', [])
         for row in self.rows:
             self.by_code[row['code']].append(row)
@@ -246,6 +248,8 @@ class FactResolver:
     def resolve(self, item, sku, existing):
         facts = self.facts.get((item, sku), [])
         if not facts:
+            if (item,sku) in self.correspondence:
+                return [], 'authorized_correspondence_current_fact_missing', None
             return existing, None, None
         if len(facts) != 1 or 'duplicate_item_sku' in facts[0]['issues']:
             return [], 'duplicate_export_pair', None
@@ -253,6 +257,22 @@ class FactResolver:
         evidence = dict(source=self.reference, sheet=fact['sheet'], row=fact['row'],
                         merchant_code=fact['merchant_code'], attributes=fact['attributes'])
         code = fact['merchant_code'].strip()
+        exact = self.correspondence.get((item,sku))
+        if exact:
+            from campaign_custom_correspondence_policy import validate_target, KEY, APPROVED, digest
+            if fact['merchant_code']!=exact['raw_code'] or fact['attributes']!=exact['attributes']:
+                return [], 'authorized_correspondence_export_drift', evidence
+            candidates=self.by_code.get(exact['code'],[])
+            if len(candidates)!=1 or len(existing)>1 or any(r['code']!=exact['code'] for r in existing):
+                return [], 'authorized_correspondence_binding_conflict', evidence
+            candidate=candidates[0]
+            validate_target(candidate,exact)
+            issue=semantic_issue(fact,candidate)
+            if issue:return [],issue,evidence
+            evidence.update(resolution='erp_exact_user_custom_correspondence',registry_key=KEY,
+                authorization_sha256=digest(APPROVED),canonical_erp_code=exact['code'],
+                primary_binding_preserved=True)
+            return [candidate],None,evidence
         if not code:
             # Never erase a valid ERP binding; absence cannot establish a new one.
             return existing, None if existing else 'merchant_code_blank', evidence

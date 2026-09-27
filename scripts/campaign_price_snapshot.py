@@ -25,6 +25,8 @@ SELECT json_build_object('_catalog_state',true,'delisted_skuids',value_plain)
 FROM system_settings WHERE key='delisted_skuids' AND is_secret=false;
 SELECT json_build_object('_item_exclusion',true,'item',taobao_item_id,'reason',reason,'source',source)
 FROM campaign_item_exclusions WHERE active=true ORDER BY taobao_item_id;
+SELECT json_build_object('_custom_correspondence',true,'document',value_plain::json)
+FROM system_settings WHERE key='campaign_custom_correspondence_724042164333_20260927' AND is_secret=false;
 COMMIT;
 """
 
@@ -41,7 +43,12 @@ def load_rows():
     command = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-db-1 psql -X -v ON_ERROR_STOP=1 -U panse -d panse_erp -At'
     run = subprocess.run(['C:/Program Files/Git/usr/bin/ssh.exe', '-i', str(Path.home()/'.ssh/panse_nas'), '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-p', '2222', '15068803006@DS923plus', command], input=SQL, capture_output=True, text=True, encoding='utf-8', timeout=45, check=True)
     parsed = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{')]
-    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state') and not r.get('_item_exclusion'))
+    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state') and not r.get('_item_exclusion') and not r.get('_custom_correspondence'))
+    aliases=[r['document'] for r in parsed if r.get('_custom_correspondence')]
+    if len(aliases)>1:raise ValueError('custom_correspondence_not_unique')
+    rows.registered_custom_correspondence=aliases[0] if aliases else None
+    from campaign_custom_correspondence_policy import approved_rows
+    approved_rows(rows.registered_custom_correspondence)
     rows.registered_item_exclusions = [{k:r[k] for k in ('item','reason','source')}
                                       for r in parsed if r.get('_item_exclusion')]
     state=[r for r in parsed if r.get('_catalog_state')]
@@ -78,6 +85,9 @@ def apply_rotation_receipt(rows, receipt):
 
 
 def build_snapshot(rows, receipt=None):
+    from campaign_custom_correspondence_policy import approved_rows
+    correspondence=deepcopy(getattr(rows,'registered_custom_correspondence',None))
+    approved_rows(correspondence)
     resolved = apply_rotation_receipt(rows, receipt) if receipt is not None else deepcopy(rows)
     active = [r for r in resolved if r.get('listing_status') == '在售']
     ids = set()
@@ -95,6 +105,7 @@ def build_snapshot(rows, receipt=None):
         'database_write': False, 'platform_write': False, 'no_sales_filter_applied': False,
         'registered_delisted_sku_ids': sorted(set(getattr(rows,'registered_delisted_sku_ids',[]))),
         'registered_item_exclusions': exclusions,
+        'registered_custom_correspondence': correspondence,
         'item_exclusions_source': 'campaign_item_exclusions active rows in the same read-only ERP transaction',
         'catalog_registry_source': 'system_settings.delisted_skuids in the same read-only ERP transaction',
         'all_erp_rows': resolved, 'current_sellable_item_ids': sorted(ids-excluded),

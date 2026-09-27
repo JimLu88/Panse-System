@@ -60,6 +60,11 @@ python -m app.cli.business_relationships --flow order
 
 ## 当前诚实覆盖边界
 
+2026-09-27 三条定制对应：用户精确确认 → campaign_custom_correspondence的生产只读preview/受保护apply →
+system_settings单条可审计登记 → 新价格快照registered_custom_correspondence → FactResolver精确四项原表核对 →
+固定制表的正确ERP定制行。原始price/mapping rows不改写，主备用绑定、订单、财务、固定原价20%基线不变；
+不传播到其他商品或全局编码别名。详见campaign-custom-correspondence-20260927.md；这些本机脚本仍未在运行图建模。
+
 2026-09-27 链接停用链：用户仓库截图 → 精确单次preview/apply → 既有
 campaign_item_exclusions显式记录 → 新价格快照的registered_item_exclusions →
 候选集合/普通立减/报名行按item排除。只停用该链接活动资格，不改Product.listing_status，
