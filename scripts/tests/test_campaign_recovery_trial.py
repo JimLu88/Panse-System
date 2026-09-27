@@ -369,3 +369,60 @@ def test_historical_registration_requires_real_matching_report(local,tmp_path,ba
         c.register_result(receipt['path'],official['path'],'0'*64 if bad=='hash' else official['sha256'],
                           '' if bad=='missing_operation' else 'test import',ledger=tmp_path/'history')
     assert not (tmp_path/'history').exists()
+
+
+def test_record_existing_reserved_trial_missing_original_without_new_trial(local,tmp_path):
+    _,_,p=local
+    Path(p['file']).unlink()
+    e=event(tmp_path,p,'official_import_terminal',package(terminal=True),operation_reference='test original import')
+    path=save(tmp_path,'official-event.json',e)
+    root=Path(p['trial_dir']);original_request=(root/'request.json').read_bytes()
+    original_prepared=(root/'prepared.json').read_bytes()
+    with pytest.raises(ValueError,match='workbook_missing'):c.record(root,path['path'])
+    result=c.record(root,path['path'],historical_missing_original=True)
+    assert result['state']=='awaiting_same_marketing_readback'
+    assert result['original_workbook_missing'] and not result['original_workbook_verified']
+    assert (root/'request.json').read_bytes()==original_request
+    assert (root/'prepared.json').read_bytes()==original_prepared
+    assert not Path(p['file']).exists()
+    assert len(list((tmp_path/'ledger').iterdir()))==1
+    rb=event(tmp_path,p,'same_marketing_readback',package(state='活动中'),operation_reference='test original import')
+    rbfile=save(tmp_path,'readback-event.json',rb)
+    assert c.record(root,rbfile['path'])['state']=='recovered_this_trial'
+
+
+@pytest.mark.parametrize('kind',['user_uploaded','risk_warning','export_refresh','same_marketing_readback'])
+def test_missing_original_flag_cannot_replace_real_terminal(local,tmp_path,kind):
+    _,_,p=local;Path(p['file']).unlink()
+    e=save(tmp_path,'event.json',event(tmp_path,p,kind))
+    with pytest.raises(ValueError,match='only_for_matching_official_terminal'):
+        c.record(p['trial_dir'],e['path'],historical_missing_original=True)
+    assert not list(Path(p['trial_dir']).glob('event-*.json'))
+
+
+def test_missing_original_flag_never_accepts_changed_existing_workbook(local,tmp_path):
+    _,_,p=local;Path(p['file']).write_bytes(b'changed')
+    e=save(tmp_path,'event.json',event(tmp_path,p,'official_import_terminal',package(terminal=True),operation_reference='test'))
+    with pytest.raises(ValueError,match='workbook_changed'):
+        c.record(p['trial_dir'],e['path'],historical_missing_original=True)
+
+
+def test_missing_original_result_still_checks_original_file_binding(local,tmp_path):
+    _,_,p=local;Path(p['file']).unlink()
+    raw=package(terminal=True)
+    e=event(tmp_path,p,'official_import_terminal',raw,operation_reference='test')
+    e['file_sha256']='0'*64
+    path=save(tmp_path,'bad-event.json',e)
+    with pytest.raises(ValueError,match='mismatch'):
+        c.record(p['trial_dir'],path['path'],historical_missing_original=True)
+    assert not list(Path(p['trial_dir']).glob('event-*.json'))
+
+
+def test_missing_original_result_rejects_wrong_official_sku(local,tmp_path,monkeypatch):
+    _,_,p=local;Path(p['file']).unlink()
+    monkeypatch.setitem(globals(),'SKUS',[str(int(SKUS[0])+999),*SKUS[1:]])
+    e=event(tmp_path,p,'official_import_terminal',package(terminal=True),operation_reference='test')
+    path=save(tmp_path,'wrong-sku-event.json',e)
+    with pytest.raises(ValueError,match='full_scope_or_price_mismatch'):
+        c.record(p['trial_dir'],path['path'],historical_missing_original=True)
+    assert not list(Path(p['trial_dir']).glob('event-*.json'))

@@ -331,12 +331,15 @@ def transition(prepared, previous, event):
     raise ValueError('unsupported_event_no_inferred_recheck')
 
 
-def record(trial_dir, event_path):
+def record(trial_dir, event_path, *, historical_missing_original=False):
     root = Path(trial_dir).resolve(strict=True)
     prepared = load(root/'prepared.json')
+    reserved = load(root/'request.json')
+    if (prepared['request'] != reserved['request']
+            or prepared['request_sha256'] != reserved['request_sha256']
+            or canonical_scope(prepared['original_rows']) != canonical_scope(prepared['request']['scope'])):
+        raise ValueError('existing_trial_reservation_or_scope_changed')
     original = Path(prepared['file'])
-    if not original.exists() and prepared.get('mode') != 'historical_receipt_only':
-        raise ValueError('prepared_workbook_missing')
     if original.exists() and sha(original.read_bytes()) != prepared['file_sha256']:
         raise ValueError('prepared_workbook_changed')
     event = load(event_path)
@@ -348,6 +351,18 @@ def record(trial_dir, event_path):
     try:
         events = sorted(root.glob('event-*.json'))
         previous = load(events[-1])['result'] if events else prepared
+        if not original.exists():
+            already_historical = previous.get('mode') == 'historical_receipt_only'
+            if not already_historical and not historical_missing_original:
+                raise ValueError('prepared_workbook_missing')
+            if historical_missing_original and event.get('kind') != 'official_import_terminal':
+                raise ValueError('missing_original_override_only_for_matching_official_terminal')
+            # Same reserved trial, never a new registration or upload opportunity.
+            # transition still verifies official file hash, full SKU/price/rate and operation.
+            prepared = dict(prepared,mode='historical_receipt_only')
+            previous = dict(previous,mode='historical_receipt_only',original_workbook_missing=True,
+                            original_workbook_verified=False,
+                            original_file_hash_basis='existing_prepared_receipt_not_reconstructed_workbook')
         result = transition(prepared, previous, event)
         write_new(root/f'event-{len(events)+1:04d}.json', dict(event=event,
                   event_file_sha256=sha(Path(event_path).read_bytes()), result=result))
@@ -440,6 +455,8 @@ def main(argv=None):
     p = sub.add_parser('record')
     p.add_argument('--trial-dir', type=Path, required=True)
     p.add_argument('--event', type=Path, required=True)
+    p.add_argument('--historical-missing-original', action='store_true',
+                   help='Record matching official result in the existing trial if original upload XLSX moved; never recreate it.')
     p = sub.add_parser('adopt-delivery')
     p.add_argument('--receipt', type=Path, required=True)
     p = sub.add_parser('register-result')
@@ -449,7 +466,7 @@ def main(argv=None):
     p.add_argument('--operation-reference', required=True)
     args = parser.parse_args(argv)
     if args.command == 'record':
-        result = record(args.trial_dir, args.event)
+        result = record(args.trial_dir, args.event,historical_missing_original=args.historical_missing_original)
     elif args.command == 'adopt-delivery':
         result = adopt_delivery(args.receipt)
     elif args.command == 'register-result':

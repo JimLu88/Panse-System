@@ -64,6 +64,14 @@ authorization/source/master均带path和sha256。授权材料须说明精确商�
 
 ## 持久日志与真实验收
 
+已prepare占位的试验，原上传XLSX后来移走且新的官方结果已归档时，使用原trial目录的
+`record --trial-dir <原目录> --event <原官方结果事件.json> --historical-missing-original`。
+不另建trial、不再次register-result，不重建上传表。该显式参数只接受完整匹配SKU/原价/比例、
+原文件hash和操作引用的official_import_terminal；风险提示/上传自述/读回不能借此越过终态。
+request.json与prepared.json的原范围/请求hash必须一致，原文件仍存在但hash变化继续拒绝。
+追加事件保留original_workbook_missing=true、original_workbook_verified=false，不改原prepared；
+以后同操作真实读回可继续追加。原件缺失不影响保护已成功/未知范围，也不是重传许可。
+
 默认账本位于 `活动准备/报名状态/recovery-trials`（本地JSON，不是ERP业务库）。
 按活动+对象+商品独立占位，不随请求文件名/输出路径变化放行第二份；生成中断保留未知，
 prepared也不能当平台提交。账本不阻止人直接去平台重复上传，用户仍只上传一次。
