@@ -23,6 +23,8 @@ SELECT row_to_json(q) FROM (
 ) q;
 SELECT json_build_object('_catalog_state',true,'delisted_skuids',value_plain)
 FROM system_settings WHERE key='delisted_skuids' AND is_secret=false;
+SELECT json_build_object('_item_exclusion',true,'item',taobao_item_id,'reason',reason,'source',source)
+FROM campaign_item_exclusions WHERE active=true ORDER BY taobao_item_id;
 COMMIT;
 """
 
@@ -39,7 +41,9 @@ def load_rows():
     command = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-db-1 psql -X -v ON_ERROR_STOP=1 -U panse -d panse_erp -At'
     run = subprocess.run(['C:/Program Files/Git/usr/bin/ssh.exe', '-i', str(Path.home()/'.ssh/panse_nas'), '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-p', '2222', '15068803006@DS923plus', command], input=SQL, capture_output=True, text=True, encoding='utf-8', timeout=45, check=True)
     parsed = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{')]
-    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state'))
+    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state') and not r.get('_item_exclusion'))
+    rows.registered_item_exclusions = [{k:r[k] for k in ('item','reason','source')}
+                                      for r in parsed if r.get('_item_exclusion')]
     state=[r for r in parsed if r.get('_catalog_state')]
     if len(state)>1:raise ValueError('catalog_registry_not_unique')
     rows.registered_delisted_sku_ids=json.loads(state[0]['delisted_skuids']) if state else []
@@ -81,6 +85,8 @@ def build_snapshot(rows, receipt=None):
         for value in [r.get('item'), r.get('product_item_id'), *(r.get('product_alt_item_ids') or [])]:
             if str(value or '').isdigit():
                 ids.add(str(value))
+    exclusions = deepcopy(getattr(rows,'registered_item_exclusions',[]))
+    excluded = exclusion_ids({'registered_item_exclusions':exclusions})
     return {
         'schema': 'campaign_erp_price_snapshot_v1', 'captured_at': datetime.now(timezone.utc).isoformat(),
         'source': 'ERP pricing_sku + pricing_sku_promo + products, one repeatable-read read-only transaction',
@@ -88,12 +94,26 @@ def build_snapshot(rows, receipt=None):
         'rotation_receipt_sha256': digest(receipt) if receipt else None,
         'database_write': False, 'platform_write': False, 'no_sales_filter_applied': False,
         'registered_delisted_sku_ids': sorted(set(getattr(rows,'registered_delisted_sku_ids',[]))),
+        'registered_item_exclusions': exclusions,
+        'item_exclusions_source': 'campaign_item_exclusions active rows in the same read-only ERP transaction',
         'catalog_registry_source': 'system_settings.delisted_skuids in the same read-only ERP transaction',
-        'all_erp_rows': resolved, 'current_sellable_item_ids': sorted(ids),
+        'all_erp_rows': resolved, 'current_sellable_item_ids': sorted(ids-excluded),
         'unknown_listing_status_codes': [r['code'] for r in resolved if not r.get('listing_status')],
         'unmapped_sellable_codes': [r['code'] for r in active if not r.get('item') or not r.get('sku')],
         'notes': 'ERP listing status is a local source, not a fresh platform scan. All raw rows and unknown states are retained. Use the current official template for actual enabled SKU range; never use historical no-sales to filter. Daily/medium/big are stored values, not recomputed. Custom original floors must come from separate confirmed provenance, not current daily.',
     }
+
+
+def exclusion_ids(snapshot):
+    rows=snapshot.get('registered_item_exclusions',[])
+    if not isinstance(rows,list):raise ValueError('invalid_item_exclusion_registry')
+    ids=[]
+    for r in rows:
+        if not isinstance(r,dict) or not isinstance(r.get('item'),str) or not r['item'].isascii() or not r['item'].isdigit() or not r.get('reason') or not r.get('source'):
+            raise ValueError('invalid_item_exclusion_registry')
+        ids.append(r['item'])
+    if len(ids)!=len(set(ids)):raise ValueError('duplicate_item_exclusion_registry')
+    return set(ids)
 
 
 def main():

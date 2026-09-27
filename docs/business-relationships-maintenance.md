@@ -60,6 +60,12 @@ python -m app.cli.business_relationships --flow order
 
 ## 当前诚实覆盖边界
 
+2026-09-27 链接停用链：用户仓库截图 → 精确单次preview/apply → 既有
+campaign_item_exclusions显式记录 → 新价格快照的registered_item_exclusions →
+候选集合/普通立减/报名行按item排除。只停用该链接活动资格，不改Product.listing_status，
+不移动共用PricingSku/Promo身份，不改变价格、订单、库存、财务、工厂表或飞书。
+旧快照不改写、新链接在售状态不推断；具体入口与旧通用导出覆盖缺口见campaign-link-retirement-20260927.md。
+
 2026-09-27 本机消费者补查：已验证编码别名凭证 → FactResolver 精确身份核对 →
 全量报名对应审计 / 普通款立减计算两个分支。前者保留全部真实冲突；后者只对确定普通款
 计价，确定定制且不需报名的行不形成普通款门槛。普通/定制混合、跨商品或未知不猜配。

@@ -55,6 +55,8 @@ def load_bases(paths):
 
 
 def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None):
+    from campaign_price_snapshot import exclusion_ids
+    excluded_links=exclusion_ids(snapshot)
     erp = snapshot['all_erp_rows']
     if digest(erp) != snapshot['resolved_price_version_sha256']:
         raise ValueError('price_snapshot_changed')
@@ -81,6 +83,8 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
         if pair in pairs:
             raise ValueError('duplicate_current_template_pair')
         pairs.add(pair)
+        if pair[0] in excluded_links:
+            continue  # Exact whole-link marker, never a product/SKU deletion.
         row_common = dict(item=pair[0],sku=pair[1])
         needs_signup = pair[0] not in successful_items and (signup_items is None or pair[0] in signup_items)
         needs_discount = discount_items is None or pair[0] in discount_items
@@ -189,8 +193,12 @@ def _generate(args,authority):
     blocked_signup=authority.blocked(campaign,'signup',args.start,args.end)
     blocked_discount=authority.blocked(campaign,'discount',args.start,args.end)
     present={r['item'] for r in identities}
+    from campaign_price_snapshot import exclusion_ids
+    excluded_links=exclusion_ids(snapshot)
     signup_items=(present if signup_items is None else signup_items)-blocked_signup.keys()
     discount_items=present if discount_items is None else discount_items
+    signup_items=signup_items-excluded_links
+    discount_items=discount_items-excluded_links
     missing=(signup_items|discount_items)-present
     if missing and getattr(args,'continuous_rule_sha',None):
         activity, discounts, issues=build_rows(snapshot,identities,rate,args.target,bases,signup_items&present,discount_items&present)
@@ -237,6 +245,7 @@ def _generate(args,authority):
     if tolerance:
         result['note']='Current pinned campaign-only user tolerance applied to actual reused discounts; not a daily-price change or automatic minus-two adjustment. No upload files on other issues; no platform preflight.'
     result['protected_scope']={'signup':blocked_signup,'discount':blocked_discount}
+    result['excluded_link_scope']=snapshot.get('registered_item_exclusions',[])
     outputs = []
     if not issues:
         if activity:
