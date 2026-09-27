@@ -211,6 +211,33 @@ def test_running_job_rejected_before_touching_any_result_file(tmp_path):
         c.terminal(tmp_path,{})
 
 
+def inactive_fixture():
+    old=dict(offer(),platform_offer_id='145761399121',items=[dict(item=I,status='unknown')])
+    proof=dict(offer_ids=sorted(c.REMOVED_IDS))
+    return old,proof
+
+
+def test_same_batch_double_evidence_only_removes_availability_not_history():
+    old,proof=inactive_fixture();saved=copy.deepcopy(old)
+    remaining,resolved=c.filter_batch_inactive([old],fixture()[4],proof)
+    assert not remaining and len(resolved)==1 and old==saved
+    assert resolved[0]['historical_status']=='unknown' and resolved[0]['claim_unchanged']
+
+
+@pytest.mark.parametrize('case',['missing_proof','unknown_id','actual_active','wrong_old_window','missing_list','id_reappeared','unrelated_item'])
+def test_same_batch_absence_cannot_clear_other_unknowns_or_missing_lists(case):
+    old,proof=inactive_fixture();lists=fixture()[4]
+    if case=='unknown_id':old['platform_offer_id']='bundle:unknown'
+    if case=='actual_active':old['platform_offer_id']='146901969223'
+    if case=='missing_proof':proof['offer_ids']=[]
+    if case=='wrong_old_window':old['end']='2026-10-07 19:59:59'
+    if case=='missing_list':lists.pop((I,'SKU级'))
+    if case=='id_reappeared':lists[I,'SKU级']['offers']=[dict(offer(),offer_id='145761399121')]
+    if case=='unrelated_item':old['items'][0]['item']='999999999'
+    remaining,resolved=c.filter_batch_inactive([old],lists,proof)
+    assert remaining==[old] and not resolved
+
+
 def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path,monkeypatch):
     """Synthetic business data, real fixed writer. No production terminal read."""
     from campaign_price_snapshot import digest
@@ -242,7 +269,8 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
     pages[-1]['pages']=[]
     data=dict(rows=pages,state='partial_readback')
     monkeypatch.setattr(c,'terminal',lambda *_:(data,dict(sha256='f'*64)))
-    monkeypatch.setattr(c,'authority_state',lambda *_:({}, {}, []))
+    monkeypatch.setattr(c,'current_batch_absence',lambda *_:dict(offer_ids=[]))
+    monkeypatch.setattr(c,'authority_state',lambda *_,**kw:({}, {}, [], []))
     class Clock:
         @staticmethod
         def now(tz):return datetime(2026,9,28,1,tzinfo=tz)

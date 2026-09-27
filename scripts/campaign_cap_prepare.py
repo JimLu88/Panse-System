@@ -213,6 +213,8 @@ def partition(identities, activity, discounts, errors, lists, protected, offers,
         if a:
             r['custom']=a['custom']
             try:
+                if not a['custom'] and source.get('current_price') in (None,''):
+                    raise ValueError('ordinary_current_activity_price_missing')
                 change = custom_price(source,a.get('custom_basis')) if a['custom'] else (
                     dict(activity_price=a['activity_price']) if money(source['current_price']) != money(a['activity_price']) else None)
                 if change and source.get('marketing_id') and source.get('state') == '异常':
@@ -243,7 +245,90 @@ def partition(identities, activity, discounts, errors, lists, protected, offers,
                 signup_rows=[],signup_reason='全部为既有异常报名记录；不得作为新报名重传。价格修改须原位操作，当前没有已验证的批量修改导入能力。')
 
 
-def authority_state(snapshot,window):
+ABSENCE_JOB='e1a092c171a372431ee0023ba27c8cc95e830442d5d43e09bcfe9334d42d3b4c'
+ABSENCE_SHA='45513073a59a516489fcc25f68c4158368d74fda7582278d0e8cba546f8700cc'
+ABSENCE_REQUEST_SHA='57b566a8e08fcb2b5a920d4c8df0fce22abb4606983fffdca622ac7a204b6f21'
+RESUMED_SHA='19ed12a531e5e0f4ff7925699203873d2e25156063635905e17b81a393a128bf'
+REMOVED_IDS={'145761399121','145807488351','145812384556'}
+
+
+def current_batch_absence(payload,receipt):
+    """This batch's already completed exact-ID proof, not the old registry alone.
+
+    Does not reinterpret an old 30-minute availability receipt as fresh. Combines
+    the pinned Sep27 batch's exact-ID terminal with its own later complete item
+    lists. Not a general age bypass or an activity cancellation receipt.
+    """
+    if receipt['sha256']!=RESUMED_SHA:
+        raise ValueError('same_batch_absence_requires_exact_resumed_terminal')
+    root=PROJECT/'Web-Agent程序/data/output/campaign-transfers'
+    raw=pinned(root/ABSENCE_JOB/'discount-readback.json',ABSENCE_SHA)
+    data=json.loads(raw)
+    db=readonly(root/'jobs.sqlite')
+    try:
+        row=db.execute('SELECT * FROM campaign_transfer_jobs WHERE id=?',(ABSENCE_JOB,)).fetchone()
+        batch=db.execute('SELECT plan FROM campaign_discount_batch_read_resume WHERE id=?',(JOB,)).fetchone()
+    finally:db.close()
+    if not row or row['state']!='finished' or row['operation']!='discount_readback':
+        raise ValueError('same_batch_exact_id_read_not_finished')
+    request=json.loads(row['request']);r=request['payload'];result=json.loads(row['result'] or '{}')
+    if (row['request_sha']!=ABSENCE_REQUEST_SHA
+            or fingerprint(dict(operation=row['operation'],request=request))!=ABSENCE_REQUEST_SHA
+            or request['request_sha']!=fingerprint(r)
+            or request['action_id']!=ABSENCE_JOB or r.get('offer_status_only') is not True
+            or r['identity']!=payload['identity'] or r['price_window']!=WINDOW
+            or data['price_window']!=WINDOW or data['shop_name']!='畔色木作'
+            or data['read_request_id']!=r['read_request_id']
+            or data['state']!='offer_status_readback' or data['platform_write'] is not False
+            or any(result.get(k)!=v for k,v in data.items())):
+        raise ValueError('same_batch_exact_id_identity_or_receipt_changed')
+    rows=data['rows']
+    if len({x['offer_id'] for x in rows})!=len(rows) or {x['offer_id'] for x in rows}!={x['offer_id'] for x in r['offers']}:
+        raise ValueError('same_batch_exact_id_scope_changed')
+    accepted={x['offer_id'] for x in rows if x.get('observed_state')=='not_found'
+              and x.get('unfiltered_exact_query') is True and x.get('search_value')==x['offer_id']
+              and x.get('evidence_kind')=='official_exact_id_empty_result' and x.get('platform_write') is False}
+    if accepted!=REMOVED_IDS:raise ValueError('same_batch_exact_absence_not_proven')
+    if not batch or datetime.fromisoformat(json.loads(batch['plan'])['original_read_finished_at']) < max(datetime.fromisoformat(x['observed_at']) for x in rows if x['offer_id'] in accepted):
+        raise ValueError('same_batch_terminal_must_follow_exact_absence')
+    recording=result.get('recording') or {}
+    if recording.get('active') is not False or recording.get('frames',0)<=0 or recording.get('capture_errors')!=0 or recording.get('error'):
+        raise ValueError('same_batch_exact_id_recording_incomplete')
+    video=Path(recording['video']).resolve(strict=True)
+    if not video.is_relative_to((root/ABSENCE_JOB/'recording').resolve()):
+        raise ValueError('same_batch_recording_path_changed')
+    pinned(video,recording['video_sha256'])
+    # Already documented user removal instruction is bound to precisely these
+    # IDs. It is NOT a current-state proof, and is never used alone to release rows.
+    instruction=json.loads(pinned(PROJECT/'outputs/campaign-national-20260920/verified-current-offer-availability-20260921.json',
+                                  'ceeff0ddf1b34168f9d0f23c83914a67eafbedb875a9ce3037aa610493b70eb5'))
+    if instruction.get('user_removed_old_offers') is not True or set(instruction['offer_ids'])!=accepted:
+        raise ValueError('exact_old_offer_removal_instruction_missing')
+    return dict(job_id=ABSENCE_JOB,sha256=ABSENCE_SHA,offer_ids=sorted(accepted),
+                observed_at={x['offer_id']:x['observed_at'] for x in rows if x['offer_id'] in accepted},
+                terminal_sha256=receipt['sha256'],scope='same_super43_prepare_only',platform_write=False)
+
+
+def filter_batch_inactive(offers,lists,proof):
+    remaining,resolved=[],[]
+    for offer in offers:
+        platform=offer.get('platform_offer_id',offer['offer_id'])
+        if platform not in proof['offer_ids'] or dict(start=offer['start'],end=offer['end'])!=WINDOW:
+            remaining.append(offer);continue
+        kept=[]
+        for item in offer['items']:
+            evidence=[lists.get((item['item'],mode),{}) for mode in ('商品级','SKU级')]
+            if (all(e.get('complete') is True for e in evidence)
+                    and all(o['offer_id']!=platform for e in evidence for o in e['offers'])):
+                resolved.append(dict(item=item['item'],offer_id=platform,
+                    historical_status=item['status'],claim_unchanged=True,
+                    reason='same_batch_exact_id_absence_and_complete_later_item_lists'))
+            else:kept.append(item)
+        if kept:remaining.append(dict(offer,items=kept))
+    return remaining,resolved
+
+
+def authority_state(snapshot,window,*,lists=None,absence=None):
     from campaign_entry_authority import Authority, MANIFEST, STATE
     from campaign_discount_availability import inactive_for_window
     a = Authority.__new__(Authority)
@@ -252,9 +337,22 @@ def authority_state(snapshot,window):
     try:
         a.db.execute('BEGIN')
         bases=a.bases(snapshot)
-        protected=a.blocked(CAMPAIGN,'discount',window['start'],window['end'])
-        offers=[o for o in a.discount_offers() if not inactive_for_window(o,CAMPAIGN,window['start'],window['end'])]
-        return bases,protected,offers
+        offers=[]
+        raw=a.discount_offers()
+        resolved=[]
+        if absence is not None:raw,resolved=filter_batch_inactive(raw,lists,absence)
+        for o in raw:
+            try:inactive=inactive_for_window(o,CAMPAIGN,window['start'],window['end'])
+            except ValueError as exc:
+                if str(exc)!='offer_availability_readback_stale':raise
+                inactive=False  # Stale receipt blocks this offer, not unrelated items.
+            if not inactive:offers.append(o)
+        # The same filtered offer set owns protection. Re-adding blocked() here
+        # would revive an independently verified inactive old ID. History is unchanged.
+        protected={v['item']:v['status'] for o in offers
+                   if o['start']<=window['end'] and window['start']<=o['end']
+                   for v in o['items'] if v['status'] in ('success','unknown')}
+        return (bases,protected,offers,resolved) if absence is not None else (bases,protected,offers)
     finally:
         a.close()
 
@@ -291,6 +389,7 @@ def report_text(result):
         'existing_activity_price_must_be_corrected_in_place':'需按上表原位修改现有活动价',
         'current_platform_cap_missing':'缺本场平台卡控价格',
         'custom_current_price_or_cap_missing':'定制SKU缺当前活动价或本场卡控价格',
+        'ordinary_current_activity_price_missing':'普通SKU缺平台当前活动价',
         'platform_cap_exceeds_frozen_target_tolerance_requires_rotation':'超过原ERP目标2元，待确认是否轮换',
         'current_export_conflicts_with_erp_binding':'当前导出编码与ERP绑定冲突，不能猜配',
         'fixed_custom_original_basis_missing':'缺明确的首次定制原价基线',
@@ -319,7 +418,8 @@ def prepare(effective_start,output_dir):
     for ref in calc['sources']:pinned(ref['path'],ref['sha256'])
     data,receipt=terminal(PROJECT/'Web-Agent程序/data/output/campaign-transfers',payload)
     lists=coverage(data,payload,load_checker())
-    bases,protected,offers=authority_state(snapshot,window)
+    absence=current_batch_absence(payload,receipt)
+    bases,protected,offers,resolved=authority_state(snapshot,window,lists=lists,absence=absence)
     activity,discounts,errors=build_rows(snapshot,identities,Decimal('.10'),'medium',bases,
         signup_items=set(calc['scope']),discount_items=set(calc['scope']),
         platform_caps={(r['item'],r['sku']):r.get('min_final') for r in identities})
@@ -335,7 +435,8 @@ def prepare(effective_start,output_dir):
         original_read_window=WINDOW,terminal=receipt,platform_write=False,database_write=False,
         business_acceptance=False,upload_owner='user',partial_terminal=data['state']=='partial_readback',
         verified_lists=sum(r['complete'] for r in lists.values()),
-        sources={k:dict(path=str(PROJECT/v[0]),sha256=v[1]) for k,v in INPUTS.items()},files=[])
+        sources={k:dict(path=str(PROJECT/v[0]),sha256=v[1]) for k,v in INPUTS.items()},files=[],
+        same_batch_absence=absence,resolved_old_offer_scope=resolved)
     outputs={}
     if result['discount_rows']:
         outputs['单品立减-已核验无重叠范围.xlsx']=fill_single_discount_rows(sources['discount_master'],result['discount_rows'])
