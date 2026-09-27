@@ -326,6 +326,7 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
     data=dict(rows=pages,state='partial_readback')
     monkeypatch.setattr(c,'terminal',lambda *_:(data,dict(sha256='f'*64)))
     monkeypatch.setattr(c,'current_batch_absence',lambda *_:dict(offer_ids=[]))
+    monkeypatch.setattr(c,'current_rejection',lambda:dict(rows=[],required_evidence='synthetic'))
     monkeypatch.setattr(c,'authority_state',lambda *_,**kw:({}, {}, [], []))
     class Clock:
         @staticmethod
@@ -339,7 +340,7 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
     assert result['target_window']==c.TARGET_WINDOW and result['original_read_window']==c.WINDOW
     assert result['effective_window']['end']=='2026-10-07 19:59:59'
     assert result['pricing']==dict(rate='0.10',target='medium')
-    assert result['prior_short_window_file_status']=='HOLD_NOT_UPLOADED'
+    assert result['prior_short_window_file_status']=='SUPERSEDED_BY_OFFICIAL_REJECTION_ATTEMPT_CONTEXT_UNKNOWN'
     assert result['past_period_coverage_claimed'] is False
     assert not result['signup_rows'] and len(result['files'])==1
     generated=(out/result['files'][0]['name']).read_bytes()
@@ -351,3 +352,70 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
             if name!='xl/worksheets/sheet1.xml':assert a.read(name)==b.read(name)
     assert (tmp_path/'master.xlsx').read_bytes()==master
     assert not result['business_acceptance'] and not result['platform_write'] and not result['database_write']
+
+
+def rejection_xml(rows):
+    """Synthetic vendor package with wrong A1 dimension, no spreadsheet engine."""
+    from io import BytesIO
+    from zipfile import ZipFile
+    from xml.sax.saxutils import escape
+    stream=BytesIO()
+    with ZipFile(stream,'w') as z:
+        z.writestr('xl/workbook.xml','<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="sheet1" r:id="rId1"/></sheets></workbook>')
+        z.writestr('xl/_rels/workbook.xml.rels','<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>')
+        cells=''.join('<row r="'+str(n)+'">'+''.join('<c r="'+col+str(n)+'" t="inlineStr"><is><t>'+escape(str(v))+'</t></is></c>' for col,v in row.items())+'</row>' for n,row in rows.items())
+        z.writestr('xl/worksheets/sheet1.xml','<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1"/><sheetData>'+cells+'</sheetData></worksheet>')
+    return stream.getvalue()
+
+
+def rejection_rows():
+    return {1:dict(A='商品Id',B='skuId',C='优惠类型',D='优惠值',E='优惠值取值方式',F='失败原因'),
+            2:dict(A=I,B=S,C='减钱',D='100.1',E='默认',F='已经参加了单品立减活动，id：147487959755')}
+
+
+def test_rejection_bad_dimension_reads_physical_rows_and_decimal_amounts():
+    result=c.parse_rejection(rejection_xml(rejection_rows()),{(I,S):'100.10'})
+    assert len(result)==1 and result[0]['offer_id']=='147487959755'
+
+
+@pytest.mark.parametrize('fault',['header','amount','foreign','duplicate','missing','reason','type'])
+def test_official_rejection_tamper_never_silently_passes(fault):
+    rows=rejection_rows()
+    if fault=='header':rows[1]['F']='未知'
+    if fault=='amount':rows[2]['D']='99.99'
+    if fault=='foreign':rows[2]['A']='99999999999'
+    if fault=='duplicate':rows[3]=dict(rows[2])
+    if fault=='missing':rows.pop(2)
+    if fault=='reason':rows[2]['F']='成功'
+    if fault=='type':rows[2]['C']='打折'
+    with pytest.raises(ValueError):c.parse_rejection(rejection_xml(rows),{(I,S):'100.10'})
+
+
+def test_official_rejection_overrides_disjoint_date_analysis_and_unknown_context():
+    args=list(fixture());peer='12345678902'
+    for idx in (0,1,2):args[idx].append(dict(args[idx][0],item=peer))
+    args[4].update({(peer,m):dict(complete=True,offers=[]) for m in ('商品级','SKU级')})
+    args[4][I,'SKU级']['offers']=[dict(offer(),offer_id='147487959755',start='2026-10-07 20:00:00',end='2026-10-11 23:59:59')]
+    r=c.partition(*args)
+    evidence=dict(rows=c.parse_rejection(rejection_xml(rejection_rows()),{(I,S):'100.10'}),submission_saved_window=None)
+    c.apply_rejection(r,evidence,c.target_intersections(args[4],[I,peer]))
+    assert [x['item'] for x in r['discount_rows']]==[peer]
+    assert r['rows'][0]['disposition']=='待处理' and r['official_rejection']['submission_saved_window'] is None
+    assert r['rows'][0]['official_rejection']['saved_offer_windows'][0]['classification']=='disjoint'
+
+
+def test_rejected_all_rows_produces_no_upload_scope_and_does_not_clear_other_issues():
+    args=fixture();args[5][I]='unknown'
+    r=c.partition(*args)
+    evidence=dict(rows=c.parse_rejection(rejection_xml(rejection_rows()),{(I,S):'100.10'}))
+    c.apply_rejection(r,evidence,dict(offers=[]))
+    assert not r['discount_rows'] and not r['upload_ready']
+    assert 'registered_success_unknown_or_inflight_do_not_replay' in r['rows'][0]['issues']
+
+
+def test_rejection_is_mandatory_before_business_inputs(tmp_path,monkeypatch):
+    monkeypatch.setattr(c,'future_window',lambda *_:dict(c.TARGET_WINDOW))
+    def missing():raise ValueError('source_changed:official_rejection')
+    monkeypatch.setattr(c,'current_rejection',missing)
+    with pytest.raises(ValueError,match='official_rejection'):c.prepare(START,tmp_path/'new')
+    assert not (tmp_path/'new').exists()

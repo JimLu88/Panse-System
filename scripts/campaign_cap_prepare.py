@@ -10,11 +10,12 @@ from decimal import Decimal, ROUND_DOWN
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 import sqlite3
 
 from campaign_generate_current_files import build_rows, official_cut
-from campaign_official_template import fill_single_discount_rows, money
+from campaign_official_template import fill_single_discount_rows, money, read_rows
 
 PROJECT = Path('D:/AI/畔色ERP系统')
 JOB = '39c2c97ed748184efc921985ea9837f4a72f4990e8619f2f69b71f17c5b91bea'
@@ -24,6 +25,11 @@ CAMPAIGN = 'legacy/itemApply/3172207691'
 WINDOW = {'start':'2026-09-28 00:00:00','end':'2026-09-30 23:59:59'}
 # WINDOW is immutable request provenance, NOT the campaign's target duration.
 TARGET_WINDOW = {'start':'2026-09-28 00:00:00','end':'2026-10-07 19:59:59'}
+REJECTION_PATH = 'outputs/campaign-super43-rejected-20260928/official-rejection.xlsx'
+REJECTION_SHA = '609d4f1248cac7c5f0c52838c04e75734a0630a95e4efb41ee89d3968c6180e3'
+REJECTED_RESULT_PATH = 'outputs/01a03341-b2cd-7810-92f3-66fad189521d/super43-full-period-20260928/result.json'
+REJECTED_RESULT_SHA = 'f35bbb9e991838a99d162ee0749e672d3eaefe3ae92e1193b76a5b9b6530edf6'
+REJECTED_INPUT_SHA = '25f0b855868726ee329037f9658bd79577524c0623181a52f6ac17b305ca511e'
 TZ = timezone(timedelta(hours=8))
 INPUTS = {
     'calculation': ('outputs/01a067c6-7e83-7483-9a21-84b44ed7299b/super43-closeout-20260927/calculation.json', '99a191d8f43f433039e9a53d1aa5ef727171469269305c4b55d7658965742495'),
@@ -183,6 +189,72 @@ def future_window(start, now):
     if not TARGET_WINDOW['start'] <= start < TARGET_WINDOW['end'] or value <= now:
         raise ValueError('activation_must_be_future_inside_target_window_no_backdate')
     return dict(start=start,end=TARGET_WINDOW['end'])
+
+
+def parse_rejection(raw, expected):
+    """Use physical XML cells, not the vendor's erroneous A1 dimension.
+
+    Exact pairs/amounts bind the affected scope, NOT the unknown submission
+    activity or its saved window. Missing/foreign/duplicate rows fail closed.
+    """
+    rows=read_rows(raw,'sheet1')
+    header={'A':'商品Id','B':'skuId','C':'优惠类型','D':'优惠值','E':'优惠值取值方式','F':'失败原因'}
+    if rows.get(1)!=header:raise ValueError('official_rejection_header_changed')
+    failures={}
+    for n,row in sorted(rows.items()):
+        if n==1:continue
+        pair=row.get('A'),row.get('B')
+        reason=row.get('F','')
+        match=re.fullmatch(r'已经参加了单品立减活动，id：([0-9]+)',reason)
+        if (pair not in expected or pair in failures or row.get('C')!='减钱'
+                or row.get('E')!='默认' or not match
+                or money(row.get('D'))!=money(expected[pair])):
+            raise ValueError('official_rejection_scope_amount_or_reason_changed')
+        failures[pair]=dict(item=pair[0],sku=pair[1],amount=row['D'],reason=reason,offer_id=match[1],source_row=n)
+    if set(failures)!=set(expected):raise ValueError('official_rejection_incomplete_scope')
+    return list(failures.values())
+
+
+def current_rejection():
+    # The user may move the delivered XLSX. Its pinned generation receipt retains
+    # the exact rows, amount values and original file digest; never recreate it.
+    prior=json.loads(pinned(PROJECT/REJECTED_RESULT_PATH,REJECTED_RESULT_SHA))
+    expected={(row['item'],row['sku']):row['deduct'] for row in prior['discount_rows']}
+    if (len(expected)!=106 or len(prior['discount_rows'])!=106
+            or len(prior['files'])!=1 or prior['files'][0]['sha256']!=REJECTED_INPUT_SHA):
+        raise ValueError('rejected_106_input_scope_changed')
+    raw=pinned(PROJECT/REJECTION_PATH,REJECTION_SHA)
+    failures=parse_rejection(raw,expected)
+    return dict(path=str(PROJECT/REJECTION_PATH),sha256=REJECTION_SHA,
+                source_filename='1790531065514.xlsx',input_sha256=REJECTED_INPUT_SHA,
+                input_generation_receipt_sha256=REJECTED_RESULT_SHA,
+                rows=failures,counts=dict(Counter(r['offer_id'] for r in failures)),
+                result='106_exact_sku_rejections',replay_allowed=False,
+                submission_activity_id=None,submission_saved_window=None,
+                cross_window_exclusivity_proven=False,
+                required_evidence='本次106条导入操作关联的单品立减活动ID及其已保存起止时间；同一操作批次/结果关联')
+
+
+def apply_rejection(result, evidence, analysis):
+    """Official failure dominates offline nonoverlap. No auto release/retry."""
+    blocked={(r['item'],r['sku']):r for r in evidence['rows']}
+    pairs={(r['item'],r['sku']) for r in result['rows']}
+    if not set(blocked)<=pairs:raise ValueError('official_rejection_outside_consumer_scope')
+    for row in result['rows']:
+        failed=blocked.get((row['item'],row['sku']))
+        if not failed:continue
+        issue='official_duplicate_discount_rejection_requires_attempt_context_no_replay'
+        if issue not in row['issues']:row['issues'].append(issue)
+        row['disposition']='待处理'
+        row['official_rejection']=dict(failed,saved_offer_windows=[
+            r for r in analysis['offers'] if r['item']==row['item'] and r['offer_id']==failed['offer_id']])
+    result['discount_rows']=[r for r in result['discount_rows'] if (r['item'],r['sku']) not in blocked]
+    result['counts']=dict(Counter(r['disposition'] for r in result['rows']))
+    result['issue_counts']=dict(Counter(e for r in result['rows'] for e in r['issues']))
+    result['official_rejection']=evidence
+    result['prior_short_window_file_status']='SUPERSEDED_BY_OFFICIAL_REJECTION_ATTEMPT_CONTEXT_UNKNOWN'
+    result['upload_ready']=False if not result['discount_rows'] else True
+    return result
 
 
 def custom_price(row, basis):
@@ -395,7 +467,9 @@ def report_text(result):
            '本次新优惠生效窗口：'+str(result['effective_window']),
            '完整列表按每条优惠实际时间离线重算，不代表已读取延长时段的逐SKU优惠金额。',
            '新增重叠优惠行数：'+str(result['window_analysis']['counts'].get('new_overlap',0)),
-           '从活动原起点到本次新优惠开始之前，不宣称已被此文件覆盖。旧9月30日补表保持HOLD，未记为已上传。',
+           '从活动原起点到本次新优惠开始之前，不宣称已被此文件覆盖。旧106行文件已被官方失败报告覆盖，禁止再次上传；具体上传活动/时间仍待核实。',
+           '官方拒绝106条：已参加单品立减。无时间重叠只代表离线日期分析，不代表平台准入。',
+           '唯一新增证据缺口：'+result['official_rejection']['required_evidence'],
            '上传时开始时间必须仍在未来；不能回填已过去的时间。',
            '只上传本目录实际生成的单品立减文件；该文件只包含逐行核验通过且无旧优惠/未知记录的普通SKU。',
            result['signup_reason'],'', '## 统计',json.dumps(result['counts'],ensure_ascii=False),'',
@@ -429,6 +503,7 @@ def report_text(result):
         'current_export_conflicts_with_erp_binding':'当前导出编码与ERP绑定冲突，不能猜配',
         'fixed_custom_original_basis_missing':'缺明确的首次定制原价基线',
         'custom_below_first_original_twenty_percent_requires_rotation':'定制修正低于固定原价20%，待确认轮换',
+        'official_duplicate_discount_rejection_requires_attempt_context_no_replay':'官方已拒绝：已参加单品立减。需本次上传活动ID/已保存时间/批次关联，禁止重传',
     }
     for r in result['rows']:
         if r['issues']:lines.append(f"|{r['item']}|{r['sku']}|{'；'.join(labels.get(e,e) for e in r['issues'])}|")
@@ -439,6 +514,7 @@ def prepare(effective_start,output_dir):
     output_dir=Path(output_dir)
     if output_dir.exists():raise ValueError('output_exists_do_not_overwrite')
     window=future_window(effective_start,datetime.now(TZ))
+    rejection=current_rejection()  # Mandatory: missing report cannot revive rejected rows.
     sources={k:pinned(PROJECT/path,digest) for k,(path,digest) in INPUTS.items()}
     docs={k:json.loads(v) for k,v in sources.items() if not k.endswith('_master')}
     calc,inv,snapshot,payload=docs['calculation'],docs['inventory'],docs['snapshot'],docs['request']['payload']
@@ -467,9 +543,9 @@ def prepare(effective_start,output_dir):
     by_pair.update({(r['item'],r['sku']):r for r in activity})
     activity=list(by_pair.values())
     result=partition(identities,activity,discounts,errors,lists,protected,offers,TARGET_WINDOW)
-    result.update(schema='super43-prepare-only-v2',items=43,skus=403,effective_window=window,
+    result.update(schema='super43-prepare-only-v3',items=43,skus=403,effective_window=window,
         target_window=dict(TARGET_WINDOW),window_analysis=window_analysis,
-        pricing=dict(rate='0.10',target='medium'),prior_short_window_file_status='HOLD_NOT_UPLOADED',
+        pricing=dict(rate='0.10',target='medium'),
         past_period_coverage_claimed=False,
         absence_target_applicability='exact_id_absence_plus_date_unfiltered_complete_lists; original_read_window_unchanged',
         original_read_window=WINDOW,terminal=receipt,platform_write=False,database_write=False,
@@ -477,6 +553,7 @@ def prepare(effective_start,output_dir):
         verified_lists=sum(r['complete'] for r in lists.values()),
         sources={k:dict(path=str(PROJECT/v[0]),sha256=v[1]) for k,v in INPUTS.items()},files=[],
         same_batch_absence=absence,resolved_old_offer_scope=resolved)
+    apply_rejection(result,rejection,window_analysis)
     outputs={}
     if result['discount_rows']:
         outputs['单品立减-已核验无重叠范围.xlsx']=fill_single_discount_rows(sources['discount_master'],result['discount_rows'])
