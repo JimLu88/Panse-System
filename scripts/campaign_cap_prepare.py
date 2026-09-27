@@ -16,6 +16,7 @@ import sqlite3
 
 from campaign_generate_current_files import build_rows, official_cut
 from campaign_official_template import fill_single_discount_rows, money, read_rows
+from campaign_official_current import supersession_guard
 
 PROJECT = Path('D:/AI/畔色ERP系统')
 JOB = '39c2c97ed748184efc921985ea9837f4a72f4990e8619f2f69b71f17c5b91bea'
@@ -562,6 +563,7 @@ def report_text(result):
 def prepare(effective_start,output_dir):
     output_dir=Path(output_dir)
     if output_dir.exists():raise ValueError('output_exists_do_not_overwrite')
+    supersession_guard()
     window=future_window(effective_start,datetime.now(TZ))
     rejection=current_rejection()  # Mandatory: missing report cannot revive rejected rows.
     sources={k:pinned(PROJECT/path,digest) for k,(path,digest) in INPUTS.items()}

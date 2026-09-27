@@ -300,6 +300,7 @@ def test_prepare_full_403_partial_terminal_writes_only_independent_rows(tmp_path
     from campaign_official_template import read_rows
     from io import BytesIO
     from zipfile import ZipFile
+    monkeypatch.setattr(c,'supersession_guard',lambda:None)  # Historical algorithm only; live entry is retired.
     erp,identities,scope=[],[],{}
     for n in range(43):
         item=str(10000000000+n);scope[item]=[]
@@ -414,6 +415,7 @@ def test_rejected_all_rows_produces_no_upload_scope_and_does_not_clear_other_iss
 
 
 def test_rejection_is_mandatory_before_business_inputs(tmp_path,monkeypatch):
+    monkeypatch.setattr(c,'supersession_guard',lambda:None)
     monkeypatch.setattr(c,'future_window',lambda *_:dict(c.TARGET_WINDOW))
     def missing():raise ValueError('source_changed:official_rejection')
     monkeypatch.setattr(c,'current_rejection',missing)
