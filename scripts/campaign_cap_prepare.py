@@ -30,6 +30,9 @@ REJECTION_SHA = '609d4f1248cac7c5f0c52838c04e75734a0630a95e4efb41ee89d3968c6180e
 REJECTED_RESULT_PATH = 'outputs/01a03341-b2cd-7810-92f3-66fad189521d/super43-full-period-20260928/result.json'
 REJECTED_RESULT_SHA = 'f35bbb9e991838a99d162ee0749e672d3eaefe3ae92e1193b76a5b9b6530edf6'
 REJECTED_INPUT_SHA = '25f0b855868726ee329037f9658bd79577524c0623181a52f6ac17b305ca511e'
+FAILED_ACTIVITY = '147682854338'
+SAVED_WINDOW_IMAGE = 'outputs/campaign-super43-rejected-20260928/actual-saved-window.png'
+SAVED_WINDOW_IMAGE_SHA = 'ca8082e1e4d793792f34d88ac48f02346ce555a01184913ccba0d50de2779734'
 TZ = timezone(timedelta(hours=8))
 INPUTS = {
     'calculation': ('outputs/01a067c6-7e83-7483-9a21-84b44ed7299b/super43-closeout-20260927/calculation.json', '99a191d8f43f433039e9a53d1aa5ef727171469269305c4b55d7658965742495'),
@@ -215,6 +218,45 @@ def parse_rejection(raw, expected):
     return list(failures.values())
 
 
+def actual_submission_context():
+    """Manually inspected user screenshot, immutable source, not a live read."""
+    pinned(PROJECT/SAVED_WINDOW_IMAGE,SAVED_WINDOW_IMAGE_SHA)
+    return dict(activity_id=FAILED_ACTIVITY,status='全部导入失败',
+        window=dict(start='2026-09-28 01:45:00',end='2026-10-07 23:59:59'),
+        source=dict(path=str(PROJECT/SAVED_WINDOW_IMAGE),sha256=SAVED_WINDOW_IMAGE_SHA,
+                    kind='user_screenshot_visually_verified'),
+        conflicting_offers=[dict(offer_id=oid,start='2026-10-07 20:00:00',end='2026-10-11 23:59:59')
+                            for oid in ('147487959755','147633129042')],
+        platform_write=False)
+
+
+def saved_window_check(context, intended):
+    """A workbook contains no dates. Only observed saved settings can match.
+
+    This check does not modify settings or grant a retry; corrected evidence
+    must be provided and verified separately, with the full-failure scope kept.
+    """
+    differences=[]
+    if context.get('activity_id')!=FAILED_ACTIVITY:differences.append('activity_id')
+    if context.get('status')!='全部导入失败':differences.append('not_confirmed_all_failed')
+    saved=context.get('window') or {}
+    for key in ('start','end'):
+        value=saved.get(key)
+        try:
+            parsed=datetime.strptime(value,'%Y-%m-%d %H:%M:%S')
+            canonical=parsed.strftime('%Y-%m-%d %H:%M:%S')==value
+        except (ValueError,TypeError):canonical=False
+        if not canonical or value!=intended[key]:differences.append(key)
+    if intended['end']!=TARGET_WINDOW['end'] or not TARGET_WINDOW['start']<=intended['start']<intended['end']:
+        differences.append('intended_outside_authorized_window')
+    overlaps=[dict(offer_id=o['offer_id'],start=max(saved['start'],o['start']),end=min(saved['end'],o['end']))
+              for o in context.get('conflicting_offers',[]) if isinstance(saved.get('start'),str)
+              and isinstance(saved.get('end'),str) and saved['start']<=o['end'] and o['start']<=saved['end']]
+    return dict(matches=not differences,differences=differences,activity_id=context.get('activity_id'),
+                observed_window=saved,intended_window=dict(intended),actual_overlaps=overlaps,
+                corrected_save_verified=False,automatic_retry=False)
+
+
 def current_rejection():
     # The user may move the delivered XLSX. Its pinned generation receipt retains
     # the exact rows, amount values and original file digest; never recreate it.
@@ -225,14 +267,16 @@ def current_rejection():
         raise ValueError('rejected_106_input_scope_changed')
     raw=pinned(PROJECT/REJECTION_PATH,REJECTION_SHA)
     failures=parse_rejection(raw,expected)
+    context=actual_submission_context()
     return dict(path=str(PROJECT/REJECTION_PATH),sha256=REJECTION_SHA,
                 source_filename='1790531065514.xlsx',input_sha256=REJECTED_INPUT_SHA,
                 input_generation_receipt_sha256=REJECTED_RESULT_SHA,
                 rows=failures,counts=dict(Counter(r['offer_id'] for r in failures)),
                 result='106_exact_sku_rejections',replay_allowed=False,
-                submission_activity_id=None,submission_saved_window=None,
+                submission_activity_id=context['activity_id'],submission_saved_window=context['window'],
+                submission_context=context,cause='actual_saved_end_overlaps_october88',
                 cross_window_exclusivity_proven=False,
-                required_evidence='本次106条导入操作关联的单品立减活动ID及其已保存起止时间；同一操作批次/结果关联')
+                required_evidence='仅修改147682854338结束时间至2026-10-07 19:59:59；如平台要求未来开始则另设未来起点。保存后提供同一活动已保存时间，再核验明确全部失败106范围；不要撤10月88优惠。')
 
 
 def apply_rejection(result, evidence, analysis):
@@ -243,7 +287,8 @@ def apply_rejection(result, evidence, analysis):
     for row in result['rows']:
         failed=blocked.get((row['item'],row['sku']))
         if not failed:continue
-        issue='official_duplicate_discount_rejection_requires_attempt_context_no_replay'
+        issue=('actual_saved_activity_window_mismatch_requires_corrected_save' if evidence.get('cause')=='actual_saved_end_overlaps_october88'
+               else 'official_duplicate_discount_rejection_requires_attempt_context_no_replay')
         if issue not in row['issues']:row['issues'].append(issue)
         row['disposition']='待处理'
         row['official_rejection']=dict(failed,saved_offer_windows=[
@@ -252,7 +297,10 @@ def apply_rejection(result, evidence, analysis):
     result['counts']=dict(Counter(r['disposition'] for r in result['rows']))
     result['issue_counts']=dict(Counter(e for r in result['rows'] for e in r['issues']))
     result['official_rejection']=evidence
-    result['prior_short_window_file_status']='SUPERSEDED_BY_OFFICIAL_REJECTION_ATTEMPT_CONTEXT_UNKNOWN'
+    result['prior_short_window_file_status']=('HOLD_UNTIL_EXACT_ACTIVITY_WINDOW_CORRECTED' if evidence.get('cause')=='actual_saved_end_overlaps_october88'
+                                            else 'SUPERSEDED_BY_OFFICIAL_REJECTION_ATTEMPT_CONTEXT_UNKNOWN')
+    if evidence.get('submission_context'):
+        result['saved_window_check']=saved_window_check(evidence['submission_context'],result['effective_window'])
     result['upload_ready']=False if not result['discount_rows'] else True
     return result
 
@@ -467,9 +515,9 @@ def report_text(result):
            '本次新优惠生效窗口：'+str(result['effective_window']),
            '完整列表按每条优惠实际时间离线重算，不代表已读取延长时段的逐SKU优惠金额。',
            '新增重叠优惠行数：'+str(result['window_analysis']['counts'].get('new_overlap',0)),
-           '从活动原起点到本次新优惠开始之前，不宣称已被此文件覆盖。旧106行文件已被官方失败报告覆盖，禁止再次上传；具体上传活动/时间仍待核实。',
-           '官方拒绝106条：已参加单品立减。无时间重叠只代表离线日期分析，不代表平台准入。',
-           '唯一新增证据缺口：'+result['official_rejection']['required_evidence'],
+           '从活动原起点到本次新优惠开始之前，不宣称已被此文件覆盖。106行实际全部失败，正确时间保存并核验前不得重传。',
+           '截图已定位：新活动147682854338实际结束10/7 23:59:59，与10月88从20:00开始的旧优惠重叠约4小时。不是已证实跨时段平台占用。',
+           '需要完成的精确操作：'+result['official_rejection']['required_evidence'],
            '上传时开始时间必须仍在未来；不能回填已过去的时间。',
            '只上传本目录实际生成的单品立减文件；该文件只包含逐行核验通过且无旧优惠/未知记录的普通SKU。',
            result['signup_reason'],'', '## 统计',json.dumps(result['counts'],ensure_ascii=False),'',
@@ -504,6 +552,7 @@ def report_text(result):
         'fixed_custom_original_basis_missing':'缺明确的首次定制原价基线',
         'custom_below_first_original_twenty_percent_requires_rotation':'定制修正低于固定原价20%，待确认轮换',
         'official_duplicate_discount_rejection_requires_attempt_context_no_replay':'官方已拒绝：已参加单品立减。需本次上传活动ID/已保存时间/批次关联，禁止重传',
+        'actual_saved_activity_window_mismatch_requires_corrected_save':'活动147682854338结束时间多设到10/7 23:59:59，需改成19:59:59并保存核验；不撤10月88旧优惠',
     }
     for r in result['rows']:
         if r['issues']:lines.append(f"|{r['item']}|{r['sku']}|{'；'.join(labels.get(e,e) for e in r['issues'])}|")
@@ -543,7 +592,7 @@ def prepare(effective_start,output_dir):
     by_pair.update({(r['item'],r['sku']):r for r in activity})
     activity=list(by_pair.values())
     result=partition(identities,activity,discounts,errors,lists,protected,offers,TARGET_WINDOW)
-    result.update(schema='super43-prepare-only-v3',items=43,skus=403,effective_window=window,
+    result.update(schema='super43-prepare-only-v4',items=43,skus=403,effective_window=window,
         target_window=dict(TARGET_WINDOW),window_analysis=window_analysis,
         pricing=dict(rate='0.10',target='medium'),
         past_period_coverage_claimed=False,

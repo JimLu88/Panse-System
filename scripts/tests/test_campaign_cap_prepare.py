@@ -419,3 +419,54 @@ def test_rejection_is_mandatory_before_business_inputs(tmp_path,monkeypatch):
     monkeypatch.setattr(c,'current_rejection',missing)
     with pytest.raises(ValueError,match='official_rejection'):c.prepare(START,tmp_path/'new')
     assert not (tmp_path/'new').exists()
+
+
+def actual_context():
+    return dict(activity_id='147682854338',status='全部导入失败',
+                window=dict(start='2026-09-28 01:45:00',end='2026-10-07 23:59:59'),
+                conflicting_offers=[dict(offer_id=oid,start='2026-10-07 20:00:00',end='2026-10-11 23:59:59')
+                                   for oid in ('147487959755','147633129042')])
+
+
+def test_actual_saved_window_not_workbook_dates_explains_failure():
+    context=actual_context();before=copy.deepcopy(context)
+    check=c.saved_window_check(context,dict(start='2026-09-28 01:45:00',end=c.TARGET_WINDOW['end']))
+    assert check['differences']==['end'] and not check['matches']
+    assert len(check['actual_overlaps'])==2
+    for o in check['actual_overlaps']:
+        assert o['start']=='2026-10-07 20:00:00' and o['end']=='2026-10-07 23:59:59'
+    assert context==before and not check['automatic_retry']
+
+
+def test_corrected_end_has_no_overlap_but_does_not_invent_save_proof():
+    context=actual_context();context['window']['end']=c.TARGET_WINDOW['end']
+    check=c.saved_window_check(context,context['window'])
+    assert check['matches'] and not check['actual_overlaps']
+    assert check['corrected_save_verified'] is False and check['automatic_retry'] is False
+
+
+@pytest.mark.parametrize('fault',['wrong_activity','success','partial','unknown','end_second','start_mismatch','missing_start','malformed_date','outside_target'])
+def test_actual_saved_settings_gate_rejects_wrong_identity_or_window(fault):
+    context=actual_context();context['window']=dict(start=START,end=c.TARGET_WINDOW['end'])
+    intended=dict(context['window'])
+    if fault=='wrong_activity':context['activity_id']='147487959755'
+    if fault=='success':context['status']='导入成功'
+    if fault=='partial':context['status']='部分导入成功'
+    if fault=='unknown':context['status']='未知'
+    if fault=='end_second':context['window']['end']='2026-10-07 20:00:00'
+    if fault=='start_mismatch':context['window']['start']='2026-09-28 11:59:59'
+    if fault=='missing_start':context['window'].pop('start')
+    if fault=='malformed_date':context['window']['start']='2026-9-28 12:00:00'
+    if fault=='outside_target':context['window']['end']=intended['end']='2026-10-11 23:59:59'
+    assert not c.saved_window_check(context,intended)['matches']
+
+
+def test_confirmed_cause_replaces_unknown_but_keeps_hold_until_correct_save():
+    result=c.partition(*fixture());result['effective_window']=dict(start=START,end=c.TARGET_WINDOW['end'])
+    evidence=dict(rows=c.parse_rejection(rejection_xml(rejection_rows()),{(I,S):'100.10'}),
+                  submission_context=actual_context(),cause='actual_saved_end_overlaps_october88')
+    c.apply_rejection(result,evidence,dict(offers=[]))
+    assert not result['discount_rows'] and result['upload_ready'] is False
+    assert result['prior_short_window_file_status']=='HOLD_UNTIL_EXACT_ACTIVITY_WINDOW_CORRECTED'
+    assert result['rows'][0]['issues']==['actual_saved_activity_window_mismatch_requires_corrected_save']
+    assert result['saved_window_check']['actual_overlaps']
