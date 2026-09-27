@@ -60,6 +60,8 @@ python -m app.cli.business_relationships --flow order
 
 ## 当前诚实覆盖边界
 
+2026-09-27 整批优惠只读与当前cap：Web-Agent商品级/SKU级逐页证据→实际优惠窗口及金额→本机cap计算→旧优惠真实金额复核→用户上传材料。保留原ERP目标价和日常报名价，±2元为同一原目标累计范围，定制不叠加、未知/成功不重传；不影响订单、库存、财务、飞书写入。固定入口和未建模边界见campaign-cap-batch-20260927.md。本次没有群晖后端字段变化，不重锁未审核来源。
+
 2026-09-27 三条定制对应：用户精确确认 → campaign_custom_correspondence的生产只读preview/受保护apply →
 system_settings单条可审计登记 → 新价格快照registered_custom_correspondence → FactResolver精确四项原表核对 →
 固定制表的正确ERP定制行。原始price/mapping rows不改写，主备用绑定、订单、财务、固定原价20%基线不变；

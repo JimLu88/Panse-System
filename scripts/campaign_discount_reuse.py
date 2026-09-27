@@ -127,12 +127,25 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
         detail = dict(base,actual_deduct=str(deduct),ideal_deduct=str(daily-cut-target_price),official_cut=str(cut),
                       final=str(final),target=str(target_price),big_target=str(big),delta=str(delta))
         if policy:detail['final_price_tolerance'] = policy
+        cap=row.get('platform_cap')
+        if cap is not None:
+            from campaign_cap_price import ordinary_price
+            # Validate the exact original target/cap input; actual saved deduction stays authoritative.
+            try:
+                ordinary_price(daily,target_price,rate,cap,max_delta=row.get('cap_tolerance','2'))
+            except ValueError as exc:
+                issues.append(dict(detail,error=str(exc)));continue
+            detail['platform_cap']=str(cap)
+            if final>Decimal(str(cap)):
+                issues.append(dict(detail,error='actual_reused_discount_exceeds_current_platform_cap'));continue
+            if abs(delta)>Decimal(str(row.get('cap_tolerance','2'))):
+                issues.append(dict(detail,error='actual_reused_discount_outside_cap_tolerance'));continue
         if actual[0].get('amendment_receipt'):detail['amendment_receipt']=actual[0]['amendment_receipt']
         if final <= 0:issues.append(dict(detail,error='actual_reused_discount_final_nonpositive'))
         elif policy and abs(delta) > Decimal(policy['max_absolute_delta_cny']):
             issues.append(dict(detail,error='actual_reused_discount_outside_scoped_tolerance'))
-        elif not policy and final < big:issues.append(dict(detail,error='actual_reused_discount_final_below_big_floor'))
-        elif not policy and final != target_price:issues.append(dict(detail,error='actual_reused_discount_final_not_frozen_target'))
+        elif not policy and cap is None and final < big:issues.append(dict(detail,error='actual_reused_discount_final_below_big_floor'))
+        elif not policy and cap is None and final != target_price:issues.append(dict(detail,error='actual_reused_discount_final_not_frozen_target'))
         else:
             reuse.append(detail);reused_pairs.add(pair)
     return [r for r in planned if (r['item'],r['sku']) not in reused_pairs], reuse, issues

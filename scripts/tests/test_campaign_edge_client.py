@@ -21,6 +21,10 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.wait.call_args.kwargs['timeout'],1800)
         client.run('signup',{})
         self.assertEqual(client.wait.call_args.kwargs['timeout'],300)
+        client.run('discount_item_discovery',{'batch_read':True})
+        self.assertEqual(client.wait.call_args.kwargs['timeout'],1800)
+        client.run('discount_item_discovery',{})
+        self.assertEqual(client.wait.call_args.kwargs['timeout'],300)
 
     def test_post_once_then_only_exact_status(self):
         session=Mock()

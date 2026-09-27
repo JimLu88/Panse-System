@@ -54,7 +54,7 @@ def load_bases(paths):
     return bases
 
 
-def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None):
+def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None, *, platform_caps=None):
     from campaign_price_snapshot import exclusion_ids
     excluded_links=exclusion_ids(snapshot)
     erp = snapshot['all_erp_rows']
@@ -128,12 +128,24 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
             deduct = daily-cut-goal
             if goal <= 0 or big <= 0 or goal < big or deduct < 0 or daily-cut-deduct != goal:
                 raise ValueError('price_formula_cannot_meet_frozen_target')
+            final=goal
+            if platform_caps is not None:
+                from campaign_cap_price import ordinary_price
+                if pair not in platform_caps or platform_caps[pair] in (None,''):
+                    raise ValueError('current_platform_cap_missing')
+                capped=ordinary_price(daily,goal,rate,platform_caps[pair])
+                deduct,final=Decimal(capped['deduct']),Decimal(capped['final'])
+                # Keep the original target, never ratchet it down on a later run.
+                row_common.update(platform_cap=capped['platform_cap'],cap_tolerance=capped['cap_tolerance'])
             if needs_signup:
                 activity.append(dict(**row_common,activity_price=str(daily),custom=False,target=str(goal),big_target=str(big)))
             if needs_discount and deduct > 0:
-                discounts.append(dict(**row_common,deduct=str(deduct),daily=str(daily),official_cut=str(cut),target=str(goal),big_target=str(big),final=str(goal),custom=False))
+                discounts.append(dict(**row_common,deduct=str(deduct),daily=str(daily),official_cut=str(cut),target=str(goal),big_target=str(big),final=str(final),custom=False))
         except (KeyError, ValueError, TypeError) as exc:
-            issues.append(dict(**row_common,error=str(exc)))
+            detail=dict(**row_common,error=str(exc))
+            if platform_caps is not None:
+                detail.update(daily=row.get('daily'),target=row.get(target+'_target'),platform_cap=platform_caps.get(pair))
+            issues.append(detail)
     return activity, discounts, issues
 
 

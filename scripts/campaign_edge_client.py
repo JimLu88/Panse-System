@@ -68,5 +68,6 @@ class EdgeClient:
         admitted = self.submit(step, payload)
         if admitted.get('state') != 'running':
             return admitted
-        return self.wait(admitted['job_id'], timeout=1800 if step=='product_export' else 300,
+        batch_read = step=='discount_item_discovery' and payload.get('batch_read') is True
+        return self.wait(admitted['job_id'], timeout=1800 if step=='product_export' or batch_read else 300,
                          progress=progress)
