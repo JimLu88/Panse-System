@@ -25,6 +25,10 @@ def analyze(snapshot, inventory, scope):
 
 
 def main():
+    import sys
+    if sys.argv[1:2] == ['prepare']:
+        from campaign_cap_prepare import main as prepare
+        return prepare(sys.argv[2:])
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('snapshot','inventory','scope','identity-receipt','output-dir'):
         p.add_argument('--'+name,type=Path,required=True)
