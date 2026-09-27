@@ -9,6 +9,41 @@ from pathlib import Path
 from campaign_cap_price import ordinary_price
 
 END = '2026-10-07 19:59:59'
+PROTECTION_ROOT=Path('D:/AI/畔色ERP系统/outputs/campaign-recovery-trial-20260928/evidence')
+PROTECTION_FILES={
+    'official-327-success.png':'fa9973b58e87ac210d478ac2fd18a9e7c12fad359a61f97b10158934d765de4d',
+    'official-327-success.json':'6f8a87d9bf5ae89e89a3e352c51c4b324a0058fde303eece05bc6285767f6f8e',
+    'prepared-327-receipt.json':'23116de54b5489e9be6f3d1b1e1df180b72e23774d6aa991960522b7d4e511b6',
+}
+
+
+def protection_from_receipts(official, prepared):
+    if (official.get('offer_id')!='147717819883' or official.get('import_history_id')!='1'
+            or official.get('import_time_local')!='2026-09-28 04:02:03'
+            or official.get('import_status')!='导入完成' or official.get('success_count')!=327
+            or official.get('failure_count')!=0
+            or official.get('candidate_workbook_sha256')!=prepared.get('sha256')
+            or official.get('workbook_bytes_bound_by_screenshot') is not False
+            or prepared.get('end')!=END):
+        raise ValueError('official_327_success_protection_identity_changed')
+    pairs=[(str(r['item']),str(r['sku'])) for r in prepared.get('rows',[])]
+    if len(pairs)!=327 or len(set(pairs))!=327:
+        raise ValueError('candidate_327_protection_scope_changed')
+    return dict(offer_id=official['offer_id'],import_history_id='1',success_count=327,failure_count=0,
+                protected_pairs=pairs,scope_basis='candidate_upload_scope_held_not_screenshot_sku_proof',
+                submitted_file_bytes_verified=False,actual_offer_window_verified=False,
+                final_prices_verified=False,super_reduce_enrollment_verified=False,
+                reason='new_official_import_success_supersedes_prior_327_or_overlapping_43_retry_advice')
+
+
+def load_current_protection():
+    values={}
+    for name,expected in PROTECTION_FILES.items():
+        raw=(PROTECTION_ROOT/name).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=expected:
+            raise ValueError('official_success_protection_source_changed:'+name)
+        if name.endswith('.json'):values[name]=json.loads(raw.decode('utf-8-sig'))
+    return protection_from_receipts(values['official-327-success.json'],values['prepared-327-receipt.json'])
 
 
 def amount(value):
@@ -72,13 +107,14 @@ def row_audit(row):
     return result
 
 
-def audit(request):
+def audit(request, *, protection=None):
     if (request.get('schema')!='single_discount_replacement_audit_v1'
             or request.get('end')!=END or request.get('target')!='medium'
             or request.get('campaign')!='legacy/itemApply/3172207691'
             or not request.get('user_authorization')
             or request.get('platform_write') is not False):
         raise ValueError('exact_authorized_super_reduce_window_required')
+    protection=load_current_protection() if protection is None else protection
     rows=request.get('rows',[])
     pairs=[(str(r['item']),str(r['sku'])) for r in rows]
     if not rows or len(set(pairs))!=len(pairs) or any(not i.isdigit() or not s.isdigit() for i,s in pairs):
@@ -90,12 +126,21 @@ def audit(request):
             raise ValueError('old_offer_identity_or_window_outside_authorization')
         old_pairs.add((str(row['item']),str(row['sku'])))
     results=[row_audit(r) for r in rows]
+    held={tuple(p) for p in (protection or {}).get('protected_pairs',[])}
+    for row in results:
+        if (row['item'],row['sku']) in held:
+            row['selected_candidate']=None
+            row['blockers'].append('official_success_or_unverified_exact_upload_scope_do_not_reupload')
+            row['discount_retry_allowed']=False
+            row['numeric_candidates_for_review_only']=True
     missing=sorted(old_pairs-set(pairs))
     return dict(schema='single_discount_replacement_audit_result_v1',rows=results,
                 counts=dict(rows=len(results),selected_candidates=sum(r['selected_candidate'] is not None for r in results),
                             conditional_official_candidates=sum('official_10' in r['candidates'] for r in results),
                             conditional_no_official_candidates=sum('no_official' in r['candidates'] for r in results)),
                 blocker_counts=dict(Counter(b for r in results for b in r['blockers'])),
+                official_import_protection=protection,
+                protected_candidate_skus=sum((r['item'],r['sku']) in held for r in results),
                 old_offer_scope_verified=request.get('old_offer_scope_verified') is True,
                 old_offer_member_pairs=len(old_pairs),missing_old_offer_members=missing,
                 all_affected_members_accounted_for=bool(old_pairs) and not missing and request.get('old_offer_scope_verified') is True,

@@ -4,6 +4,10 @@ import pytest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import campaign_replacement_audit as c
 
+@pytest.fixture(autouse=True)
+def isolated_protection(monkeypatch):
+    monkeypatch.setattr(c,'load_current_protection',lambda: {})
+
 def row(**updates):
     return dict(dict(item='123456789012',sku='123456789013',custom=False,target='700.00',
         big_target='650.00',activity_price='1000.00',list_price='1100.00',cap='699.00',
@@ -77,3 +81,33 @@ def test_missing_member_visible_and_next_campaign_untouched():
 def test_454_current_rows_alone_are_not_complete_old_offer_scope():
     result=c.audit(request())
     assert not result['all_affected_members_accounted_for'] and not result['old_offer_scope_verified']
+
+def test_current_success_protects_candidates_even_with_pricing_evidence():
+    r=row(effective_mode='official_10',effective_mode_evidence='test receipt')
+    result=c.audit(request(rows=[r]),protection={'protected_pairs':[(r['item'],r['sku'])]})
+    assert result['counts']['selected_candidates']==0 and result['protected_candidate_skus']==1
+    assert result['rows'][0]['discount_retry_allowed'] is False
+    assert result['rows'][0]['candidates']  # retained for price review only
+
+def receipts():
+    p=dict(end=c.END,sha256='a'*64,rows=[dict(item='123456789012',sku=str(123456780000+i)) for i in range(327)])
+    o=dict(offer_id='147717819883',import_history_id='1',import_time_local='2026-09-28 04:02:03',
+           import_status='导入完成',success_count=327,failure_count=0,
+           candidate_workbook_sha256='a'*64,workbook_bytes_bound_by_screenshot=False)
+    return o,p
+
+def test_screenshot_count_never_becomes_final_price_or_file_identity_proof():
+    o,p=receipts();result=c.protection_from_receipts(o,p)
+    assert len(result['protected_pairs'])==327
+    for key in ('submitted_file_bytes_verified','actual_offer_window_verified','final_prices_verified','super_reduce_enrollment_verified'):
+        assert result[key] is False
+
+@pytest.mark.parametrize('key,value',[('offer_id','123'),('success_count',326),('failure_count',1),
+    ('candidate_workbook_sha256','b'*64),('workbook_bytes_bound_by_screenshot',True)])
+def test_inconsistent_success_receipt_never_silently_weakens_protection(key,value):
+    o,p=receipts();o[key]=value
+    with pytest.raises(ValueError):c.protection_from_receipts(o,p)
+
+def test_duplicate_candidate_scope_rejected():
+    o,p=receipts();p['rows'][1]=p['rows'][0]
+    with pytest.raises(ValueError):c.protection_from_receipts(o,p)
