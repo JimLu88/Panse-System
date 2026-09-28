@@ -38,7 +38,10 @@ def validated_body(authority, identity, phase, *, revalidate_reuse=True):
     if file_sha(body['snapshot_path'])!=body['snapshot_sha256']:raise ValueError('snapshot_file_changed')
     if file_sha(body['template_path'])!=body['template_sha256']:raise ValueError('official_template_changed')
     if body.get('snapshot_item_scope'):
-        if set(body['snapshot_item_scope']) != set(body['signup_items']) | set(body['discount_items']):
+        isolated=set((body.get('item_isolation') or {}).get('isolated_items', []))
+        if isolated & (set(body['signup_items']) | set(body['discount_items'])):
+            raise ValueError('isolated_item_in_delivery_scope')
+        if set(body['snapshot_item_scope']) != set(body['signup_items']) | set(body['discount_items']) | isolated:
             raise ValueError('snapshot_scope_bundle_mismatch')
         from campaign_snapshot_scope import resolve_for_items
         snapshot=resolve_for_items(authority,load(body['snapshot_path']),body['snapshot_item_scope'])
@@ -47,6 +50,8 @@ def validated_body(authority, identity, phase, *, revalidate_reuse=True):
     if snapshot['resolved_price_version_sha256']!=body['price_version'] or not source_version_matches(authority,body,snapshot['entry_source_sha256']):
         raise ValueError('mapping_or_price_authority_changed_regenerate_local_files')
     bases=authority.bases(snapshot)
+    if body.get('generation_product_export'):
+        snapshot['generation_product_export'] = body['generation_product_export']
     raw=Path(body['template_path']).read_bytes()
     identities=template_rows(raw)
     from campaign_catalog_repair import excluded_pairs as catalog_excluded_pairs
@@ -56,13 +61,19 @@ def validated_body(authority, identity, phase, *, revalidate_reuse=True):
         from campaign_failure_remediation import excluded_pairs
         excluded=excluded_pairs(body['sku_exclusion_receipts'])
         identities=[r for r in identities if (r['item'],r['sku']) not in excluded]
-    rows,discounts,issues=build_rows(snapshot,identities,discount_rate(body['official_rate']),body['target'],bases,set(body['signup_items']),set(body['discount_items']))
+    limits = None
+    if body.get('official_price_limits'):
+        from campaign_template_price_limits import read_limits
+        limits = read_limits(raw)
+    rows,discounts,issues=build_rows(snapshot,identities,discount_rate(body['official_rate']),body['target'],bases,set(body['signup_items']),set(body['discount_items']),official_limits=limits)
     if issues:raise ValueError('generation_inputs_no_longer_valid')
     expected={(r['item'],r['sku']):r for r in rows}
     if len(expected)!=len(body['signup_rows']) or set(expected)!={(r['item'],r['sku']) for r in body['signup_rows']}:
         raise ValueError('signup_scope_changed')
     for row in body['signup_rows']:
         pair=row['item'],row['sku'];original=expected[pair]
+        if limits is not None and row != original:
+            raise ValueError('official_capped_row_changed')
         if row['custom']!=original['custom'] or row['erp_code']!=original['erp_code']:raise ValueError('classification_or_mapping_changed')
         if not row['custom'] and any(row.get(k)!=original.get(k) for k in ('target','big_target')):
             raise ValueError('frozen_targets_changed')

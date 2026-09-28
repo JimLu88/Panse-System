@@ -54,7 +54,7 @@ def load_bases(paths):
     return bases
 
 
-def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None, *, platform_caps=None):
+def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None, *, platform_caps=None, official_limits=None):
     from campaign_price_snapshot import exclusion_ids
     excluded_links=exclusion_ids(snapshot)
     erp = snapshot['all_erp_rows']
@@ -63,7 +63,14 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
     from campaign_failure_remediation import mapped_erp_rows
     erp=mapped_erp_rows(snapshot)
     from campaign_sku_fact_store import FactResolver
-    facts = FactResolver(dict(snapshot, all_erp_rows=erp))
+    export_rows = None
+    export_ref = snapshot.get('generation_product_export')
+    if export_ref:
+        from campaign_generation_export import read_export, bind_rows
+        _, export_rows = read_export(export_ref)
+        erp = bind_rows(erp, export_rows)
+    facts = FactResolver(dict(snapshot, all_erp_rows=erp),
+                         generation_facts=export_rows, generation_reference=export_ref)
     index = {}
     for row in erp:
         item_ids = set(str(x) for x in [row.get('item'),row.get('product_item_id'),*(row.get('product_alt_item_ids') or [])] if x)
@@ -90,6 +97,9 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
         needs_discount = discount_items is None or pair[0] in discount_items
         if not needs_signup and not needs_discount:
             continue
+        if export_rows is not None and pair not in facts.facts:
+            issues.append(dict(**row_common,error='sku_missing_from_current_complete_export'))
+            continue
         matches = index.get(pair, [])
         if not needs_signup and facts.custom_only(*pair, matches):
             continue  # Custom mapping problems are irrelevant to ordinary-only discounts.
@@ -115,25 +125,50 @@ def build_rows(snapshot, identities, rate, target, bases, signup_items=None, dis
             daily = money(row['daily'])
             if daily <= 0:
                 raise ValueError('daily_price_missing_or_nonpositive')
+            limit = None
+            if official_limits is not None:
+                limit = official_limits.get(pair)
+                if not limit or not limit.get('price_cap') or not limit.get('final_cap'):
+                    raise ValueError('current_official_price_limits_missing')
+                price_cap, final_cap = money(limit['price_cap']), money(limit['final_cap'])
+                if min(price_cap, final_cap) <= 0:
+                    raise ValueError('current_official_price_limits_nonpositive')
+                row_common.update(official_price_cap=str(price_cap), platform_cap=str(final_cap), cap_tolerance='2')
             if row['custom']:
                 basis = bases.get(pair)
                 if basis is not None and basis.get('lineage') and basis['lineage'][-1]['erp_code'] != row['code']:
                     raise ValueError('lineage_erp_code_not_current_snapshot')
                 if basis is not None and daily < Decimal(basis['floor']):
                     raise ValueError('current_daily_below_fixed_custom_floor_requires_user_decision')
-                activity.append(dict(**row_common,activity_price=str(daily),custom=True,custom_basis=basis,price_action='keep_current_erp_daily_no_lowering',basis_required_before_lowering=True))
+                candidate = daily
+                if limit is not None and (daily > price_cap or daily-official_cut(daily, rate) > final_cap):
+                    if not limit.get('suggested_price'):
+                        raise ValueError('custom_official_suggested_price_missing')
+                    candidate = min(daily, price_cap, money(limit['suggested_price']))
+                    if candidate <= 0 or candidate-official_cut(candidate, rate) > final_cap:
+                        raise ValueError('custom_official_suggestion_exceeds_final_cap')
+                    if not basis or basis.get('uncertain'):
+                        raise ValueError('custom_fixed_original_missing_or_uncertain')
+                    if candidate < Decimal(basis['floor']).quantize(Decimal('.01'), rounding=ROUND_CEILING):
+                        raise ValueError('custom_candidate_below_fixed_floor_requires_rotation')
+                activity.append(dict(**row_common,activity_price=str(candidate),custom=True,custom_basis=basis,
+                    price_action='official_suggestion_with_fixed_floor' if candidate<daily else 'keep_current_erp_daily_no_lowering',
+                    erp_daily=str(daily),basis_required_before_lowering=True))
                 continue
+            if limit is not None and daily > price_cap:
+                raise ValueError('erp_daily_exceeds_official_price_cap_requires_rotation')
             goal, big = money(row[target+'_target']), money(row['big_target'])
             cut = official_cut(daily, rate)
             deduct = daily-cut-goal
             if goal <= 0 or big <= 0 or goal < big or deduct < 0 or daily-cut-deduct != goal:
                 raise ValueError('price_formula_cannot_meet_frozen_target')
             final=goal
-            if platform_caps is not None:
+            if platform_caps is not None or limit is not None:
                 from campaign_cap_price import ordinary_price
-                if pair not in platform_caps or platform_caps[pair] in (None,''):
+                cap = final_cap if limit is not None else platform_caps.get(pair)
+                if cap in (None,''):
                     raise ValueError('current_platform_cap_missing')
-                capped=ordinary_price(daily,goal,rate,platform_caps[pair])
+                capped=ordinary_price(daily,goal,rate,cap)
                 deduct,final=Decimal(capped['deduct']),Decimal(capped['final'])
                 # Keep the original target, never ratchet it down on a later run.
                 row_common.update(platform_cap=capped['platform_cap'],cap_tolerance=capped['cap_tolerance'])
@@ -156,6 +191,18 @@ def generate(args):
         return _generate(args,authority)
     finally:
         authority.close()
+
+
+def isolate_item_issues(issues, requested_items, **groups):
+    """Partition complete products only; unscoped errors must remain fatal."""
+    bad = set()
+    for issue in issues:
+        item = issue.get('item')
+        if not isinstance(item, str) or item not in requested_items:
+            raise ValueError('unscoped_issue_cannot_be_isolated')
+        bad.add(item)
+    return bad, {name: [row for row in rows if row['item'] not in bad]
+                 for name, rows in groups.items()}
 
 
 def _generate(args,authority):
@@ -182,6 +229,9 @@ def _generate(args,authority):
         snapshot = resolve_for_items(authority, load(args.snapshot), snapshot_scope)
     else:
         snapshot = authority.resolve_snapshot(load(args.snapshot))
+    export_path = getattr(args, 'product_export_observation', None)
+    if export_path:
+        snapshot['generation_product_export'] = dict(path=str(export_path.resolve()), sha256=sha(export_path.read_bytes()))
     time_binding = None
     if getattr(args, 'time_request', None) or getattr(args, 'time_segment', None):
         if not getattr(args, 'time_request', None) or not getattr(args, 'time_segment', None):
@@ -194,6 +244,12 @@ def _generate(args,authority):
             price_version=snapshot['resolved_price_version_sha256'], start=args.start, end=args.end))
     bases=authority.bases(snapshot)
     identities=template_rows(raw)
+    limits = None
+    if getattr(args, 'official_price_limits', False):
+        from campaign_template_price_limits import read_limits
+        if getattr(args, 'custom_corrections', None):
+            raise ValueError('official_limits_and_manual_corrections_not_combined')
+        limits = read_limits(raw)
     from campaign_catalog_repair import excluded_pairs as catalog_excluded_pairs
     catalog_excluded=catalog_excluded_pairs(snapshot,identities)
     identities=[r for r in identities if (r['item'],r['sku']) not in catalog_excluded]
@@ -213,10 +269,10 @@ def _generate(args,authority):
     discount_items=discount_items-excluded_links
     missing=(signup_items|discount_items)-present
     if missing and getattr(args,'continuous_rule_sha',None):
-        activity, discounts, issues=build_rows(snapshot,identities,rate,args.target,bases,signup_items&present,discount_items&present)
+        activity, discounts, issues=build_rows(snapshot,identities,rate,args.target,bases,signup_items&present,discount_items&present,official_limits=limits)
         issues.extend(dict(item=i,sku='',error='item_missing_in_official_template') for i in sorted(missing))
     else:
-        activity, discounts, issues = build_rows(snapshot,identities,rate,args.target,bases,signup_items,discount_items)
+        activity, discounts, issues = build_rows(snapshot,identities,rate,args.target,bases,signup_items,discount_items,official_limits=limits)
     corrections=load(args.custom_corrections) if getattr(args,'custom_corrections',None) else {'rows':[]}
     by_pair={(r['item'],r['sku']):r for r in activity}
     seen=set()
@@ -247,19 +303,38 @@ def _generate(args,authority):
     planned_discounts=discounts
     discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target,continuous_rule_sha=continuous_rule_sha)
     issues.extend(reuse_issues)
+    requested_signup, requested_discount = set(signup_items), set(discount_items)
+    isolated = set()
+    partial = bool(getattr(args, 'isolate_item_issues', False))
+    if partial:
+        isolated, kept = isolate_item_issues(issues, signup_items | discount_items,
+            activity=activity, discounts=discounts, planned=planned_discounts, reused=reused)
+        activity, discounts = kept['activity'], kept['discounts']
+        planned_discounts, reused = kept['planned'], kept['reused']
+        signup_items, discount_items = signup_items-isolated, discount_items-isolated
+    emit = not issues or (partial and bool(activity or discounts))
     result = dict(status='local_input_issues' if issues else 'local_files_ready_not_uploaded',platform_write=False,database_write=False,automatic_retry=False,price_version=snapshot['resolved_price_version_sha256'],official_rate=str(rate),target=args.target,window={'start':args.start,'end':args.end,'timezone':'Asia/Shanghai'},activity_rows=activity,discount_rows=discounts,discount_reuse=reused,issues=issues,activity_template_sha256=sha(raw),files=[],note='Registered local evidence only, not a platform preflight or fresh readback. Actual reused amounts must meet frozen targets; no inherited tolerance. No upload files on issues. Business database untouched; local authority persisted.')
+    if partial:
+        result.update(status='partial_local_files_ready_not_uploaded' if issues and emit else result['status'],
+            item_isolation=dict(requested_signup_items=sorted(requested_signup),
+                requested_discount_items=sorted(requested_discount), isolated_items=sorted(isolated),
+                delivered_signup_items=sorted({r['item'] for r in activity}),
+                delivered_discount_items=sorted({r['item'] for r in discounts}),
+                activity_skus=len(activity), discount_skus=len(discounts),
+                template_items=len(present), template_skus=len(identities)),
+            note='Only products with exact issues are isolated in both files. Issues remain unresolved; files and local bundle are not platform success. Global source/identity failures still stop generation.')
     result['explicit_signup_items'] = sorted(signup_items) if signup_items is not None else None
     result['explicit_discount_items'] = sorted(discount_items) if discount_items is not None else None
     result['campaign']=campaign
     result['final_price_tolerance']=tolerance
     if time_binding is not None:
         result['time_binding']=time_binding
-    if tolerance:
+    if tolerance and not partial:
         result['note']='Current pinned campaign-only user tolerance applied to actual reused discounts; not a daily-price change or automatic minus-two adjustment. No upload files on other issues; no platform preflight.'
     result['protected_scope']={'signup':blocked_signup,'discount':blocked_discount}
     result['excluded_link_scope']=snapshot.get('registered_item_exclusions',[])
     outputs = []
-    if not issues:
+    if emit:
         if activity:
             outputs.append(('活动报名.xlsx',fill_selected_rows(raw,activity,official_rate=args.official_rate)))
         if discounts:
@@ -275,7 +350,7 @@ def _generate(args,authority):
         with path.open('xb') as stream:
             stream.write(content)
         result['files'].append(dict(path=str(path.resolve()),sha256=sha(content)))
-    if not issues:
+    if emit:
         body=dict(campaign=campaign,start=args.start,end=args.end,rule_sha256=authority.rule_sha,final_price_tolerance=tolerance,
                   snapshot_path=str(args.snapshot.resolve()),snapshot_sha256=sha(args.snapshot.read_bytes()),
                   price_version=snapshot['resolved_price_version_sha256'],entry_source_sha256=snapshot['entry_source_sha256'],
@@ -286,6 +361,14 @@ def _generate(args,authority):
             body['continuous_rule_sha']=continuous_rule_sha
         if snapshot_scope:
             body['snapshot_item_scope']=snapshot_scope
+        if partial:
+            body['item_isolation']=result['item_isolation']
+            body['isolated_issues']=issues
+            body['corrections']={'rows':[r for r in corrections['rows'] if r['item'] not in isolated]}
+        if limits is not None:
+            body['official_price_limits'] = True
+        if export_path:
+            body['generation_product_export'] = snapshot['generation_product_export']
         if exclusions:body['sku_exclusion_receipts']=exclusions
         if time_binding is not None:
             body['time_binding']=time_binding
@@ -314,8 +397,11 @@ if __name__ == '__main__':
     parser.add_argument('--signup-items',help='Explicit comma-separated whole-item scope decided by 01; omit for all incomplete template items')
     parser.add_argument('--discount-items',help='Independent explicit comma-separated new-window discount item scope; omit for all template items, including already enrolled')
     parser.add_argument('--output-dir',type=Path,required=True)
+    parser.add_argument('--isolate-item-issues',action='store_true',help='Deliver complete safe products together; retain exact product-level issues in receipt. Never suppress global evidence failures.')
+    parser.add_argument('--official-price-limits',action='store_true',help='Validate current official H/I/K caps, ordinary cumulative 2 yuan and fixed custom floors; never use G/P as ERP prices.')
+    parser.add_argument('--product-export-observation',type=Path,help='Complete recorded multi-page product_export job; bind exact current codes without replacing shared single-file fact index.')
     args=parser.parse_args()
     result=generate(args)
     print(json.dumps({k:v for k,v in result.items() if k not in ('activity_rows','discount_rows','issues','note')},ensure_ascii=False))
     print(json.dumps({'issues_count':len(result['issues']),'issues':result['issues']},ensure_ascii=False))
-    raise SystemExit(2 if result['issues'] else 0)
+    raise SystemExit((3 if result['files'] else 2) if result['issues'] else 0)

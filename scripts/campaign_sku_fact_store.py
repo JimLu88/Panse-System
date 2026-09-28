@@ -224,7 +224,7 @@ def semantic_issue(fact, erp):
 
 
 class FactResolver:
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, *, generation_facts=None, generation_reference=None):
         self.rows = snapshot['all_erp_rows']
         self.facts = defaultdict(list)
         self.by_code = defaultdict(list)
@@ -240,10 +240,16 @@ class FactResolver:
             # never permission to invent a code or a physical SKU binding.
             from campaign_failure_remediation import verified_code_aliases
             self.aliases = verified_code_aliases(snapshot)
-            _, rows = read_version(self.reference['sha256'], root=self.reference['root'])
+            _, rows = read_version(self.reference['sha256'], root=self.reference['root']) if generation_facts is None else (None, generation_facts)
             for row in rows:
                 if row['sku']:
                     self.facts[row['item'], row['sku']].append(row)
+        if generation_facts is not None:
+            self.aliases = verified_code_aliases(snapshot) if self.reference else set()
+            self.reference = generation_reference
+            self.facts = defaultdict(list)
+            for row in generation_facts:
+                self.facts[row['item'], row['sku']].append(row)
 
     def resolve(self, item, sku, existing):
         facts = self.facts.get((item, sku), [])
