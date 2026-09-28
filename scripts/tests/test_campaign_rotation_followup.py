@@ -119,3 +119,47 @@ def test_registered_official_failure_consumed_not_rewritten(monkeypatch,tmp_path
     assert f.registered_protection()==(set(),{f.ROCK})
     (tmp_path/'official-result-21.json').write_text('{}')
     with pytest.raises(ValueError):f.registered_protection()
+
+
+@pytest.mark.parametrize('fault',['none','wrong_item','partial','price','prior','status','failed','unknown'])
+def test_bed_success_bound_to_original_fourteen(monkeypatch,fault):
+    rows=seed()[0]['activity_rows']
+    reservation=dict(result_sha256=f.RESULT_SHA,activity_rows=deepcopy(rows))
+    receipt=dict(activity_rows=deepcopy(rows),official_terminal=dict(source=dict(sha256=f.RESULT_SHA)))
+    result=dict(status='success',successful_pairs=[[r['item'],r['sku']] for r in rows],failed_pairs=[],unknown_pairs=[])
+    if fault=='wrong_item':reservation['activity_rows'][0]['item']=f.ROCK
+    if fault=='partial':reservation['activity_rows'].pop()
+    if fault=='price':reservation['activity_rows'][0]['activity_price']='218.00'
+    if fault=='prior':receipt['official_terminal']['source']['sha256']='bad'
+    if fault=='status':result['status']='unknown'
+    if fault=='failed':result['failed_pairs']=[['x','y']]
+    if fault=='unknown':result['unknown_pairs']=[['x','y']]
+    monkeypatch.setattr(f,'import_terminal',lambda request,raw:result)
+    if fault=='none':
+        value=f.bed_success_value(reservation,receipt,b'fixture')
+        assert len(value['successful_pairs'])==14 and not value['whole_event_complete']
+        assert value['remaining_no_official_rows']==9 and not value['platform_write']
+    else:
+        with pytest.raises(ValueError):f.bed_success_value(reservation,receipt,b'fixture')
+
+
+def test_success_record_only_appends_and_is_idempotent(monkeypatch,tmp_path):
+    folder=tmp_path/'failed-followup';folder.mkdir()
+    original=tmp_path/'official-result-21.json';original.write_text('old failed result')
+    reservation=folder/'reservation.json';reservation.write_text('old reserved scope')
+    value=dict(status='success',successful_pairs=[['item','sku']],source={'sha256':'a'*64})
+    monkeypatch.setattr(f,'read_bed_success',lambda *_:value)
+    first=f.record_bed_success(tmp_path);second=f.record_bed_success(tmp_path)
+    assert first==second and first['successful_rows']==14 and not first['whole_event_complete']
+    assert original.read_text()=='old failed result' and reservation.read_text()=='old reserved scope'
+    saved=folder/'official-result-bed14.json';saved.write_text('{}')
+    with pytest.raises(ValueError):f.record_bed_success(tmp_path)
+
+
+def test_moved_original_availability_does_not_change_official_identity(tmp_path):
+    original=dict(status='failed',source={'sha256':'a'*64},missing_original_files=[],verified_original_files=[{'path':'old'}])
+    f.record(original,tmp_path)
+    now=dict(original,missing_original_files=[{'path':'old'}],verified_original_files=[])
+    f.record(now,tmp_path)
+    assert json.loads((tmp_path/'official-result-21.json').read_text())==original
+    with pytest.raises(ValueError):f.record(dict(now,status='success'),tmp_path)

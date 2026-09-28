@@ -16,6 +16,8 @@ DELIVERY=ROOT/'整批交付'
 RECEIPT_SHA='229584e5bb8e77859f2ac23909f2d4a3b765f7af9f6af46c79567fe101c60583'
 RESULT=ROOT/'官方21条报名结果-20260928-175731.xlsx'
 RESULT_SHA='dd855f5591627abb65db31418dbaef6198c7c2350c8996a3b6d9c8198b01f77a'
+BED_SUCCESS=ROOT/'官方床14条成功-20260928-183147.xlsx'
+BED_SUCCESS_SHA='d269c2de93a0979ee4621ec6077b23a70ae8ccc29208d64107cc86058d3ab098'
 LEDGER=c.PROJECT/'活动准备/报名状态/rotation-preparations/20260928-nine-sku-batch'
 BED='1036273574687'
 ROCK='792992319206'
@@ -71,12 +73,61 @@ def terminal(receipt,raw):
                 platform_write=False,discount_result='unknown_not_inferred_from_activity_failure')
 
 
+def terminal_identity(value):
+    # These two fields describe file availability WHEN recorded, not the
+    # official outcome identity. Moving an original later cannot erase success.
+    return {k:v for k,v in value.items() if k not in ('missing_original_files','verified_original_files')}
+
+
 def record(value,ledger=LEDGER):
     path=Path(ledger)/'official-result-21.json'
     if path.exists():
-        if json.loads(path.read_text(encoding='utf-8'))!=value:raise ValueError('registered_terminal_changed')
+        if terminal_identity(json.loads(path.read_text(encoding='utf-8')))!=terminal_identity(value):raise ValueError('registered_terminal_changed')
     else:write_new(path,value)
     return path
+
+
+def bed_success_value(reservation,receipt,raw):
+    scope=reservation['activity_rows']
+    if (reservation.get('result_sha256')!=RESULT_SHA or len(scope)!=14
+            or {r['item'] for r in scope}!={BED}
+            or canonical_scope(scope)!=canonical_scope(receipt['activity_rows'])
+            or receipt.get('official_terminal',{}).get('source',{}).get('sha256')!=RESULT_SHA):
+        raise ValueError('bed_success_original_followup_scope_changed')
+    parsed=import_terminal({'scope':scope},raw)
+    if (parsed['status']!='success' or len(parsed['successful_pairs'])!=14
+            or parsed['failed_pairs'] or parsed['unknown_pairs']):
+        raise ValueError('bed_success_requires_full_official_14_success')
+    return dict(parsed,campaign=c.CAMPAIGN,source=dict(path=str(BED_SUCCESS),sha256=BED_SUCCESS_SHA),
+        state='official_import_success_no_replay',original_failed_result_sha256=RESULT_SHA,
+        platform_write=False,whole_event_complete=False,same_marketing_active_readback='not_observed',
+        remaining_no_official_rows=9,remaining_no_official_upload_ready=False)
+
+
+def read_bed_success(ledger=LEDGER):
+    follow=Path(ledger)/'failed-followup'
+    reservation_raw=(follow/'reservation.json').read_bytes()
+    reservation=json.loads(reservation_raw)
+    receipt_path=Path(reservation['output'])/'receipt.json'
+    receipt_raw=receipt_path.read_bytes();receipt=json.loads(receipt_raw)
+    prior_raw=(Path(ledger)/'official-result-21.json').read_bytes()
+    prior=json.loads(prior_raw)
+    if (prior.get('source',{}).get('sha256')!=RESULT_SHA or prior.get('status')!='failed'
+            or terminal_identity(prior)!=terminal_identity(terminal(original(),c.pinned(RESULT,RESULT_SHA)))):
+        raise ValueError('bed_success_original_failed_history_changed')
+    value=bed_success_value(reservation,receipt,c.pinned(BED_SUCCESS,BED_SUCCESS_SHA))
+    value.update(reservation_sha256=c.digest(reservation_raw),receipt_sha256=c.digest(receipt_raw),
+                 previous_failed_record_sha256=c.digest(prior_raw))
+    return value
+
+
+def record_bed_success(ledger=LEDGER):
+    value=read_bed_success(ledger);path=Path(ledger)/'failed-followup/official-result-bed14.json'
+    if path.exists():
+        if json.loads(path.read_text(encoding='utf-8'))!=value:raise ValueError('bed_success_record_changed')
+    else:write_new(path,value)
+    return dict(record_path=str(path),successful_rows=14,failed_rows=0,unknown_rows=0,
+                previous_failure_preserved=True,whole_event_complete=False,platform_write=False)
 
 
 def registered_protection():
@@ -86,7 +137,7 @@ def registered_protection():
     registered=LEDGER/'official-result-21.json'
     if registered.exists():
         expected=terminal(original(),c.pinned(RESULT,RESULT_SHA))
-        if json.loads(registered.read_text(encoding='utf-8'))!=expected:raise ValueError('registered_terminal_changed')
+        if terminal_identity(json.loads(registered.read_text(encoding='utf-8')))!=terminal_identity(expected):raise ValueError('registered_terminal_changed')
         pairs.update(map(tuple,expected['successful_pairs']+expected['unknown_pairs']))
         no_sales.update(expected['no_sales_items'])
     follow=LEDGER/'failed-followup'
@@ -94,6 +145,11 @@ def registered_protection():
         reservation=json.loads((follow/'reservation.json').read_text(encoding='utf-8'))
         if reservation['result_sha256']!=RESULT_SHA:raise ValueError('followup_reservation_changed')
         pairs.update((r['item'],r['sku']) for r in reservation['activity_rows'])
+        success=follow/'official-result-bed14.json'
+        if success.exists():
+            value=read_bed_success()
+            if json.loads(success.read_text(encoding='utf-8'))!=value:raise ValueError('bed_success_record_changed')
+            pairs.update(map(tuple,value['successful_pairs']))
     return pairs,no_sales
 
 
@@ -171,8 +227,12 @@ def build(receipt,d,result,protection,old_discount):
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--record',action='store_true',help='Append exact official21 result to existing reservation, idempotent')
+    ap.add_argument('--record-bed-success',action='store_true',help='Record pinned official14 success to original followup; no XLSX creation')
     ap.add_argument('--output-dir',type=Path,help='One prepare-only followup; requires --record; never upload')
     args=ap.parse_args()
+    if args.record_bed_success:
+        if args.record or args.output_dir:raise ValueError('bed_success_record_only_no_prepare')
+        print(json.dumps(record_bed_success(),ensure_ascii=False));return
     if args.output_dir and not args.record:raise ValueError('record_original_terminal_first')
     receipt=original();value=terminal(receipt,c.pinned(RESULT,RESULT_SHA))
     d=c.inputs();protection=c.current_protection()
