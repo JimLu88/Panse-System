@@ -87,6 +87,9 @@ def current_protection():
                 historical=['1036273574687']
     finally:a.db.close()
     pairs,no_sales=trial_protection()
+    from campaign_rotation_followup import registered_protection
+    extra_pairs,extra_no_sales=registered_protection()
+    pairs.update(extra_pairs);no_sales.update(extra_no_sales)
     return dict(signup_items=items,signup_pairs=pairs,no_sales_items=no_sales,historical_changed_scope_candidates=historical,
                 discount_pairs=set(map(tuple,load_current_protection()['protected_pairs'])))
 
