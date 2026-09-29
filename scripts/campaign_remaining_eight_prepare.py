@@ -241,6 +241,12 @@ def generate(output):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--output-dir',type=Path);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--output-dir',type=Path)
+    parser.add_argument('--seven-no-sales',action='store_true');args=parser.parse_args()
+    if args.seven_no_sales:
+        import campaign_seven_no_sales_prepare as fallback
+        receipt=fallback.generate(args.output_dir) if args.output_dir else fallback.build()[1]
+        print(json.dumps({k:receipt[k] for k in ('items','ordinary_skus','status','upload_ready','blockers')},ensure_ascii=False))
+        raise SystemExit(0)
     receipt=generate(args.output_dir) if args.output_dir else build()[1]
     print(json.dumps({k:receipt[k] for k in ('groups','blocked','status','platform_write')},ensure_ascii=False))
