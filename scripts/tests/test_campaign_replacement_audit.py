@@ -22,7 +22,8 @@ def test_distinct_bases_and_frozen_cap_target():
     r=c.row_audit(row())
     assert r['candidates']['official_10']['deduct']=='201.00'
     assert r['candidates']['official_10']['final']=='699.00'
-    assert r['candidates']['no_official']['deduct']=='400.00'
+    assert 'no_official' not in r['candidates']
+    assert r['candidate_errors']['no_official']=='effective_sku_price_composition_required_no_g_fallback'
     assert r['selected_candidate'] is None and not r['upload_ready']
 
 @pytest.mark.parametrize('value',[None,'','NaN','Infinity','0','-1','700.001'])
@@ -39,9 +40,9 @@ def test_custom_never_becomes_zero_or_ordinary_discount():
         r=c.row_audit(row(custom=flag))
         assert not r['candidates'] and r['blockers']
 
-def test_missing_cap_does_not_prevent_only_conditional_no_official_math():
+def test_missing_cap_does_not_fall_back_to_unverified_g():
     r=c.row_audit(row(cap=None,final=None))
-    assert 'official_10' not in r['candidates'] and 'no_official' in r['candidates']
+    assert not r['candidates']
     assert 'current_final_readback_missing' in r['blockers']
 
 def test_more_than_two_requires_rotation_not_silent_lowering():
@@ -57,9 +58,36 @@ def test_no_official_target_cannot_exceed_g():
     r=c.row_audit(row(list_price='699.99'))
     assert 'no_official' not in r['candidates']
 
-def test_zero_deduction_is_explicit_no_need_not_missing():
+def test_g_equal_target_still_does_not_prove_zero_deduction():
     r=c.row_audit(row(list_price='700.00'))
-    assert r['candidates']['no_official']['deduct']=='0.00'
+    assert 'no_official' not in r['candidates']
+
+
+@pytest.mark.parametrize('g',['10580.00','7935.00',None,'0','NaN'])
+@pytest.mark.parametrize('admission_failure',[False,True])
+def test_confirmed_buyer_incident_never_emits_g_based_deduction(g,admission_failure):
+    r=c.row_audit(row(item='1035582527998',sku='6069401344500',
+        target='5423.27',big_target='5300.00',list_price=g,activity_price=None,
+        no_sales_this_campaign=admission_failure,effective_mode='no_official',
+        effective_mode_evidence='free text is not a verified price composition'))
+    assert not r['candidates'] and r['selected_candidate'] is None
+    assert r['candidate_errors']['no_official']=='effective_sku_price_composition_required_no_g_fallback'
+    assert not r['upload_ready']
+
+
+def test_direct_no_official_candidate_call_cannot_bypass_audit_guard():
+    with pytest.raises(ValueError,match='effective_sku_price_composition_required_no_g_fallback'):
+        c.candidate(row(effective_mode='no_official'), 'no_official')
+
+
+def test_unverified_rows_drop_all_calculated_amounts_preserve_scope_without_mutation():
+    original=dict(item='1035582527998',sku='6069401344500',target='5423.27',base='10580.00',
+                  deduct='5156.73',final='5423.27',official_cut='0',upload_ready=True)
+    held=c.hold_unverified_base_rows([original])[0]
+    assert held['item']==original['item'] and held['sku']==original['sku']
+    assert held['target']=='5423.27' and held['base'] is None and held['deduct'] is None
+    assert 'final' not in held and 'official_cut' not in held and not held['upload_ready']
+    assert original['deduct']=='5156.73' and original['upload_ready']
 
 def test_even_verified_mode_never_releases_upload():
     r=c.audit(request(rows=[row(effective_mode='official_10',effective_mode_evidence='test receipt')]))

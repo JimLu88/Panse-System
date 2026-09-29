@@ -31,8 +31,24 @@ def test_one_batch_keeps_bed_full_and_removes_rock_activity():
     assert len([x for x in r['no_official_rows'] if x['item']==f.ROCK])==5
     assert all(x['deduct']=='59.12' and x['target']=='136.63' and x['calculated_final']=='136.38'
                and not x['additional_discount_authorized'] for x in r['accessory_rows'])
-    assert all(x['deduct']=='150.00' for x in r['no_official_rows'] if x['item']==f.ROCK)
+    assert all(x['deduct'] is None and x['base'] is None for x in r['no_official_rows'])
+    assert all(x['reason']=='effective_sku_price_composition_required_no_g_fallback' for x in r['no_official_rows'])
     assert r['prior_nine_discount_not_replayed'] and not r['upload_ready'] and not r['platform_write']
+
+
+def test_build_omits_g_fallback_file_even_for_old_numeric_plan(monkeypatch):
+    plan=dict(activity_rows=[],accessory_rows=[dict(deduct='59.12')],no_official_rows=[dict(deduct='5156.73')])
+    monkeypatch.setattr(f,'calculate',lambda *args:plan)
+    monkeypatch.setattr(f.c,'load_fixed_discount_template',lambda:b'fixed')
+    calls=[]
+    def writer(master,rows):
+        assert rows is plan['accessory_rows']
+        calls.append(rows)
+        return b'accessories-only'
+    monkeypatch.setattr(f.c,'fill_single_discount_rows',writer)
+    _,files=f.build(None,None,None,None,None)
+    assert len(calls)==1 and len(files)==1
+    assert not any('无官方' in name for name in files)
 
 
 @pytest.mark.parametrize('change',['result','no_sales','bed_partial','bed_duplicate','accessory_deduct',

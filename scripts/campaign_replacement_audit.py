@@ -69,13 +69,21 @@ def candidate(row, mode):
                     conditional_on='same window official 10 percent effective; no remaining stacking')
     if mode != 'no_official':
         raise ValueError('unknown_calculation_mode')
-    price = amount(row.get('list_price'))
-    deduction = price-target
-    if deduction < 0:
-        raise ValueError('list_price_below_frozen_target')
-    return dict(daily=str(price),target=str(target),official_cut='0',deduct=str(deduction),
-                final=str(target),delta='0',base_column='G',mode=mode,
-                conditional_on='no effective campaign or remaining stacking in replacement window')
+    # A no-sales rejection or a claimed no-official mode does not establish
+    # the buyer's effective base. In the verified incident G=10580 while the
+    # buyer page used 7935; G-target therefore over-deducted by 2645.
+    # This legacy audit has no exact-SKU price-composition evidence consumer.
+    # Do not emit even a conditional G candidate that can be copied to XLSX.
+    raise ValueError('effective_sku_price_composition_required_no_g_fallback')
+
+
+def hold_unverified_base_rows(rows):
+    """Keep exact scope/targets, not unsafe amounts usable by file writers."""
+    keys=('item','sku','original_sku','erp_code','target','protected_existing_discount',
+          'original_discount_result')
+    return [dict({k:r[k] for k in keys if k in r}, base=None, deduct=None,
+                 mode='effective_price_composition_unverified', upload_ready=False,
+                 reason='effective_sku_price_composition_required_no_g_fallback') for r in rows]
 
 
 def row_audit(row):
@@ -103,7 +111,7 @@ def row_audit(row):
     if row.get('final') in (None,''):
         result['blockers'].append('current_final_readback_missing')
     if row.get('no_sales_this_campaign'):
-        result['notes']=['official admission failure alone does not prove historical discounts inactive']
+        result['notes']=['official admission failure proves neither effective buyer base nor historical discounts inactive']
     return result
 
 

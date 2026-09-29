@@ -50,10 +50,20 @@ def test_full_21_new_nine_custom_two_and_unknown_preserved(monkeypatch):
     d=fixture();r=c.calculate(d,protection())
     assert len(r['activity_rows'])==21 and len(r['discount_rows'])==9
     assert len(r['conditional_round_rows'])==4 and len(r['missing_price_rows'])==4
+    assert all(x['deduct'] is None and x['base'] is None for x in r['conditional_round_rows'])
     pairs={(x['item'],x['sku']) for x in r['activity_rows']}
     assert all((x['item'],x['new_sku']) in pairs and (x['item'],x['old_sku']) not in pairs for x in d['mapping']['rows'])
     assert all(x['new_cap'] is None and x['old_enabled']=='unknown' for x in r['rotation_lineage'])
     assert not r['upload_ready'] and not r['whole_event_complete']
+
+
+def test_build_never_serializes_legacy_round_g_amounts(monkeypatch):
+    plan=dict(activity_rows=[],discount_rows=[],conditional_round_rows=[dict(deduct='1300.00')])
+    monkeypatch.setattr(c,'calculate',lambda *args:plan)
+    def forbidden(*args,**kwargs):raise AssertionError('G fallback reached workbook writer')
+    monkeypatch.setattr(c,'fill_single_discount_rows',forbidden)
+    _,files=c.build({}, {}, b'master', b'discount')
+    assert files=={}
 
 
 @pytest.mark.parametrize('bad',['version','mapping_count','mapping_duplicate','erp_code','attributes','price','target','deduct','source_missing','state','marketing','scope_count','custom_floor','custom_raise','round_g','round_target','missing_p'])

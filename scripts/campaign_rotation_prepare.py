@@ -16,7 +16,7 @@ from campaign_fixed_template_projection import project
 from campaign_generate_current_files import official_cut
 from campaign_recovery_trial import MASTER,MASTER_SHA,CAMPAIGN,LEDGER,import_terminal
 from campaign_discount_template import load_fixed_discount_template
-from campaign_replacement_audit import load_current_protection
+from campaign_replacement_audit import load_current_protection, hold_unverified_base_rows
 
 PROJECT=Path('D:/AI/畔色ERP系统')
 OWNER=PROJECT/'outputs/01a067c6-7e83-7483-9a21-84b44ed7299b'
@@ -195,7 +195,7 @@ def calculate(d,protection):
     if len(rounds)!=4 or {r['item'] for r in rounds}!={'918692510350'}:raise ValueError('exact_round_four_required')
     remaining=[r for r in d['current']['missing_price_rows'] if r['item'] in ('793202812082','722275846168')]
     return dict(schema='campaign-rotation-prepare-v1',campaign=CAMPAIGN,price_version=VERSION,
-        activity_rows=activity,discount_rows=discounts,conditional_round_rows=rounds,
+        activity_rows=activity,discount_rows=discounts,conditional_round_rows=hold_unverified_base_rows(rounds),
         held=held,held_activity_rows=held_activity,custom_corrections=d['custom']['fixed_basis'],
         rotation_lineage=conditions,missing_price_rows=remaining,
         requested_activity_items=ITEMS,upload_ready=False,platform_write=False,erp_write=False,
@@ -230,8 +230,8 @@ def build(d,protection,master,discount_master):
         files['活动报名-完整待处理商品-待条件确认.xlsx']=fill_selected_rows(projected,result['activity_rows'],official_rate='10%')
     if result['discount_rows']:
         files['单品立减-9条新SKU-待条件确认.xlsx']=fill_single_discount_rows(discount_master,result['discount_rows'])
-    if result['conditional_round_rows']:
-        files['单品立减-圆弧4条-HOLD不得上传.xlsx']=fill_single_discount_rows(discount_master,result['conditional_round_rows'])
+    # Scope stays in the receipt, but G-based conditional amounts are not an
+    # upload artifact, even when the filename says HOLD.
     result['files']=[dict(name=name,sha256=digest(raw),upload_ready=False) for name,raw in files.items()]
     result['sources']={k:dict(path=str(path),sha256=sha) for k,(path,sha) in INPUTS.items()}
     result['sources']['official_current']=dict(path=str(OFFICIAL[0]),sha256=OFFICIAL[1])

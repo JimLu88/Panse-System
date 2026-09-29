@@ -9,7 +9,7 @@ import re
 import campaign_rotation_prepare as c
 from campaign_recovery_trial import import_terminal, canonical_scope, write_new
 from campaign_official_template import template_rows,read_rows
-from campaign_replacement_audit import PROTECTION_ROOT, PROTECTION_FILES, END
+from campaign_replacement_audit import PROTECTION_ROOT, PROTECTION_FILES, END, hold_unverified_base_rows
 
 ROOT=c.OWNER/'rotation-20260928'
 DELIVERY=ROOT/'整批交付'
@@ -198,14 +198,14 @@ def calculate(receipt,d,result,protection,old_discount):
     if len(rounds)!=4 or {r['item'] for r in rounds}!={'918692510350'}:raise ValueError('round_scope_changed')
     return dict(schema='campaign-rotation-failed-followup-v1',campaign=c.CAMPAIGN,
         official_terminal=result,activity_rows=[] if blocked else bed,held_activity_rows=bed if blocked else [],
-        accessory_rows=accessories,no_official_rows=replacements+rounds,
+        accessory_rows=accessories,no_official_rows=hold_unverified_base_rows(replacements+rounds),
         skipped_activity_items=[ROCK],skipped_activity_rows=7,missing_price_rows=receipt['missing_price_rows'],
         prior_nine_discount_not_replayed=True,prior_nine_discount_result='unknown',
         upload_ready=False,platform_write=False,erp_write=False,whole_event_complete=False,
         end=END,start=None,conditions=[
             '床两配件59.12为总优惠，不是新增59.12；旧327成功保护不解除，先核真实窗口和成员',
             '床14仅为同一失败范围候选；原9单品是否生效未知，不重传9表',
-            '岩板桌本场7条活动不再报名；5普通款以商品G减原中促目标，仅在无官方优惠且原优惠精确撤出、不叠加后使用',
+            '岩板桌本场7条活动不再报名；5普通款缺精确有效基价组成，不得按G减目标输出金额',
             '圆弧4同样HOLD；本表9无官方款不包含两条岩板定制',
             '读取窗口不等于新优惠实际生效窗口；起点必须为实际设置的未来时间，终点10月7日19:59:59'])
 
@@ -219,7 +219,7 @@ def build(receipt,d,result,protection,old_discount):
         files['床14条活动-配件优惠核实后使用.xlsx']=c.fill_selected_rows(projected,plan['activity_rows'],official_rate='10%')
     master=c.load_fixed_discount_template()
     files['床2配件总优惠-59.12非追加-HOLD.xlsx']=c.fill_single_discount_rows(master,plan['accessory_rows'])
-    files['岩板5及圆弧4无官方优惠替换-HOLD.xlsx']=c.fill_single_discount_rows(master,plan['no_official_rows'])
+    # Preserve unresolved nine-row scope only; never create a G-fallback sheet.
     plan['files']=[dict(name=n,sha256=c.digest(b),upload_ready=False) for n,b in files.items()]
     return plan,files
 
