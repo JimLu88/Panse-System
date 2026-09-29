@@ -3,6 +3,7 @@ from pathlib import Path
 from copy import deepcopy
 from decimal import Decimal
 import pytest
+import json
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'scripts'))
 import campaign_seven_no_sales_prepare as m
@@ -112,3 +113,42 @@ def test_completed_scope_rejected(monkeypatch):
     r=next(r for r in audit['activity_rows'] if r['item'] in m.ITEMS and not r['custom'])
     monkeypatch.setattr(m.eight,'load_current_protection',lambda:{'protected_pairs':{(r['item'],r['sku'])}})
     with pytest.raises(ValueError,match='completed_scope_overlap'):m.build()
+
+
+@pytest.fixture
+def release_inputs():
+    package=json.loads((m.LEDGER/'receipt.json').read_bytes())
+    with m.eight.readonly(m.eight.WA_ROOT/'jobs.sqlite') as db:
+        batch=json.loads(db.execute('SELECT result FROM campaign_transfer_jobs WHERE id=?',(m.READ_JOB,)).fetchone()[0])
+        deletion=json.loads(db.execute('SELECT result FROM campaign_transfer_jobs WHERE id=?',(m.DELETE_JOB,)).fetchone()[0])
+    _,prices,_=m.eight.sources()
+    cells,merges=m.eight.workbook_rows(m.REPORT.read_bytes(),'商品SKU导入列表')
+    return package,batch,deletion,prices,cells,merges
+
+
+def test_bounded_evidence_release_not_live_guarantee(release_inputs):
+    r=m.assess_release(*release_inputs)
+    assert r['upload_ready'] and not r['business_complete'] and not r['platform_write']
+    assert not r['workbook_regenerated'] and not r['complete_checkout_composition_verified']
+    assert r['live_sku_base_matches']==30 and r['official_reference_matches']==39
+
+
+@pytest.mark.parametrize('mutation', ['other_offer','partial_list','other_issue','price_changed','not_deleted','three_missing'])
+def test_release_real_conflicts_still_block(release_inputs,mutation):
+    package,batch,deletion,prices,cells,merges=release_inputs
+    if mutation=='other_offer':
+        next(o for x in batch['rows'] for o in x['offers'] if o['overlaps_requested_window'])['offer_id']='999'
+    elif mutation=='partial_list':batch['rows'][0]['list_coverage_verified']=False
+    elif mutation=='other_issue':batch['issues'].append({'reason':'different'})
+    elif mutation=='price_changed':batch['sku_price_surface']['rows'][0]['observations'][0]['displayed_before_column']='1.00'
+    elif mutation=='not_deleted':deletion['rows'][0]['observed_state']='active_control_available'
+    elif mutation=='three_missing':batch['sku_price_surface']['rows'][0]['observations']=[]
+    with pytest.raises(ValueError):m.assess_release(package,batch,deletion,prices,cells,merges)
+
+
+def test_official_import_overrides_prior_release():
+    r=m.release()
+    assert r['status']=='official_import_32_success_no_retry'
+    assert not r['upload_ready'] and not r['retry_allowed']
+    assert r['offer_id']=='148277214293' and r['success_skus']==32
+    assert not r['window_verified'] and not r['all_final_prices_verified']

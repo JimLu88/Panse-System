@@ -19,6 +19,117 @@ REPORT_SHA = 'ee6dda1c19d7e9e90af01a15a1bd74da916bc5a48ba2f5c4f53cc3190a8e8c89'
 PRIOR_SHA = '217da880512d57c35e16fefd78090261396088ac0afed1cdd2444b7cdb1447a9'
 LEDGER = eight.ROOT / 'seven-no-sales-once'
 NAME = '待核勿上传-7件32SKU-无超级立减替换表.xlsx'
+READ_JOB = '2245d8dfa960c756e8427c25e8cd2d0cb02081d8b23c0192888c29189da4f541'
+DELETE_JOB = '35d7cd7e4d16de9fdee2ff2d8f93695fa7823c06c2e8533b12a7b1b8b14fba25'
+OFFER = '148273659773'
+
+
+def terminal_evidence(job, request_sha, result_sha):
+    with eight.readonly(eight.WA_ROOT/'jobs.sqlite') as db:
+        row = db.execute('SELECT * FROM campaign_transfer_jobs WHERE id=?',(job,)).fetchone()
+    if (not row or row['state']!='finished' or eight.sha(row['request'].encode())!=request_sha
+            or eight.sha(row['result'].encode())!=result_sha):
+        raise ValueError('exact_read_terminal_changed')
+    result = json.loads(row['result'])
+    if (result.get('platform_write') is not False or result['recording'].get('active') is not False
+            or result['recording'].get('capture_errors')):
+        raise ValueError('read_recording_not_complete')
+    eight.pinned(Path(result['recording']['video']),result['recording']['video_sha256'])
+    return result
+
+
+def assess_release(package, batch, deletion, prices, report_cells, report_merges):
+    """Use bounded corroborating evidence, not a new mandatory price-refresh gate."""
+    expected={(r['item'],r['sku']):r for r in package['rows']}
+    if len(expected)!=32 or {i for i,s in expected}!=ITEMS:
+        raise ValueError('release_exact_32_scope_required')
+    official={}
+    for n,r in report_cells.items():
+        if n<4 or not r.get('E'):continue
+        key=(eight._effective(report_cells,report_merges,n,'A'),r['E'])
+        official[key]=eight.money(eight._effective(report_cells,report_merges,n,'G'))
+    if len(official)!=39 or any(official[k]!=eight.money(prices[k]['G']) for k in official):
+        raise ValueError('release_report_base_conflict')
+    if (len(batch['rows'])!=14 or {(x['item'],x['mode']) for x in batch['rows']}!=
+            {(i,mode) for i in ITEMS for mode in ('商品级','SKU级')}
+            or any(not x['list_coverage_verified'] for x in batch['rows'])):
+        raise ValueError('release_full_offer_lists_required')
+    for entry in batch['rows']:
+        for offer in entry['offers']:
+            if offer['overlaps_requested_window'] and (entry['mode']!='SKU级' or offer['offer_id']!=OFFER):
+                raise ValueError('release_other_overlapping_offer')
+    if batch['issues']!=[dict(item='797139954559',mode='SKU级',reason='discovered_offer_window_not_readable')]:
+        raise ValueError('release_other_read_issue')
+    proven=set()
+    for row in batch['sku_price_surface']['rows']:
+        key=(row['item'],row['sku'])
+        if key not in expected:raise ValueError('release_unexpected_surface')
+        for observation in row['observations']:
+            if (observation['offer_id']!=OFFER or observation['arithmetic_balanced'] is not True
+                    or eight.money(observation['displayed_before_column'])!=eight.money(prices[key]['G'])):
+                raise ValueError('release_observed_price_conflict')
+            proven.add(key)
+    missing=set(expected)-proven
+    if len(proven)!=30 or missing!={('797139954559','6114933772625'),('797139954559','5433236060059')}:
+        raise ValueError('release_unexpected_missing_prices')
+    rows=deletion.get('rows',[])
+    if (len(rows)!=1 or rows[0].get('offer_id')!=OFFER or rows[0].get('observed_state')!='not_found'
+            or rows[0].get('unfiltered_exact_query') is not True or rows[0].get('search_value')!=OFFER
+            or rows[0].get('evidence_kind')!='official_exact_id_empty_result'):
+        raise ValueError('release_exact_deleted_offer_query_required')
+    return dict(upload_ready=True, status='manual_upload_released_by_bounded_evidence',
+        platform_write=False, business_complete=False, files=package['files'],
+        original_generated_receipt_unchanged=True, workbook_regenerated=False,
+        old_offer_id=OFFER,user_confirmed_deleted=True,
+        user_confirmation_provenance='用户在03对精确148273659773回复删了，03于本轮转达；不重复要求确认。',
+        old_offer_exact_query=rows[0], offer_read_job=READ_JOB, deletion_read_job=DELETE_JOB,
+        official_reference_matches=39, live_sku_base_matches=30,
+        remaining_two_current_prices_unobserved=sorted([list(p) for p in missing]),
+        complete_checkout_composition_verified=False,
+        rationale='同窗口官方无其他优惠导出+39条本轮失败报告一致+30条现场算术一致+用户删除及精确ID空结果；无具体价变或其他重叠优惠证据，不新增全量刷新门。',
+        constraints=['只用原唯一32条替换总表，不叠加旧活动、不重报本场失败超级立减。',
+                     '实际开始时间选上传时的未来时间，截止2026-10-07 19:59:59。',
+                     '文件名保留待核字样以保全已交付字节，本回执解除该本轮准备阻断；不是平台上传成功或全32实付验收。'])
+
+
+def release(existing_workbook=None):
+    accepted=LEDGER/'accepted-import.json'
+    if accepted.exists():
+        result=json.loads(accepted.read_bytes())
+        if (result.get('offer_id')!='148277214293' or result.get('success_skus')!=32
+                or result.get('failed_skus')!=0 or result.get('workbook_sha256')!=
+                '2653938288c631dfeec6834929a742b153e1a1dd38cc63c3f966b8538fe70910'):
+            raise ValueError('official_import_receipt_changed_keep_retry_blocked')
+        eight.pinned(Path(result['screenshot_path']),
+                     '8bdc6701b306dc4426eec0d5f587b6503f40fb472cca15af4f716861b78e83b1')
+        return dict(result,status='official_import_32_success_no_retry',upload_ready=False,retry_allowed=False,
+                    files=[dict(path=result['workbook_path'],sha256=result['workbook_sha256'])],
+                    constraints=['已导入32成功0失败，禁止再次上传。实际窗口和32条最终到手价尚未核实。'])
+    if datetime.now().strftime('%Y-%m-%d') not in ('2026-09-29','2026-09-30'):
+        raise ValueError('dated_release_not_for_later_campaigns')
+    path=LEDGER/'release.json'
+    if path.exists():
+        result=json.loads(path.read_bytes())
+        for f in result['files']:eight.pinned(Path(f['path']),f['sha256'])
+        return result
+    package=json.loads((LEDGER/'receipt.json').read_bytes())
+    if existing_workbook is not None:
+        if len(package['files'])!=1:raise ValueError('release_one_original_file_required')
+        eight.pinned(Path(existing_workbook),package['files'][0]['sha256'])
+        package['files']=[dict(path=str(Path(existing_workbook).resolve()),sha256=package['files'][0]['sha256'])]
+    for f in package['files']:eight.pinned(Path(f['path']),f['sha256'])
+    if len(package['files'])!=1 or package['files'][0]['sha256']!='2653938288c631dfeec6834929a742b153e1a1dd38cc63c3f966b8538fe70910':
+        raise ValueError('release_original_workbook_changed')
+    batch=terminal_evidence(READ_JOB,'983142758e9d09d57234e5c37a845c93c79d3e2a816668ccdc36c47ecebd7f75',
+                           '6d8f4319aed55f089c3545f6cf292f1da558223456235e7ba5831f84303cd90b')
+    deletion=terminal_evidence(DELETE_JOB,'1221bc70c51a20964c69cbede80d640420f653748dcff3b4d25800b7beb1400f',
+                              'b081755e4da35850354c58ed57aa0640e59439663741dd2ceb60648e330b3699')
+    _,prices,_=eight.sources()
+    cells,merges=eight.workbook_rows(eight.pinned(Path(package['report_archive']),REPORT_SHA),'商品SKU导入列表')
+    result=assess_release(package,batch,deletion,prices,cells,merges)
+    result['same_bytes_relocated']=existing_workbook is not None
+    with path.open('x',encoding='utf-8') as f:json.dump(result,f,ensure_ascii=False,indent=2)
+    return result
 
 
 def parse_failure(raw, expected):

@@ -242,7 +242,17 @@ def generate(output):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--output-dir',type=Path)
-    parser.add_argument('--seven-no-sales',action='store_true');args=parser.parse_args()
+    parser.add_argument('--existing-workbook',type=Path)
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--seven-no-sales',action='store_true')
+    mode.add_argument('--seven-no-sales-release',action='store_true');args=parser.parse_args()
+    if args.seven_no_sales_release:
+        if args.output_dir:parser.error('release does not create or replace workbooks')
+        import campaign_seven_no_sales_prepare as fallback
+        receipt=fallback.release(args.existing_workbook)
+        print(json.dumps({k:receipt[k] for k in ('status','upload_ready','files','constraints')},ensure_ascii=False))
+        raise SystemExit(0)
+    if args.existing_workbook:parser.error('existing-workbook is only for same-hash release rebinding')
     if args.seven_no_sales:
         import campaign_seven_no_sales_prepare as fallback
         receipt=fallback.generate(args.output_dir) if args.output_dir else fallback.build()[1]
