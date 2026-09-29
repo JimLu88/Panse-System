@@ -1,5 +1,12 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-29 用户撤11件、床重新上架后的只读取证接续
+
+- 用户报告147717819883撤9件、147928680448撤2件，精确59普通SKU；1035582527998重新上架，覆盖此前用户口述下架排除。仅记录当前反馈，不修改ERP上架状态，平台未读回。
+- 新增campaign_price_incident_review.py：一次批量请求已准备于../outputs/campaign-price-incident-20260929/read-request.json；绑定11件59SKU、原优惠及冻结目标，不重用旧327/两桌9文件。capture仅03执行业务，本次维护未启动。
+- Web-Agent只读行新增表头/title、三列价格差额诊断与缺口；完整优惠构成/叠加门槛未有可靠表面，纠正表生成仍blocked、0张XLSX，不假称可报名。旧成功/unknown及另8件保护不变。详见docs/campaign-price-incident-20260929.md。
+- ERP当前相关160项通过，本机新增/局部76项通过；Web-Agent相关116项通过。检查时8502未监听，安装属于磁盘及导入验证，不是在线读回；没有启动/重启服务、巡检或自动任务。
+
 ## 2026-09-29 八件活动本地证据适配
 
 - 新增 scripts/campaign_local_offer_projection.py，只消费807d6fd精确finished终态、原request/source/result hash及16组完整列表；8件102SKU、国庆9/28—10/7 19:59:59。无平台写入、新读取、报名/优惠修改或原账本写入。
