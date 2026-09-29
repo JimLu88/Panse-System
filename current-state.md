@@ -1,5 +1,13 @@
 # Current state — logistics bill product analytics
 
+## 2026-09-29 八件活动本地证据适配
+
+- 新增 scripts/campaign_local_offer_projection.py，只消费807d6fd精确finished终态、原request/source/result hash及16组完整列表；8件102SKU、国庆9/28—10/7 19:59:59。无平台写入、新读取、报名/优惠修改或原账本写入。
+- 既有观察时刻8件均无窗口重叠；8条已知旧优惠成员未显示。5件仍有unknown保护，3件仅本地重叠审查无未解历史项，不是价格或上传放行。unknown、旧327、两桌9不解除；通用30分钟凭据规则不改。
+- 黑胡桃软包床1035582527998按用户报告已下架排除，尚未独立平台核实；不上架、不重报。50条线上旧优惠尚未修正，单条床截图不可推广有效基价。
+- 工作树及实际安装源码配合当前回归用例各287项通过；原账本SHA前后相同。逐件claim/SKU和材料缺口见 ../outputs/campaign-local-eight-projection-20260929/installed/；本次不部署NAS、不重启服务。
+
+
 ## 2026-09-27 超级立减整批只读及平台cap消费者
 
 - 本机新增整批优惠读取契约、cap价格计算和只读请求准备入口；旧两件首屏、成功/未知提交及报价确认门在途改动均保留。详见docs/campaign-cap-batch-20260927.md。
