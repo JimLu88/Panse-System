@@ -58,11 +58,13 @@ def test_apply_claim_is_single_use_and_previous_attempt_is_required(monkeypatch,
     monkeypatch.setattr(ai, '_load_json', lambda db, key: states.get(key, {}))
     monkeypatch.setattr(ai, '_save_json', lambda db, key, val: states.update({key: val}))
     monkeypatch.setattr(ai, 'latest_order_pull_evidence', lambda db, on: {'order_attempt_id': 'd'*32})
-    def recover(db, on): calls.append(on); return {'recovered': True}
-    monkeypatch.setattr(ai, 'recover_order_receipt', recover)
+    def recover(db, **kw): calls.append(kw); return {'errors': 0, 'pending': 1}
+    monkeypatch.setattr(ai, 'run_ingest', recover)
     db = SimpleNamespace(get_bind=lambda: SimpleNamespace(dialect=SimpleNamespace(name='sqlite')), commit=lambda: None)
     assert adoption.adopt(db, **args)['applied']
     assert adoption.adopt(db, **args)['already_claimed']
     assert len(calls) == 1
+    assert len(calls[0]['only_paths']) == 3
+    assert calls[0]['order_batch_id'] == receipt['order_batch_id']
     assert states['web_agent_order_receipt_evidence']['order_business_date'] == '2026-10-02'
     assert states[ai.KEY_ORDER_QUOTA_RESULT]['order_batch_id'] == receipt['order_batch_id']

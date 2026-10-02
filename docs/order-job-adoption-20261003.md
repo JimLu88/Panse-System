@@ -26,7 +26,8 @@ reported separately; tests are not proof of shipping collection or import.
 
 Relationship impact review: the new service/CLI are currently reported as unmapped
 by business_relationships. They feed existing receipt evidence, quota evidence and
-run_ingest via recover_order_receipt. This affects imported-order freshness and the
-shipping-password gate; it must not trigger export, scheduling, factory messages,
-inventory, campaign operations or price changes. Existing catalogue fingerprints
+run_ingest with only the validated three files. This affects imported-order freshness
+and the shipping-password gate. Existing ingest reconciliation, factory-row sync
+and password reminders remain unchanged; the new entry adds no export, scheduling,
+factory dispatch, campaign operation or price change. Existing catalogue fingerprints
 are preserved; absent mappings are not a claim of no downstream effect.

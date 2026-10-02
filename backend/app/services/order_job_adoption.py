@@ -102,8 +102,13 @@ def adopt(db, *, attempt, receipt_sha256, source_job_id, business_date, previous
             'source_job_id': source_job_id})
         db.commit()
     # Explicit-only business call. Existing importer retains file and password gates.
-    result['recovery'] = ingest.recover_order_receipt(db, on=date.fromisoformat(business_date))
-    result['applied'] = bool(result['recovery'].get('recovered'))
+    # Never resolve the latest global receipt again: another day may have started
+    # after this claim. Only the already validated exact manifest can be imported.
+    roles = {Path(a['path']).name: a['role'] for a in receipt['artifacts']}
+    imported = ingest.run_ingest(db, only_paths=[str(ingest.OUTPUT_DIR/a['path']) for a in receipt['artifacts']],
+                                 artifact_roles=roles, order_batch_id=receipt['order_batch_id'])
+    result['recovery'] = {key: imported.get(key) for key in ['scanned', 'imported', 'pending', 'errors']}
+    result['applied'] = not bool(imported.get('errors'))
     result['delivery_triggered'] = False
     ingest._save_json(db, key, {'identity': identity, 'status': 'completed' if result['applied'] else 'blocked'})
     db.commit()
