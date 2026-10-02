@@ -31,3 +31,27 @@ and the shipping-password gate. Existing ingest reconciliation, factory-row sync
 and password reminders remain unchanged; the new entry adds no export, scheduling,
 factory dispatch, campaign operation or price change. Existing catalogue fingerprints
 are preserved; absent mappings are not a claim of no downstream effect.
+
+## Confirmed shipping quota failure continuation
+
+The user screenshot of application 2026-10-03 00:03:53 identifies shipping and
+decrypt quota exceeded; exact-row metadata links export 27216774510. The older
+quota check occurred before midnight. A daily platform reset remains a hypothesis.
+Web-Agent now checks the live quota console before every shipping submission,
+including single-report runs, and blocks if China date changes before submission.
+
+Only the reviewed source job2-f0f7d0df859ca8013388081d5a8abf35 and failed receipt
+45f0488f0049499487651dd1c5aa201f may use shipping_quota_failure_recovery_v1.
+The source-wide quota-recovery claim is separate; original collect claim and
+failed receipt remain immutable. One new shipping trigger only, no model retry,
+no original-file re-export. Login or verification stops at the existing gate.
+The same ERP CLI validates both receipt kinds, but this new kind requires the
+old failed receipt digest, both claims, same-day live quota, response digest and
+business status, and a distinct fresh export ID before importing exactly three
+files for business date 2026-10-02. No factory message dispatch is introduced.
+
+Relationship review: this service remains explicitly unmapped by the catalogue.
+Changed inputs are quota checked_at and new-receipt provenance; no order field,
+quantity, inventory, financial recalculation or delivery permission changes.
+Original ingest password/reconciliation/factory-row effects still apply. No
+unrelated source fingerprint is refrozen to silence the uncovered mapping.

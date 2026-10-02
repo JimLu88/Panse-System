@@ -1,6 +1,37 @@
 import hashlib
 import json
 import pytest
+
+
+@pytest.mark.parametrize('fault', ['', 'old_day', 'old_id', 'response_rejected', 'claim', 'old_receipt'])
+def test_quota_recovery_binds_old_failure_new_claim_and_same_day(monkeypatch, manifest, fault):
+    from app.services import order_job_adoption as a
+    root,path,receipt,args=manifest
+    job=receipt['source_job_id']; failed='f'*32
+    old=dict(receipt,status='error',order_attempt_id=failed,artifacts=receipt['artifacts'][:2])
+    old_path=root/'order-runs'/(failed+'.json'); old_path.write_text(json.dumps(old))
+    failed_sha=hashlib.sha256(old_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(a,'QUOTA_RECOVERY_LINEAGE',(job,receipt['source_sha256'],failed,failed_sha))
+    folder=root/'order-recovery'
+    (folder/(job+'.claim.json')).write_text(json.dumps(dict(source_sha256=receipt['source_sha256'],order_batch_id=old['order_batch_id'],order_attempt_id=failed)))
+    claim=dict(source_sha256=receipt['source_sha256'],order_batch_id=receipt['order_batch_id'],order_attempt_id=receipt['order_attempt_id'],failed_attempt=failed,failed_receipt_sha256=failed_sha)
+    claim_path=folder/(job+'.quota-recovery.claim.json');claim_path.write_text(json.dumps(claim))
+    receipt.update(receipt_kind='shipping_quota_failure_recovery_v1',platform_export_triggered=True,
+        failed_attempt=failed,failed_receipt_sha256=failed_sha,
+        failure_evidence=dict(export_id='27216774510',report='发货报表',code='decrypt_quota_exceeded',applied_at='2026-10-03 00:03:53'),
+        quota_evidence=dict(verified=True,source='live_quota_console',checked_at='2026-10-03T02:00:00+08:00'),
+        shipping_triggered_at='2026-10-03T02:00:02',
+        export_identity=dict(export_id='999',report='发货报表',applied_at='2026-10-03T02:00:03'),
+        submit_response=dict(business_status='unknown',http_status=200,body_sha256='a'*64))
+    if fault=='old_day':receipt['quota_evidence']['checked_at']='2026-10-02T23:59:59+08:00'
+    if fault=='old_id':receipt['export_identity']['export_id']='27216774510'
+    if fault=='response_rejected':receipt['submit_response']['business_status']='rejected'
+    if fault=='claim':claim_path.write_text('{}')
+    if fault=='old_receipt':old_path.write_text('{}')
+    path.write_text(json.dumps(receipt));args['receipt_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+    if fault:
+        with pytest.raises((ValueError, KeyError)): a.validate(root,**args)
+    else: assert a.validate(root,**args)['receipt_kind']=='shipping_quota_failure_recovery_v1'
 from app.services.order_job_adoption import validate
 
 
