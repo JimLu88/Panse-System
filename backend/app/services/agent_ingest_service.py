@@ -1909,10 +1909,20 @@ def order_pull_batch_id(payload: dict | None) -> str | None:
     return value or None
 
 
-def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
+def latest_order_pull_evidence(db: Session, *, on=None, resolved_artifacts=None) -> dict:
     """Return the newest durable order-pull evidence for one business day."""
     target = on or date.today()
     candidates: list[tuple[datetime, dict]] = []
+    resolved = {Path(str(p).replace("\\", "/")).name for p in (resolved_artifacts or [])}
+    resolved_batches = set()
+    if resolved:
+        rows = db.execute(select(ImportedFile).where(
+            ImportedFile.kind == "taobao", ImportedFile.original_filename.in_(resolved),
+        ).order_by(ImportedFile.id.asc())).scalars().all()
+        latest = {row.original_filename: row for row in rows}
+        resolved_batches = {str((row.row_summary or {}).get("automation_batch_id"))
+                            for row in latest.values()
+                            if (row.row_summary or {}).get("automation_batch_id")}
     current = _load_json(db, KEY_ORCH_STATE)
 
     def _append(payload: dict, started_at) -> None:
@@ -1939,7 +1949,12 @@ def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
             evidence_date = date.fromisoformat(raw_business_date) if raw_business_date else value.date()
         except ValueError:
             return
-        if evidence_date == target:
+        if resolved:
+            if not resolved.intersection(order_pull_artifact_names(payload)):
+                return
+            if resolved_batches and order_pull_batch_id(payload) not in resolved_batches:
+                return
+        if (resolved and on is None) or evidence_date == target:
             candidates.append((value, payload))
 
     _append(current, current.get("started_at"))
@@ -1959,6 +1974,42 @@ def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
     ).scalars().all()
     for row in rows:
         _append(row.result_summary or {}, row.started_at)
+    # Adoption claims survive replacement of the single latest-receipt setting.
+    # Reconstruct only an already adopted batch, with its immutable receipt hash.
+    if resolved_batches:
+        from app.models.settings import SystemSetting
+        from app.services import order_job_adoption
+        claims = db.execute(select(SystemSetting.key).where(
+            SystemSetting.key.startswith("order_job_adoption_"),
+            SystemSetting.is_secret.is_(False),
+        )).scalars().all()
+        for key in claims:
+            claim = _load_json(db, key)
+            identity = claim.get("identity") or {}
+            if identity.get("order_batch_id") not in resolved_batches:
+                continue
+            try:
+                receipt = order_job_adoption.validate(
+                    OUTPUT_DIR, attempt=identity["order_attempt_id"],
+                    receipt_sha256=identity["receipt_sha256"],
+                    source_job_id=key.removeprefix("order_job_adoption_"),
+                    business_date=identity["business_date"],
+                )
+                roles = {Path(a["path"]).name: a["role"] for a in receipt["artifacts"]}
+                payload = {"started_at": receipt["started_at"], "manual_recovery": True,
+                           "order_batch_id": identity["order_batch_id"],
+                           "order_business_date": identity["business_date"],
+                           "order_attempt_id": identity["order_attempt_id"],
+                           "receipt_source": "order-runs/" + identity["order_attempt_id"] + ".json",
+                           "tasks": [{"task": "taobao_orders", "status": "done",
+                                      "artifacts": list(roles), "artifact_roles": roles}]}
+                _append(payload, payload["started_at"])
+            except (ValueError, OSError, KeyError, TypeError):
+                return {"evidence_error": "invalid_adopted_order_receipt",
+                        "order_batch_id": identity.get("order_batch_id"),
+                        "order_business_date": identity.get("business_date")}
+    if len({order_pull_batch_id(p) for _, p in candidates}) > 1 and resolved:
+        return {"evidence_error": "ambiguous_resolved_order_batch"}
     if not candidates:
         return {}
     return max(candidates, key=lambda item: (item[0], bool(item[1].get("receipt_source"))))[1]
@@ -2244,17 +2295,22 @@ def finalize_order_pull_after_shipping_password(
     加密发货报表通常要等用户稍后从飞书补口令，此时 orchestrate 已经结束；即使解密成功，
     新鲜度门仍会一直判旧，后续下单图补跑全部被拦住。
 
-    只有同时满足以下证据才补写完成标记，避免把隔夜或不完整数据误判为可推：
-    - 今天指定时点后的 orchestrate 确实跑完 ``taobao_orders``；
-    - 今日已有淘宝报表成功导入；
-    - 今日已无待口令文件。
+    resolved 文件定位原批次和业务日，三角色、归档 hash 与实际导入时间须一致。
+    跨日补入只写原批次完成证据，不覆盖今日批次或伪造导入时间；不完整数据仍拒绝。
     """
     current = now or datetime.now()
     target = on or current.date()
-    recovery = recover_order_receipt(db, on=target)
+    bound = latest_order_pull_evidence(db, on=on, resolved_artifacts=resolved_artifacts) if resolved_artifacts else {}
+    if bound.get("evidence_error"):
+        return {"completed": False, "reason": bound["evidence_error"],
+                "order_batch_id": bound.get("order_batch_id"),
+                "order_business_date": bound.get("order_business_date")}
+    # The password importer has already consumed this exact manifest. Do not
+    # recover/ingest today's unrelated batch before closing a historical one.
+    recovery = {} if bound else recover_order_receipt(db, on=target)
     if recovery.get("reason") in ("invalid_order_receipt", "receipt_artifact_ingest_failed"):
         return {"completed": False, **recovery}
-    newest = latest_order_pull_evidence(db, on=target)
+    newest = bound or latest_order_pull_evidence(db, on=target)
     resolved = {Path(str(p).replace("\\", "/")).name for p in (resolved_artifacts or [])}
     if newest:
         newest_task = next((t for t in _order_pull_tasks(newest)
@@ -2306,11 +2362,12 @@ def finalize_order_pull_after_shipping_password(
             None,
         )
         business_day = _business_date(payload, started_at)
-        allowed_days = {target} if on is not None else {
+        allowed_days = {_business_date(bound, bound.get("started_at"))} if bound else ({target} if on is not None else {
             current.date(), current.date() - timedelta(days=1),
-        }
+        })
         return (
             business_day in allowed_days
+            and business_day <= current.date()
             and (not resolved or bool(resolved.intersection(order_pull_artifact_names(payload))))
             # Scheduled pulls remain restricted to the approved evening
             # window. A durable user-triggered recovery may run earlier.
@@ -2403,13 +2460,55 @@ def finalize_order_pull_after_shipping_password(
         }
 
     state = _load_json(db, KEY_STATE)
-    try:
-        report_at = datetime.fromisoformat(str(state.get("taobao_report") or ""))
-    except (TypeError, ValueError):
-        return {"completed": False, "reason": "missing_imported_order_report"}
     evidence_hour = 0 if _is_manual_recovery(evidence) else not_before_hour
-    if report_at.date() != target or report_at.hour < evidence_hour:
-        return {"completed": False, "reason": "imported_order_report_outside_current_window"}
+    imported_times = {}
+    if not legacy_evidence:
+        receipt_hashes = {}
+        if evidence.get("receipt_source"):
+            try:
+                receipt_path = (OUTPUT_DIR / evidence["receipt_source"]).resolve()
+                receipt_path.relative_to((OUTPUT_DIR / "order-runs").resolve())
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if (receipt.get("status") != "done" or receipt.get("order_batch_id") != batch_id
+                        or receipt.get("order_business_date") != target.isoformat()
+                        or receipt.get("order_attempt_id") != evidence.get("order_attempt_id")):
+                    raise ValueError("receipt identity mismatch")
+                for item in receipt.get("artifacts") or []:
+                    path = (OUTPUT_DIR / item["path"]).resolve()
+                    path.relative_to(OUTPUT_DIR.resolve())
+                    if hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+                        raise ValueError("receipt artifact hash mismatch")
+                    receipt_hashes[path.name] = item["sha256"]
+                if set(receipt_hashes) != set(batch_artifacts):
+                    raise ValueError("receipt manifest mismatch")
+            except (ValueError, OSError, KeyError, TypeError):
+                return {"completed": False, "reason": "invalid_order_receipt",
+                        "order_batch_id": batch_id, "order_business_date": target.isoformat()}
+        rows = db.execute(select(ImportedFile).where(
+            ImportedFile.kind == "taobao", ImportedFile.original_filename.in_(batch_artifacts),
+        ).order_by(ImportedFile.id.asc())).scalars().all()
+        latest = {row.original_filename: row for row in rows
+                  if (row.row_summary or {}).get("automation_batch_id") == batch_id}
+        cn = timezone(timedelta(hours=8))
+        window = datetime.combine(target, datetime.min.time()).replace(hour=evidence_hour, tzinfo=cn)
+        actual_now = current.replace(tzinfo=cn) if current.tzinfo is None else current.astimezone(cn)
+        for name in batch_artifacts:
+            row = latest[name]
+            stamp = row.created_at
+            stamp = stamp.replace(tzinfo=timezone.utc) if stamp and stamp.tzinfo is None else stamp
+            if (not stamp or not window <= stamp.astimezone(cn) <= actual_now
+                    or not row.file_hash or (row.row_summary or {}).get("errors")
+                    or (receipt_hashes and row.file_hash != receipt_hashes.get(name))):
+                return {"completed": False, "reason": "batch_import_evidence_invalid",
+                        "order_batch_id": batch_id, "order_business_date": target.isoformat()}
+            imported_times[name] = stamp.isoformat()
+    else:
+        try:
+            report_at = datetime.fromisoformat(str(state.get("taobao_report") or ""))
+        except (TypeError, ValueError):
+            return {"completed": False, "reason": "missing_imported_order_report"}
+        if report_at.date() != target or report_at.hour < evidence_hour:
+            return {"completed": False, "reason": "imported_order_report_outside_current_window"}
 
     completed_at = current.isoformat(timespec="seconds")
     state["taobao_orders_complete"] = completed_at
@@ -2419,7 +2518,18 @@ def finalize_order_pull_after_shipping_password(
     state["taobao_orders_complete_batch_id"] = batch_id
     state["taobao_orders_complete_business_date"] = target.isoformat()
     state["taobao_orders_complete_legacy_evidence"] = legacy_evidence
-    _save_json(db, KEY_STATE, state)
+    # Always retain batch-specific completion; an old day never paints today green.
+    publish_current = target == current.date()
+    if publish_current:
+        active = latest_order_pull_evidence(db, on=target)
+        publish_current = not order_pull_batch_id(active) or order_pull_batch_id(active) == batch_id
+    if publish_current:
+        _save_json(db, KEY_STATE, state)
+    _save_json(db, "order_pull_completion_" + batch_id, {
+        "completed_at": completed_at, "order_batch_id": batch_id,
+        "order_business_date": target.isoformat(), "artifacts": batch_artifacts,
+        "artifact_roles": role_check["roles"], "imported_at": imported_times,
+    })
     db.commit()
     return {
         "completed": True,
@@ -2428,6 +2538,8 @@ def finalize_order_pull_after_shipping_password(
         "artifact_roles": role_check["roles"],
         "order_batch_id": batch_id,
         "order_business_date": target.isoformat(),
+        "current_day_state_updated": publish_current,
+        "imported_at": imported_times,
     }
 
 

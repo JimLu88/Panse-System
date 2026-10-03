@@ -966,10 +966,23 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     # current batch; only when today's batch is absent do we continue the most
     # recent unresolved batch.  Historical one-password-per-report leftovers
     # must not make a newly matched report look like a failure.
-    current_artifacts = agent_ingest_service.latest_order_pull_artifact_names(db)
+    resolved_artifacts = [str(item.get("file") or "") for item in (r.get("files") or [])
+                          if item.get("status") == "imported"]
+    resolved_evidence = (agent_ingest_service.latest_order_pull_evidence(
+        db, resolved_artifacts=resolved_artifacts,
+    ) if resolved_artifacts else {})
+    resolved_business_date = str(resolved_evidence.get("order_business_date") or "")
+    historical_resolution = bool(resolved_business_date and
+                                 resolved_business_date != datetime.now().date().isoformat())
+    active_batch = agent_ingest_service.latest_order_pull_batch_id(db)
+    resolved_batch = agent_ingest_service.order_pull_batch_id(resolved_evidence)
+    isolated_resolution = historical_resolution or bool(active_batch and resolved_batch and active_batch != resolved_batch)
+    current_artifacts = (agent_ingest_service.order_pull_artifact_names(resolved_evidence)
+                         or agent_ingest_service.latest_order_pull_artifact_names(db))
     current_pending = agent_ingest_service.pending_shipping_password_files(
         db,
         artifact_names=current_artifacts or None,
+        all_dates=bool(resolved_evidence),
     )
     latest_pending = agent_ingest_service.pending_shipping_password_files(
         db, all_dates=True, latest_only=True,
@@ -999,9 +1012,10 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         try:
             from app.services import automation_pipeline_service
 
-            r["automation_pipeline"] = automation_pipeline_service.pause_for_input(
-                db, "order_delivery", failure_reason,
-            )
+            if not isolated_resolution:
+                r["automation_pipeline"] = automation_pipeline_service.pause_for_input(
+                    db, "order_delivery", failure_reason,
+                )
         except Exception:  # noqa: BLE001
             logging.getLogger("panse.feishu_bot").warning(
                 "口令不匹配后暂停订单重试链失败", exc_info=True,
@@ -1023,7 +1037,7 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         # this was a standalone/manual shipping report and no complete
         # three-report manifest exists yet.  Reopen the chain for the next
         # scheduled pull, but do not claim delivery success without a manifest.
-        if r.get("imported"):
+        if r.get("imported") and not isolated_resolution:
             try:
                 from app.services import automation_pipeline_service
 
@@ -1062,25 +1076,33 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         repushed = 0
         try:
             from app.services import order_sheet_archive_service as _osa
-            repushed = _osa.repush_after_address_fill(db, quiet=True).get("repushed", 0)
+            if not isolated_resolution:
+                repushed = _osa.repush_after_address_fill(db, quiet=True).get("repushed", 0)
         except Exception:  # noqa: BLE001 —— 重推失败不阻断解密入库
             logging.getLogger("panse.feishu_bot").warning("解密后重推下单图失败", exc_info=True)
         r["repushed"] = repushed
         # 发货报表通常等口令后才成为三报表的最后一环。用本轮取数证据补齐完成标记，
         # 再立即补生成、补推尚未送达的增量图；证据不足则保持安全门关闭。
         completion = agent_ingest_service.finalize_order_pull_after_shipping_password(
-            db, resolved_artifacts=[str(item.get("file") or "")
-                                    for item in (r.get("files") or [])
-                                    if item.get("status") == "imported"],
+            db, resolved_artifacts=resolved_artifacts,
         )
         r["order_pull_completion"] = completion
-        if not completion.get("completed"):
+        if not completion.get("completed") and not isolated_resolution:
             # Password success is not delivery success. Retain the actual unresolved
             # stage instead of clearing it and later emitting a generic retry failure.
             from app.services import automation_pipeline_service
             automation_pipeline_service.record_stage(
                 db, "order_delivery", "order_batch_reconciliation", status="fail",
                 detail="口令解密成功；原批次收口未完成：" + str(completion.get("reason")),
+            )
+            db.commit()
+        elif not completion.get("completed") and resolved_batch and resolved_business_date:
+            from app.services import automation_failure_recorder_service
+            automation_failure_recorder_service.record_callback_run(
+                db, category="order", status="fail",
+                detail="口令解密成功；原批次收口未完成：" + str(completion.get("reason")),
+                recovery_key=resolved_batch, result_summary=completion,
+                batch_id=resolved_batch, business_date=resolved_business_date,
             )
             db.commit()
         delivery: dict
@@ -1094,6 +1116,7 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                     manifest=(completion.get("artifacts") or current_artifacts),
                     order_batch_id=completion.get("order_batch_id"),
                     order_business_date=completion.get("order_business_date"),
+                    update_current_pipeline=completion.get("current_day_state_updated", True),
                 )
                 delivery = closeout.get("delivery") or {}
                 r["factory_dispatch"] = closeout.get("factory_dispatch")

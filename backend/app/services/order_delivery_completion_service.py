@@ -1,7 +1,7 @@
 """Shared close-out for order delivery recovered outside the scheduler."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from hashlib import sha256
 from typing import Iterable
 
@@ -32,6 +32,8 @@ def complete_recovered_order_delivery(
     manifest: list[str],
     order_batch_id: str | None = None,
     order_business_date: str | None = None,
+    only_sub_order_nos: set[str] | None = None,
+    update_current_pipeline: bool = True,
 ) -> dict:
     """Deliver every pending image, sync the factory table and close evidence.
 
@@ -48,14 +50,61 @@ def complete_recovered_order_delivery(
     )
 
     key = order_batch_id or _recovery_key(source, manifest)
-    is_current_business_day = (
+    is_current_business_day = update_current_pipeline and (
         not order_business_date
         or order_business_date == datetime.now().astimezone().date().isoformat()
     )
+    if order_business_date and order_business_date != datetime.now().date().isoformat() and only_sub_order_nos is None:
+        # Automatic historical callbacks own that business day's new lines.
+        # An operator may supply the already reviewed precise catch-up scope.
+        from sqlalchemy import select
+        from app.models.order import Order, OrderDetail
+        only_sub_order_nos = set(db.execute(select(OrderDetail.sub_order_no).join(
+            Order, Order.order_no == OrderDetail.order_no,
+        ).where(Order.order_date == date.fromisoformat(order_business_date),
+                OrderDetail.source == "import", OrderDetail.factory_delivery_required.is_(True),
+                OrderDetail.sub_order_no.isnot(None))).scalars().all())
     try:
-        delivery = order_sheet_archive_service.reconcile_pending_delivery(
-            db, limit=ORDER_RECOVERY_PUSH_LIMIT, quiet=True,
-        )
+        if only_sub_order_nos is None:
+            delivery = order_sheet_archive_service.reconcile_pending_delivery(
+                db, limit=ORDER_RECOVERY_PUSH_LIMIT, quiet=True,
+            )
+        else:
+            from sqlalchemy import select
+            from app.models.order import OrderDetail
+            from app.services import order_line_delivery_service
+            line_result = order_sheet_archive_service.reconcile_order_line_delivery(
+                db, limit=ORDER_RECOVERY_PUSH_LIMIT, only_sub_order_nos=only_sub_order_nos,
+            )
+            delivery = {"images_pushed": 0, "line_images_pushed": int(line_result.get("pushed") or 0),
+                        "line_images_failed": int(line_result.get("failed") or 0),
+                        "line_failures": line_result.get("failures") or [],
+                        "only_sub_order_nos": sorted(only_sub_order_nos),
+                        "push_reason": line_result.get("reason")}
+            delivery["images_deferred_no_address"] = sum(
+                item.get("deferred") == "address_masked" for item in delivery["line_failures"])
+            delivery["line_deferred_no_sku"] = [item.get("sub_order_no")
+                for item in delivery["line_failures"] if item.get("deferred") == "sku_missing"]
+            failures = [item for item in delivery["line_failures"]
+                        if item.get("deferred") not in {"address_masked", "sku_missing"}]
+            db.expire_all()
+            sent_evidence = order_line_delivery_service.sent_line_evidence(db)
+            rows = db.execute(select(OrderDetail).where(
+                OrderDetail.sub_order_no.in_(only_sub_order_nos),
+            )).scalars().all()
+            receipts = [{"sub_order_no": row.sub_order_no, "factory_no": row.factory_no,
+                         "message_id": row.factory_delivery_message_id}
+                        for row in rows if row.factory_delivery_state == "sent"
+                        and row.factory_delivery_message_id]
+            confirmed = {item["sub_order_no"] for item in receipts} | set(sent_evidence)
+            deferred_scope = {item.get("sub_order_no") for item in delivery["line_failures"]
+                              if item.get("deferred") in {"address_masked", "sku_missing"}}
+            unresolved = sorted(only_sub_order_nos - confirmed - deferred_scope)
+            delivery.update(receipts=receipts, unresolved_sub_order_nos=unresolved)
+            unavailable = line_result.get("reason") in ("no_chat_id", "notify_disabled")
+            if failures or unavailable or unresolved:
+                delivery.update(_run_status="fail", _error="scoped_line_delivery_incomplete: " +
+                                str(line_result.get("reason") or failures or unresolved))
     except Exception as exc:  # noqa: BLE001 - turn callback crashes into durable evidence
         db.rollback()
         delivery = {
@@ -68,6 +117,7 @@ def complete_recovered_order_delivery(
         "order_batch_id": order_batch_id,
         "order_business_date": order_business_date,
         "delivery": delivery,
+        "only_sub_order_nos": sorted(only_sub_order_nos) if only_sub_order_nos is not None else None,
     }
     error = str(delivery.get("_error") or "") if delivery.get("_run_status") == "fail" else ""
 
@@ -134,6 +184,7 @@ def complete_recovered_order_delivery(
         f"恢复来源={source}；下单图送达{pushed}张"
         f"（主单{parent_pushed}张、子单{line_pushed}张）；"
         f"地址脱敏暂缓{deferred}张；"
+        f"SKU自动待回填{len(delivery.get('line_deferred_no_sku') or [])}张；"
         + ("工厂下单表自动同步已关闭，未同步" if factory_dispatch.get('skipped') else "工厂下单表已同步并回读")
     )
     if is_current_business_day:

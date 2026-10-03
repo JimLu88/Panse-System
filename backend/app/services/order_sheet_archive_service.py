@@ -647,6 +647,12 @@ def reconcile_order_line_delivery(
         ).scalar_one_or_none()
         if order is None or (order.status or "") in ("cancelled", "pending_payment"):
             continue
+        # Same skeleton rule as parent generation: wait for the ordinary
+        # importer to fill SKU facts, without taking a factory number or image claim.
+        if not line.sku_code and not line.sku_name:
+            failed.append({"order_no": order.order_no, "sub_order_no": sub_order_no,
+                           "reason": "SKU待原取数回填，保留自动队列", "deferred": "sku_missing"})
+            continue
         from app.services import order_flags
         if order_flags.is_remote(order):
             continue

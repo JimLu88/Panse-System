@@ -797,7 +797,7 @@ def test_daily_pull_reports_missing_shipping_artifact_instead_of_password(
 
     assert result["_run_status"] == "fail"
     assert "发货报表没有下载并进入ERP" in result["_error"]
-    assert "企业微信不会要求提交发货密码" in result["_error"]
+    assert "尚未到飞书提交发货口令的步骤" in result["_error"]
     assert "2/3" in result["_error"]
 
 
