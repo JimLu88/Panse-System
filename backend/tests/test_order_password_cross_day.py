@@ -99,7 +99,8 @@ def test_historical_password_callback_keeps_today_pipeline_and_uses_existing_com
     real_finalize = ai.finalize_order_pull_after_shipping_password
     monkeypatch.setattr(ai, 'finalize_order_pull_after_shipping_password',
         lambda db, **kw: real_finalize(db, now=NOW, **kw))
-    monkeypatch.setattr(sheets, 'repush_after_address_fill', lambda *a, **k: pytest.fail('global repush'))
+    address_calls = []
+    monkeypatch.setattr(sheets, 'repush_after_address_fill', lambda *a, **k: address_calls.append(True) or {'repushed': 0})
     calls = []
     monkeypatch.setattr(closeout, 'complete_recovered_order_delivery', lambda db, **kw:
         calls.append(kw) or {'delivery': {'line_images_pushed': 1}})
@@ -107,6 +108,7 @@ def test_historical_password_callback_keeps_today_pipeline_and_uses_existing_com
     assert result['order_pull_completion']['completed']
     assert calls[0]['order_batch_id'] == receipt['order_batch_id']
     assert calls[0]['order_business_date'] == '2026-10-02'
+    assert address_calls == [True]
     assert pipeline.get_pipeline(db_session, 'order_delivery') == before
 
 

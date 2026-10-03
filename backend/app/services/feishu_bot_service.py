@@ -1076,8 +1076,7 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         repushed = 0
         try:
             from app.services import order_sheet_archive_service as _osa
-            if not isolated_resolution:
-                repushed = _osa.repush_after_address_fill(db, quiet=True).get("repushed", 0)
+            repushed = _osa.repush_after_address_fill(db, quiet=True).get("repushed", 0)
         except Exception:  # noqa: BLE001 —— 重推失败不阻断解密入库
             logging.getLogger("panse.feishu_bot").warning("解密后重推下单图失败", exc_info=True)
         r["repushed"] = repushed

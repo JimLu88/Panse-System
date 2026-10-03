@@ -62,7 +62,7 @@
     "backend/app/services/factory_settlement_service.py": "571cec94eb4ece62c06aee7362f73f9b7794186c30b683813908279dfa73bb68",
     "backend/app/services/factory_sheet.py": "a2aac4edf4386d8a6887fe25a64a34241f82d9e4e6914cf1f62505e0f3a5b07f",
     "backend/app/services/factory_shipping_confirmation_service.py": "6efb62c061a91072a9d0ad4091a0c3ff92d4c4b7dd0b1a4e5fa93ad2887323c4",
-    "backend/app/services/feishu_bot_service.py": "2f6b92425d54d58997e2ddc17d236255869c89e4a85e5b4844226336a72669bd",
+    "backend/app/services/feishu_bot_service.py": "d6a83f291c15760b3237257b4dd26a18eaeb1433421eeade45b54a1984abc98c",
     "backend/app/services/feishu_sync_service.py": "501968bee45b42cffb3a60a69e06bb0c4f28b52fb5b598e99f48812f170b2303",
     "backend/app/services/feishu_ws_service.py": "2db43dd94b175024c56a4566fe72a45f591b85ffb48d5ff526104829745eb24d",
     "backend/app/services/inventory_demand_service.py": "3c679d00429330629b19e5f021e4ecb596532753b7077dae0fea2665dd41bb94",
