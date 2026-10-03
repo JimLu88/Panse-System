@@ -1973,6 +1973,12 @@ def latest_order_pull_evidence(db: Session, *, on=None, resolved_artifacts=None)
         .limit(50)
     ).scalars().all()
     for row in rows:
+        if row.job_id == "order_delivery_recovery" and not any(
+            task.get("task") == "taobao_orders" for task in _order_pull_tasks(row.result_summary or {})
+        ):
+            # A delivery callback records this batch too, but is not a new pull.
+            # It must not supersede the immutable three-report evidence on retry.
+            continue
         _append(row.result_summary or {}, row.started_at)
     # Adoption claims survive replacement of the single latest-receipt setting.
     # Reconstruct only an already adopted batch, with its immutable receipt hash.
@@ -2307,7 +2313,7 @@ def finalize_order_pull_after_shipping_password(
                 "order_business_date": bound.get("order_business_date")}
     # The password importer has already consumed this exact manifest. Do not
     # recover/ingest today's unrelated batch before closing a historical one.
-    recovery = {} if bound else recover_order_receipt(db, on=target)
+    recovery = {} if resolved_artifacts else recover_order_receipt(db, on=target)
     if recovery.get("reason") in ("invalid_order_receipt", "receipt_artifact_ingest_failed"):
         return {"completed": False, **recovery}
     newest = bound or latest_order_pull_evidence(db, on=target)
@@ -2464,18 +2470,29 @@ def finalize_order_pull_after_shipping_password(
     imported_times = {}
     if not legacy_evidence:
         receipt_hashes = {}
-        if evidence.get("receipt_source"):
+        attempt = str(evidence.get("order_attempt_id") or "")
+        receipt_source = evidence.get("receipt_source") or (
+            "order-runs/" + attempt + ".json" if re.fullmatch(r"[a-f0-9]{32}", attempt) else None
+        )
+        if receipt_source:
             try:
-                receipt_path = (OUTPUT_DIR / evidence["receipt_source"]).resolve()
+                receipt_path = (OUTPUT_DIR / receipt_source).resolve()
                 receipt_path.relative_to((OUTPUT_DIR / "order-runs").resolve())
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-                if (receipt.get("status") != "done" or receipt.get("order_batch_id") != batch_id
+                if (receipt.get("version") != 1 or receipt.get("status") != "done" or receipt.get("order_batch_id") != batch_id
                         or receipt.get("order_business_date") != target.isoformat()
                         or receipt.get("order_attempt_id") != evidence.get("order_attempt_id")):
                     raise ValueError("receipt identity mismatch")
-                for item in receipt.get("artifacts") or []:
+                receipt_artifacts = receipt.get("artifacts") or []
+                if len(receipt_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
+                    raise ValueError("receipt manifest incomplete")
+                for item in receipt_artifacts:
                     path = (OUTPUT_DIR / item["path"]).resolve()
-                    path.relative_to(OUTPUT_DIR.resolve())
+                    relative = path.relative_to(OUTPUT_DIR.resolve())
+                    if (relative.parts[:2] != (target.isoformat(), "taobao")
+                            or path.name in receipt_hashes
+                            or _normalize_order_report_role(item.get("role") or item.get("report")) != role_check["roles"].get(path.name)):
+                        raise ValueError("receipt path or role mismatch")
                     if hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
                         raise ValueError("receipt artifact hash mismatch")
                     receipt_hashes[path.name] = item["sha256"]

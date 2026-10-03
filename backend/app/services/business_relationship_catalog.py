@@ -239,7 +239,7 @@ EDGES = [
     edge('automation.order_owner','sync.freshness','完整终态才恢复原批报表','三报表角色/路径/hash匹配','中断或未知进入维护；不重复导入已绑定文件','services/agent_ingest_service.py','def recover_order_receipt'),
     edge('automation.agent','order.file','取回报表证据','batch/attempt/hash匹配','超时结果未知不重复拉取','services/web_agent_service.py',evidence='review'),
     edge('automation.batch','automation.closeout','恢复已导入批次','原batch三角色/hash/实际导入时间核验，允许跨日补入','历史或非当前批次不改当天状态；不重导重入','services/order_delivery_completion_service.py'),
-    edge('automation.closeout','factory.receipt','完成待发图片','显式子单scope或历史业务日scope；既有发送账本保护','已送达/未知不重放；空SKU骨架留自动队列','services/order_delivery_completion_service.py'),
+    edge('automation.closeout','factory.receipt','完成待发图片','原reconcile_pending_delivery与发送账本保护','已送达/未知不重放；空SKU骨架留自动队列','services/order_delivery_completion_service.py'),
     edge('automation.closeout','sync.readback','独立工厂投影收口','图失败不吞掉表结果','表关闭不称已同步；整体错误保留','services/order_delivery_completion_service.py'),
     edge('automation.timer','automation.batch','定时调度批次','原调度设置启用','不增加AI监工定时','services/scheduler.py',evidence='review'),
     edge('automation.closeout','automation.alert','记录失败及等待','分项结果明确','未知/待人工不能涂绿','services/order_delivery_completion_service.py'),

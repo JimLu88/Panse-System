@@ -110,35 +110,19 @@ def test_historical_password_callback_keeps_today_pipeline_and_uses_existing_com
     assert pipeline.get_pipeline(db_session, 'order_delivery') == before
 
 
-def test_explicit_recovery_scope_never_calls_global_delivery(db_session, monkeypatch):
+def test_historical_completion_uses_original_flow_without_closing_today(db_session, monkeypatch):
     pipeline.pause_for_input(db_session, 'order_delivery', 'today still waiting')
     before = pipeline.get_pipeline(db_session, 'order_delivery')
-    monkeypatch.setattr(sheets, 'reconcile_pending_delivery', lambda *a, **k: pytest.fail('global'))
     calls = []
-    monkeypatch.setattr(sheets, 'reconcile_order_line_delivery', lambda db, **kw:
-        calls.append(kw) or {'pushed': 2, 'failed': 0})
+    monkeypatch.setattr(sheets, 'reconcile_pending_delivery', lambda db, **kw:
+        calls.append(kw) or {'images_pushed': 0, 'line_images_pushed': 0})
     monkeypatch.setattr('app.services.factory_dispatch_feishu_service.sync_if_enabled', lambda db: {'ok': True})
-    result = closeout.complete_recovered_order_delivery(db_session, source='operator',
+    result = closeout.complete_recovered_order_delivery(db_session, source='shipping_password',
         manifest=['orders.xlsx', 'sales_detail.xlsx', 'shipping.xlsx'],
-        order_business_date='2026-10-02', order_batch_id='original', only_sub_order_nos={'sub1', 'sub2'})
-    assert calls == [{'limit': 500, 'only_sub_order_nos': {'sub1', 'sub2'}}]
-    assert result['delivery']['line_images_pushed'] == 2
+        order_business_date='2026-10-02', order_batch_id='original', update_current_pipeline=False)
+    assert calls == [{'limit': 500, 'quiet': True}]
+    assert result.get('_run_status') is None
     assert pipeline.get_pipeline(db_session, 'order_delivery') == before
-
-
-def test_historical_automatic_scope_is_original_business_day(db_session, monkeypatch):
-    from tests.test_order_line_factory_delivery_0812 import _order, _line
-    for suffix, day in [('old', date(2026, 10, 2)), ('today', date(2026, 10, 3))]:
-        order = _order(db_session, suffix); order.order_date = day
-        line = _line(db_session, suffix, 'sub-'+suffix, '床', 'SKU')
-        line.factory_delivery_required = True
-    db_session.commit()
-    calls = []
-    monkeypatch.setattr(sheets, 'reconcile_order_line_delivery', lambda db, **kw: calls.append(kw) or {'pushed': 0})
-    monkeypatch.setattr('app.services.factory_dispatch_feishu_service.sync_if_enabled', lambda db: {'ok': True})
-    closeout.complete_recovered_order_delivery(db_session, source='shipping_password',
-        manifest=[], order_business_date='2026-10-02')
-    assert calls[0]['only_sub_order_nos'] == {'sub-old'}
 
 
 def test_skeleton_waits_without_factory_number_or_send(db_session, monkeypatch):
@@ -156,25 +140,74 @@ def test_skeleton_waits_without_factory_number_or_send(db_session, monkeypatch):
     assert line.factory_no is None and line.factory_delivery_state is None
 
 
-def test_scoped_delivery_preserves_warning_rules_and_never_repeats_sent_or_unknown(db_session, monkeypatch, _feishu):
+def test_original_delivery_preserves_warning_rules_and_never_repeats_sent_or_unknown(db_session, monkeypatch, _feishu):
     from tests.test_order_line_factory_delivery_0812 import _order, _line
     from app.services import settings_service
     settings_service.set_value(db_session, 'feishu_push_chat_id', 'test')
     order = _order(db_session, 'scope-parent')
     ready = _line(db_session, order.order_no, 'ready', '定制餐桌', 'PPS2421007090199')
     unknown = _line(db_session, order.order_no, 'unknown', '床', 'PPS2633007032018')
-    outside = _line(db_session, order.order_no, 'outside', '床', 'PPS2633007032018')
-    for line in (ready, unknown, outside): line.factory_delivery_required = True
+    for line in (ready, unknown): line.factory_delivery_required = True
     unknown.factory_delivery_state = 'uncertain'
     db_session.commit()
     monkeypatch.setattr('app.services.factory_dispatch_feishu_service.sync_if_enabled', lambda db: {'ok': True})
-    kwargs = dict(source='operator', manifest=[], order_business_date='2026-10-02',
-                  only_sub_order_nos={'ready', 'unknown'})
+    kwargs = dict(source='shipping_password', manifest=[], order_business_date='2026-10-02')
     first = closeout.complete_recovered_order_delivery(db_session, **kwargs)
     assert first['_run_status'] == 'fail'
     assert first['delivery']['line_images_pushed'] == 1
-    assert first['delivery']['receipts'][0]['message_id'] == 'img'
-    assert first['delivery']['unresolved_sub_order_nos'] == ['unknown']
+    assert ready.factory_delivery_message_id == 'img'
+    assert unknown.factory_delivery_state == 'uncertain'
     second = closeout.complete_recovered_order_delivery(db_session, **kwargs)
     assert second['delivery']['line_images_pushed'] == 0 and len(_feishu) == 1
-    assert outside.factory_delivery_state is None and outside.factory_no is None
+
+
+@pytest.mark.parametrize('cross_midnight', [False, True])
+def test_normal_scheduled_receipt_closes_same_day_and_after_midnight(db_session, monkeypatch, tmp_path, cross_midnight):
+    start = datetime(2026, 10, 3, 18, 0, tzinfo=CN)
+    current = start + (timedelta(hours=8) if cross_midnight else timedelta(minutes=30))
+    batch, attempt = 'orders-20261003-'+'a'*32, 'b'*32
+    artifacts, roles = [], {}
+    monkeypatch.setattr(ai, 'OUTPUT_DIR', tmp_path)
+    for role in ['orders', 'sales_detail', 'shipping']:
+        path = tmp_path/'2026-10-03'/'taobao'/(role+'.xlsx')
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(role.encode())
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        artifacts.append({'path': path.relative_to(tmp_path).as_posix(), 'report': role, 'sha256': digest})
+        roles[path.name] = role
+        stamp = (current-timedelta(minutes=1)).astimezone(timezone.utc)
+        db_session.add(ImportedFile(kind='taobao',original_filename=path.name, stored_path=str(path),
+            file_hash=digest, created_at=stamp, updated_at=stamp,
+            row_summary={'agent_status':'imported','agent_report_role':role,'automation_batch_id':batch}))
+    receipt = {'version':1,'status':'done','order_batch_id':batch,'order_attempt_id':attempt,
+               'order_business_date':'2026-10-03','started_at':start.isoformat(),'artifacts':artifacts}
+    receipt_path=tmp_path/'order-runs'/(attempt+'.json'); receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(receipt))
+    evidence={k:v for k,v in receipt.items() if k not in {'artifacts','status','version'}}
+    evidence['tasks']=[{'task':'taobao_orders','status':'done','artifacts':list(roles),'artifact_roles':roles}]
+    ai._save_json(db_session,ai.KEY_ORCH_STATE,evidence); db_session.commit()
+    monkeypatch.setattr(ai,'recover_order_receipt',lambda *a,**k:pytest.fail('callback must not reimport'))
+    result=ai.finalize_order_pull_after_shipping_password(db_session,now=current,resolved_artifacts=['shipping.xlsx'])
+    assert result['completed'] and result['order_business_date']=='2026-10-03'
+    assert result['current_day_state_updated'] is (not cross_midnight)
+    artifacts[2]['report']='orders'; receipt_path.write_text(json.dumps(receipt))
+    denied=ai.finalize_order_pull_after_shipping_password(db_session,now=current,resolved_artifacts=['shipping.xlsx'])
+    assert denied['reason']=='invalid_order_receipt'
+
+
+def test_repeated_password_callbacks_reach_original_dedupe_flow(db_session, monkeypatch, manifest, _feishu):
+    from tests.test_order_line_factory_delivery_0812 import _order, _line
+    from app.services import settings_service
+    adopted(db_session, monkeypatch, manifest)
+    settings_service.set_value(db_session,'feishu_push_chat_id','test')
+    order=_order(db_session,'callback-parent')
+    line=_line(db_session,order.order_no,'callback-child','餐桌','PPS2421007090113')
+    line.factory_delivery_required=True; db_session.commit()
+    monkeypatch.setattr(ai,'reingest_pending_shipping',lambda db:{'imported':1,'files':[{'file':'shipping.xlsx','status':'imported'}]})
+    original=ai.finalize_order_pull_after_shipping_password
+    monkeypatch.setattr(ai,'finalize_order_pull_after_shipping_password',lambda db,**kw:original(db,now=NOW,**kw))
+    monkeypatch.setattr('app.services.factory_dispatch_feishu_service.sync_if_enabled',lambda db:{'ok':True})
+    first=bot.apply_shipping_password(db_session,'fixture-only')
+    second=bot.apply_shipping_password(db_session,'fixture-only')
+    assert first['order_pull_completion']['completed'] and second['order_pull_completion']['completed']
+    assert first['delivery']['line_images_pushed']==1
+    assert second['delivery']['line_images_pushed']==0 and len(_feishu)==1
