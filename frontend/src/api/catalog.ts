@@ -348,7 +348,7 @@ export interface Product {
 }
 
 export const listProducts = (q?: string, params?: { category?: string; brand?: string }) =>
-  api.get<Product[]>('/api/products', { params: { q, limit: 500, ...params } }).then((r) => r.data);
+  api.get<Product[]>('/api/products', { params: { q, limit: 500, sort: 'recent', ...params } }).then((r) => r.data);
 
 // 最近更新产品 (新产品录入「参考已有产品」聚焦时的默认下拉)
 export const listRecentProducts = (limit = 10) =>
