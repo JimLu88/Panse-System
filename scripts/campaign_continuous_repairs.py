@@ -242,7 +242,7 @@ def execute_repairs(transport,action_id,payload,folder):
     a=transport.authority;table(a)
     report_path=transport.root/'reports'/(str(payload['failed_batch'])+'.json')
     report=mapping_report(load(report_path),payload)
-    if any(e.get('parse_issue') in {'unexplained_stacked_price_difference','fixed_original_evidence_missing','exact_existing_discount_readback_missing','unparsed_or_incomplete_official_failure'}
+    if any(e.get('parse_issue') in {'unexplained_stacked_price_difference','fixed_original_evidence_missing','exact_existing_discount_readback_missing','unparsed_or_incomplete_official_failure','unnecessary_shipping_time_generated'}
            for e in report['errors']):
         from campaign_price_report_recovery import reclassify
         report=reclassify(transport,report,dict(payload,batch=payload['failed_batch']),folder)
@@ -270,6 +270,10 @@ def execute_repairs(transport,action_id,payload,folder):
                 custom.append(dict(item=item,sku=d['sku'],activity_price=repair['price']))
                 local_items.add(item)
             elif repair['kind']=='file_price':local_items.add(item) # Generator already writes ERP daily.
+            elif repair['kind']=='file_template_shipping_blank':
+                from campaign_shipping_cell_recovery import validate
+                validate(repair['proof'],item,[r['sku'] for r in body['signup_rows'] if r['item']==item])
+                local_items.add(item) # Generator now preserves this exact native blank.
             elif repair['kind']=='file_shipping':
                 from campaign_approved_shipping import validate
                 validate(item,d['sku'],repair,payload['identity'])
@@ -329,4 +333,3 @@ if __name__=='__main__':
     args=p.parse_args();a=Authority()
     try:print(json.dumps(verify_claim(a,args.claim,consume_job=args.consume_job),ensure_ascii=False))
     finally:a.close()
-

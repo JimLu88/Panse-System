@@ -88,6 +88,11 @@ def classify(error):
             or not error.get('batch') or not error.get('official_evidence')):
         return dict(base, reason='official_failed_scope_not_proven')
     kind = error.get('kind')
+    if kind=='file_template_shipping_blank':
+        from campaign_shipping_cell_recovery import validate
+        proof=error.get('shipping_cell_proof',{})
+        validate(proof,base['item'],proof.get('skus',[]))
+        return dict(base,action='repair',repair={'kind':kind,'proof':proof})
     if kind=='unknown' and error.get('parse_issue')=='free_shipping_commitment_required':
         from campaign_approved_shipping import decision
         shipping=decision(error)
@@ -160,4 +165,3 @@ def classify_items(errors):
         else:
             exceptions[item] = decisions
     return repair, exceptions
-
