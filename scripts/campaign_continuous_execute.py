@@ -176,8 +176,15 @@ def main():
     a=Authority()
     def finish(value):
         from campaign_final_audit import finalize
-        return finalize(request,value,root=ROOT/'runs'/args.request_id,authority=a,
+        result=finalize(request,value,root=ROOT/'runs'/args.request_id,authority=a,
                         edge=edge,artifact_roots=secret['artifact_roots'])
+        try:
+            from campaign_result_summary import write_summary
+            write_summary(result,ROOT/'runs'/args.request_id)
+        except (OSError,ValueError,ImportError) as exc:
+            # A local report failure must not erase actual platform receipts.
+            print('summary_generation_failed:'+type(exc).__name__,file=sys.stderr)
+        return result
     try:
         if request.get('schema')=='continuous_puta_existing_new_sku_v1':
             if any((args.reconcile_discount,args.reconcile_scope,args.reconcile_signup,args.reconcile_discount_window,args.audit_existing)):
