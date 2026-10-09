@@ -17,3 +17,9 @@ def test_batch_success_not_full_sku_success(tmp_path):
 def test_blocked_without_audit_not_reported_success():
     rows=m.rows_for({'status':'blocked','segments':[{'exceptions':{'1':[{'reason':'unknown'}]}}]})
     assert rows[0]['official_readback']=='未取得完整回读' and rows[0]['execution']=='仍有待处理项'
+
+
+def test_external_text_is_not_excel_formula(tmp_path):
+    r={'status':'complete','segments':[{'exceptions':{'1':[{'reason':'=1+1'}]}}]}
+    result=m.write_summary(r,tmp_path);book=load_workbook(result['xlsx_path'])
+    assert book['报名结果']['D2'].value=='=1+1' and book['报名结果']['D2'].data_type=='s'

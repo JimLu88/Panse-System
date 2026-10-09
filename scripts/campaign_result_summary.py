@@ -56,7 +56,9 @@ def write_summary(result,root):
             cell.font=Font(color='FFFFFF',bold=True);cell.fill=PatternFill('solid',fgColor='24476B')
         for line in sheet.iter_rows(min_row=2):
             line[0].number_format='@'
-            for cell in line:cell.alignment=Alignment(vertical='top',wrap_text=True)
+            for cell in line:
+                cell.data_type='s' # Platform text is data, never an Excel formula.
+                cell.alignment=Alignment(vertical='top',wrap_text=True)
         for col,width in [('A',20),('B',22),('C',28),('D',85)]:sheet.column_dimensions[col].width=width
         sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
         notes=book.create_sheet('口径');notes.append(['说明',summary['note']]);notes.column_dimensions['B'].width=110
