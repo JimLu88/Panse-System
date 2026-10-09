@@ -66,7 +66,10 @@ class CampaignTransport:
             job=self.edge.submit(step,payload)
             persist(ref,{'job_id':job['job_id'],'step':step})
         if job['state']=='running':
-            timeout=1800 if step=='product_export' else 300
+            # Discount creation includes per-product official amount readback.
+            # A full-shop batch exceeds five minutes even after import succeeds.
+            # Only waiting changes: one submit, same durable job, no retry.
+            timeout=1800 if step in ('product_export','discount') else 300
             if step=='discount_readback':timeout=min(1800,max(300,30+20*len(payload.get('offers',[]))))
             job=self.edge.wait(job['job_id'],timeout=timeout,progress=self.progress)
         observation=folder/(step+'-observation.json')
