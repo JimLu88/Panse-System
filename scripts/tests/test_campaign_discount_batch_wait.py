@@ -7,7 +7,7 @@ sys.path.insert(0,'D:/AI/畔色ERP系统/ERP程序/scripts')
 spec=importlib.util.spec_from_file_location('transport_batch_candidate',Path(__file__).parents[1]/'campaign_continuous_transport.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
-@pytest.mark.parametrize('step,seconds',[('discount',1800),('product_export',1800),('signup',300),('discount_readback',1800)])
+@pytest.mark.parametrize('step,seconds',[('discount',1800),('discount_amend',1800),('product_export',1800),('signup',300),('discount_readback',1800)])
 def test_wait_does_not_repeat_submission(tmp_path,step,seconds):
     calls=[]
     terminal={'job_id':'original','state':'finished','operation':step}

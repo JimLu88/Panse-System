@@ -69,7 +69,7 @@ class CampaignTransport:
             # Discount creation includes per-product official amount readback.
             # A full-shop batch exceeds five minutes even after import succeeds.
             # Only waiting changes: one submit, same durable job, no retry.
-            timeout=1800 if step in ('product_export','discount') else 300
+            timeout=1800 if step in ('product_export','discount','discount_amend') else 300
             if step=='discount_readback':timeout=min(1800,max(300,180+30*len(payload.get('offers',[]))))
             job=self.edge.wait(job['job_id'],timeout=timeout,progress=self.progress)
         observation=folder/(step+'-observation.json')
