@@ -25,6 +25,8 @@ def reclassify(transport,report,payload,folder):
     body=transport.authority.get_bundle(report['bundle_id']);snapshot=load(body['snapshot_path'])
     from campaign_template_failure_supplement import supplement_bound_terminal
     terminal=supplement_bound_terminal(terminal,body)
+    from campaign_fresh_reference_supplement import supplement_registered
+    terminal=supplement_registered(terminal,body,transport.root)
     # Custom-only bundles legitimately have no ordinary discount readback.
     # Absence is NOT a zero discount: normalize_errors still requires actual
     # verified evidence for any ordinary repair that depends on that amount.
