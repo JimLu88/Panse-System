@@ -3,6 +3,19 @@ import hashlib
 import json
 from pathlib import Path
 
+REASONS={
+    'erp_mapping_missing_or_not_unique':'淘宝SKU缺少唯一ERP对应关系',
+    'mapping_missing_or_ambiguous':'商品或SKU对应关系不明确',
+    'fixed_original_evidence_missing':'缺少定制SKU首次原价基线，不能自动降价',
+    'fixed_basis_unknown_not_rotation_proof':'缺少定制SKU原价基线，不能推定需要轮换',
+    'unparsed_or_incomplete_official_failure':'官方失败说明未能完整解析，需补齐事实',
+    'below_fixed_twenty_percent':'所需价格低于首次原价20%底线，需决定是否轮换',
+    'final_delta_over_two_yuan':'超过同一目标价允许的2元修正范围，需决定是否轮换',
+    'price_evidence_incomplete':'缺少完整价格事实',
+    'verified_price_adjustment_had_no_effect_on_official_price':'已修正优惠但平台反馈价格未变化，不能重复盲改',
+    'platform_requires_non_daily_signup_price':'平台要求与ERP日常报名价不一致，不能自行改口径',
+}
+
 
 def rows_for(result):
     audits={s.get('segment_id'):s for s in (result.get('final_audit') or {}).get('segments',[])}
@@ -18,7 +31,8 @@ def rows_for(result):
             rows.append({'item':str(item),'segment_id':segment.get('segment_id'),
                 'execution':'成功记录已确认' if item in success else '仍有待处理项' if issues else '仅有回读记录',
                 'official_readback':labels.get(p.get('status'),'未取得完整回读'),
-                'issues':'；'.join(dict.fromkeys(str(e.get('reason') or e.get('action') or '待核对') for e in issues))})
+                'issues':'；'.join(dict.fromkeys(REASONS.get(str(e.get('reason')),str(e.get('reason') or e.get('action') or '待核对')) for e in issues)),
+                'issue_codes':[e.get('reason') or e.get('action') for e in issues]})
     return rows
 
 
