@@ -414,15 +414,6 @@ def fill_selected_rows(raw, selected, *, official_rate):
             return discount_rate(str(value) + '%') if layout['numeric_percent'] else discount_rate(value)
         inventory_col = layout.get('inventory')
         shipping_col = layout.get('shipping')
-        shipping_default = None
-        if shipping_col:
-            for r in kept:
-                value = _effective(cells, merges, r['row'], shipping_col)
-                if value != '':
-                    shipping_default = value
-                    break
-            if shipping_default is None:
-                raise ValueError('missing_shipping_time_value')
         if any((_effective(cells, merges, r['row'], percent_col) != '' and filled_rate(_effective(cells, merges, r['row'], percent_col)) != rate) or _effective(cells, merges, r['row'], amount_col) != '' for r in kept):
             raise ValueError('unexpected_prefilled_official_discount')
         for ref in merges:
@@ -492,8 +483,11 @@ def fill_selected_rows(raw, selected, *, official_rate):
                 inventory = _effective(cells, merges, old, inventory_col) or '全部库存'
                 row_xml = _set_text_cell(row_xml, inventory_col, old, inventory)
             if shipping_col:
-                shipping = _effective(cells, merges, old, shipping_col) or shipping_default
-                row_xml = _set_text_cell(row_xml, shipping_col, old, shipping)
+                shipping = _effective(cells, merges, old, shipping_col)
+                # Blank is an official per-row value, not permission to copy
+                # another product's shipping promise. Some goods forbid it.
+                if shipping or any(c[1] == shipping_col for c in CELL.finditer(row_xml)):
+                    row_xml = _set_text_cell(row_xml, shipping_col, old, shipping)
             if old in s_anchors and _effective(cells, merges, old, percent_col) == '':
                 row_xml = _set_cell(row_xml,percent_col,old,rate_text) if layout['numeric_percent'] else _set_percent_text(row_xml, old, rate_text)
             row_xml = re.sub(r'\br="([A-Z]*)' + str(old) + r'"', lambda m: 'r="' + m[1] + str(new) + '"', row_xml)
@@ -538,7 +532,7 @@ def fill_selected_rows(raw, selected, *, official_rate):
                     elif col == inventory_col:
                         expected = _effective(cells, merges, old, col) or '全部库存'
                     elif col == shipping_col:
-                        expected = _effective(cells, merges, old, col) or shipping_default
+                        expected = _effective(cells, merges, old, col)
                     if col == percent_col and expected == '':
                         expected = rate_text
                     if _effective(output_cells, output_merges, new, col) != expected:

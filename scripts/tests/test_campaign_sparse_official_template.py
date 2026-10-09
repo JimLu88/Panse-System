@@ -36,3 +36,20 @@ def test_sparse_merged_cells_and_removed_anchor(subset):
 def test_unmerged_missing_target_still_rejected():
     with pytest.raises(ValueError,match='official_text_cell_missing'):
         m._set_text_cell('<row r="5"><c r="E5"/></row>','A',5,'12345678901')
+
+def test_shipping_blank_never_inherits_another_row():
+    raw=package();output=BytesIO()
+    with ZipFile(BytesIO(raw)) as z, ZipFile(output,'w') as dest:
+        for info in z.infolist():
+            data=z.read(info.filename)
+            if info.filename=='xl/worksheets/sheet1.xml':
+                x=data.decode()
+                x=x.replace('<c r="S2"','<c r="R2" t="inlineStr"><is><t>发货时间</t></is></c><c r="S2"')
+                x=x.replace('<c r="S4"','<c r="R4" t="inlineStr"><is><t>30天</t></is></c><c r="S4"')
+                data=x.encode()
+            dest.writestr(info,data)
+    raw=output.getvalue()
+    selected=[dict(item=r['item'],sku=r['sku'],activity_price='100.00') for r in m.template_rows(raw)]
+    result=m.fill_selected_rows(raw,selected,official_rate='15%')
+    rows=m.read_rows(result,'商品SKU导入列表')
+    assert rows[4]['R']=='30天' and rows[5].get('R','')==''
