@@ -1,7 +1,9 @@
 import importlib.util
+import sys
 from pathlib import Path
 from copy import deepcopy
 import pytest
+sys.path.insert(0,str(Path(__file__).parents[1]))
 spec=importlib.util.spec_from_file_location('shipping_cell',Path(__file__).parents[1]/'campaign_shipping_cell_recovery.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
