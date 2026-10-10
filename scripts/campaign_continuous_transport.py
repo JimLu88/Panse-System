@@ -273,7 +273,8 @@ class CampaignTransport:
         if load(folder/'request.json')!={'step':'generate','payload':payload}:
             raise ValueError('generation_recovery_request_changed')
         if not (folder/'files/receipt.json').is_file():
-            raise ValueError('artifact_incomplete_preserve_effect_claims')
+            from campaign_generation_checkpoint import can_rebuild
+            if not can_rebuild(folder,allow_owned=True):raise ValueError('artifact_incomplete_preserve_effect_claims')
         result=self.execute('generate',action_id,payload)
         return dict(result,reconciled_readonly=True)
 

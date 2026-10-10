@@ -65,12 +65,14 @@ def reconcile(activity, planned, offers, start, end, rate, *, excluding_offer=No
     from campaign_generate_current_files import official_cut
     from campaign_scoped_tolerance import policy_for
     policy = policy_for(campaign, start, end, rate, target, continuous_rule_sha=continuous_rule_sha)
+    from campaign_discount_availability import completed_reuse_controller
+    continued=completed_reuse_controller(offers,planned,campaign,start,end)
     index = {}
     for offer in offers:
-        from campaign_discount_availability import inactive_for_window
-        if inactive_for_window(offer,campaign,start,end):continue
         if not (offer['start'] <= end and start <= offer['end']) or offer['offer_id'] == excluding_offer:
             continue
+        from campaign_discount_availability import inactive_for_window
+        if inactive_for_window(offer,campaign,start,end,continued_controller=continued):continue
         for item in offer['items']:
             if item['status'] in ('success','unknown'):
                 index.setdefault(item['item'], []).append((offer,item['status']))

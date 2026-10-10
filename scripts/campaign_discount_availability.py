@@ -11,9 +11,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TRANSFER_ROOT=Path('D:/AI/畔色ERP系统/Web-Agent程序/data/output/campaign-transfers')
+CONTINUOUS_RUNS=Path('D:/AI/畔色ERP系统/outputs/campaign-continuous/runs')
 
 
-def verified_scope(ref, *, now=None):
+def verified_scope(ref, *, now=None, continued_controller=None):
     from campaign_entry_authority import load,file_sha
     from campaign_continuous_policy import fingerprint
     path=Path(ref['path']).resolve(strict=True)
@@ -57,7 +58,11 @@ def verified_scope(ref, *, now=None):
     accepted=[];now=now or datetime.now(timezone.utc)
     for row in rows:
         age=(now-datetime.fromisoformat(row['observed_at'])).total_seconds()
-        if not 0<=age<=1800:raise ValueError('offer_availability_readback_stale')
+        # Only reuse of a completed, fully verified replacement in this exact
+        # controller may consume its original inactive-offer decision. New
+        # discounts and unrelated controllers still require the fresh read.
+        if age<0 or (age>1800 and continued_controller!=doc['controller_id']):
+            raise ValueError('offer_availability_readback_stale')
         paused=row.get('observed_state')=='paused' and row.get('window',{}).get('offer_id')==row['offer_id']
         absent=(row.get('observed_state')=='not_found' and row.get('unfiltered_exact_query') is True
                 and row.get('search_value')==row['offer_id'] and doc.get('user_removed_old_offers') is True)
@@ -73,15 +78,51 @@ def overlay(authority, offers):
     return offers
 
 
-def inactive_for_window(offer,campaign,start,end):
+def inactive_for_window(offer,campaign,start,end,*,continued_controller=None):
     for ref in offer.get('availability_refs',[]):
         from campaign_entry_authority import load,file_sha
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('offer_availability_receipt_changed')
-        target=load(ref['path'])['scope']
+        document=load(ref['path']);target=document['scope']
         if (campaign,start,end)!=(target['campaign'],target['start'],target['end']):continue
-        scope=verified_scope(ref)
+        if (start,end)==(offer['start'],offer['end']):continue
+        if offer.get('platform_offer_id',offer['offer_id']) not in document.get('offer_ids',[]):continue
+        scope=(verified_scope(ref) if continued_controller is None else
+               verified_scope(ref,continued_controller=continued_controller))
         if ((campaign,start,end)!=(scope['campaign'],scope['start'],scope['end'])
                 or (start,end)==(offer['start'],offer['end'])):continue
         if ((offer['start'],offer['end'])==(scope['old_window']['start'],scope['old_window']['end'])
                 and offer.get('platform_offer_id',offer['offer_id']) in scope['offer_ids']):return True
     return False
+
+
+def completed_reuse_controller(offers, planned, campaign, start, end):
+    """Prove every requested discount SKU already exists; cannot authorize new rows.
+
+    Failed/unknown complements never qualify. Immutable full readback and the
+    original bundle time binding supply authority, not the caller's old flag.
+    """
+    from campaign_entry_authority import load,file_sha
+    from campaign_partial_discount import verified_rows
+    from decimal import Decimal
+    wanted={(r['item'],r['sku']):Decimal(str(r['deduct'])) for r in planned}
+    if not wanted:return None
+    for offer in offers:
+        proof=offer.get('partial_terminal_evidence');binding=offer.get('time_binding')
+        if not proof or not binding or (offer['start'],offer['end'])!=(start,end):continue
+        doc=load(proof['path'])
+        if doc.get('campaign')!=campaign:continue
+        original=offer.get('verified_partial_original_rows',offer['rows'])
+        successful=verified_rows(dict(offer,rows=original),proof)
+        actual={(r['item'],r['sku']):Decimal(str(r['deduct'])) for r in offer['rows']
+                if (r['item'],r['sku']) in successful}
+        if not wanted.keys()<=actual.keys() or any(actual[k]!=v for k,v in wanted.items()):continue
+        path=Path(binding['request_path']).resolve(strict=True)
+        if file_sha(path)!=binding['request_file_sha256']:raise ValueError('reuse_time_binding_changed')
+        segment=binding['segment']
+        if (segment['campaign'],segment['price_window']['start'],segment['price_window']['end'])!=(campaign,start,end):continue
+        # Only the original fixed controller directory, not an arbitrary file.
+        controller=path.parent.name
+        expected=CONTINUOUS_RUNS/controller/'time-request.json'
+        if path!=expected.resolve():continue
+        return controller
+    return None

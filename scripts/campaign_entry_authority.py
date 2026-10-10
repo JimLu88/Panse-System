@@ -270,7 +270,7 @@ class Authority:
             key='bundle:'+row['bundle_id']
             if key not in offers:
                 body=self.get_bundle(row['bundle_id'])
-                offers[key]=dict(offer_id=key,start=row['start'],end=row['end'],rows=body['discount_rows'],items=[])
+                offers[key]=dict(offer_id=key,start=row['start'],end=row['end'],rows=body['discount_rows'],items=[],time_binding=body.get('time_binding'))
             offers[key]['items'].append(dict(item=row['item'],status=row['status']))
             if row['status']=='success' and row['evidence']:
                 evidence=json.loads(row['evidence'])
@@ -306,12 +306,14 @@ class Authority:
         from campaign_discount_availability import overlay as availability_overlay
         return availability_overlay(self,include_overlay(self,result))
 
-    def blocked(self, campaign, phase, start, end):
+    def blocked(self, campaign, phase, start, end, *, historical_only=False):
         exact_campaign(campaign);result={}
         if phase=='discount':
             from campaign_discount_availability import inactive_for_window
             for offer in self.discount_offers():
-                if inactive_for_window(offer,campaign,start,end):continue
+                # Generation's report lists protected history conservatively.
+                # Only actual new-claim admission consumes current availability.
+                if not historical_only and inactive_for_window(offer,campaign,start,end):continue
                 if offer['start']<=end and start<=offer['end']:
                     result.update({r['item']:r['status'] for r in offer['items'] if r['status'] in ('success','unknown')})
             # discount_offers includes every historical receipt and success/

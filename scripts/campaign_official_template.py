@@ -131,11 +131,39 @@ def _layout(headers):
         # Official legacy super-reduce SKU/reference/no-fill download observed
         # 2026-09-11: the optional media fields precede the discount fields.
         ({'J':'超级立减建议金额','N':'活动价','O':'库存','P':'包邮','Q':'商品短标题','W':'短视频链接 1:1','X':'让利比例','Y':'补贴金额'}, dict(price='N',percent='X',amount='Y',reference=None,last='Y',numeric_percent=True)),
+        # National Day official download, 2026-09-20. This is NOT the
+        # legacy percentage-only layout: its instructions require a subsidy.
+        ({'M':'活动价','N':'库存','O':'发货时间','P':'让利比例','Q':'补贴金额'}, dict(price='M',percent='P',amount='Q',reference=None,last='Q',numeric_percent=True,amount_required=True)),
     ]
     for expected, layout in layouts:
         if all(headers.get(c) == label for c,label in {**common,**expected}.items()):
             return layout
     raise ValueError('official_template_columns_changed')
+
+
+def template_requirements(raw):
+    """Structural facts only; examples never supply live rates or amounts."""
+    with _archive(raw) as archive:
+        _, _, rows, _ = _read(archive, sheet_path(archive, '商品SKU导入列表'))
+        layout = _layout(rows.get(2, {}))
+        return dict(price_column=layout['price'], rate_column=layout['percent'],
+                    amount_column=layout['amount'],
+                    explicit_subsidy_required=layout.get('amount_required', False))
+
+
+def generation_input_issues(raw, selected):
+    """Keep unsupported price semantics out of BOTH submission workbooks.
+
+    The National Day subsidy source/stacking strategy is not yet established.
+    Do not assume zero, multiply the example rate, copy a final price, or reuse
+    single-discount amounts. Changing the writer alone cannot establish that
+    business contract. Report each affected SKU without changing its price.
+    """
+    if template_requirements(raw)['explicit_subsidy_required']:
+        return [dict(item=str(row['item']), sku=str(row['sku']),
+                     error='official_subsidy_amount_and_stacking_evidence_required')
+                for row in selected]
+    return []
 
 
 def template_rows(raw):
@@ -283,6 +311,8 @@ def fill_selected_rows(raw, selected, *, official_rate):
         path = sheet_path(source, '商品SKU导入列表')
         xml, root, cells, merges = _read(source, path)
         layout = _layout(cells.get(2, {}))
+        if layout.get('amount_required'):
+            raise ValueError('official_subsidy_amount_and_stacking_evidence_required')
         price_col, percent_col, amount_col = layout['price'], layout['percent'], layout['amount']
         if layout['numeric_percent']:
             if rate * 100 != (rate * 100).quantize(Decimal('.1')):

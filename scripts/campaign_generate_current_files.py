@@ -177,7 +177,7 @@ def _generate(args,authority):
         excluded=excluded_pairs(exclusions)
         identities=[r for r in identities if (r['item'],r['sku']) not in excluded]
     blocked_signup=authority.blocked(campaign,'signup',args.start,args.end)
-    blocked_discount=authority.blocked(campaign,'discount',args.start,args.end)
+    blocked_discount=authority.blocked(campaign,'discount',args.start,args.end,historical_only=True)
     present={r['item'] for r in identities}
     signup_items=(present if signup_items is None else signup_items)-blocked_signup.keys()
     discount_items=present if discount_items is None else discount_items
@@ -217,6 +217,8 @@ def _generate(args,authority):
     planned_discounts=discounts
     discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target,continuous_rule_sha=continuous_rule_sha)
     issues.extend(reuse_issues)
+    from campaign_official_template import generation_input_issues
+    issues.extend(generation_input_issues(raw, activity))
     result = dict(status='local_input_issues' if issues else 'local_files_ready_not_uploaded',platform_write=False,database_write=False,automatic_retry=False,price_version=snapshot['resolved_price_version_sha256'],official_rate=str(rate),target=args.target,window={'start':args.start,'end':args.end,'timezone':'Asia/Shanghai'},activity_rows=activity,discount_rows=discounts,discount_reuse=reused,issues=issues,activity_template_sha256=sha(raw),files=[],note='Registered local evidence only, not a platform preflight or fresh readback. Actual reused amounts must meet frozen targets; no inherited tolerance. No upload files on issues. Business database untouched; local authority persisted.')
     result['explicit_signup_items'] = sorted(signup_items) if signup_items is not None else None
     result['explicit_discount_items'] = sorted(discount_items) if discount_items is not None else None

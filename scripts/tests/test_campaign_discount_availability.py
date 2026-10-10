@@ -8,7 +8,7 @@ import campaign_discount_availability as mod
 from campaign_entry_authority import file_sha, Authority
 
 
-@pytest.mark.parametrize('fault',[None,'write','job','campaign','window','stale','future','filter','no_user_removal','scope','terminal','price_proof'])
+@pytest.mark.parametrize('fault',[None,'write','job','campaign','window','stale','stale_continue','stale_other_controller','future','filter','no_user_removal','scope','terminal','price_proof'])
 def test_fixed_receipt_accepts_only_bound_current_absence(tmp_path,monkeypatch,fault):
     import sqlite3
     from datetime import datetime,timezone,timedelta
@@ -24,7 +24,7 @@ def test_fixed_receipt_accepts_only_bound_current_absence(tmp_path,monkeypatch,f
     payload=dict(identity=identity,read_request_id='a'*64,offer_status_only=True,price_window=dict(start=scope['start'],end='2026-09-30 23:59:59'),offers=[dict(offer_id='123',item='1',sku_ids=[])])
     jid=fingerprint(['discount_readback','shop','a'*64])
     proof=tmp_path/jid/'discount-readback.json';proof.parent.mkdir()
-    observed=now-timedelta(seconds=1801 if fault=='stale' else -1 if fault=='future' else 0)
+    observed=now-timedelta(seconds=1801 if str(fault).startswith('stale') else -1 if fault=='future' else 0)
     row=dict(offer_id='123',observed_state='not_found',unfiltered_exact_query=fault!='filter',search_value='123',observed_at=observed.isoformat(),platform_write=False)
     result=dict(state='offer_status_readback',platform_write=fault=='write',shop_name='shop',rows=[row])
     if fault=='scope':result['rows']=[]
@@ -39,15 +39,17 @@ def test_fixed_receipt_accepts_only_bound_current_absence(tmp_path,monkeypatch,f
     if fault=='window':doc['scope']['end']='2026-10-08 19:59:59'
     path=tmp_path/'receipt.json';path.write_text(json.dumps(doc));ref=dict(path=str(path),sha256=file_sha(path))
     monkeypatch.setattr(mod,'TRANSFER_ROOT',tmp_path)
-    if fault:
-        with pytest.raises(ValueError):mod.verified_scope(ref,now=now)
+    continued=(fingerprint(request) if fault=='stale_continue' else 'other' if fault=='stale_other_controller' else None)
+    if fault and fault!='stale_continue':
+        with pytest.raises(ValueError):mod.verified_scope(ref,now=now,continued_controller=continued)
+    elif fault=='stale_continue':assert mod.verified_scope(ref,now=now,continued_controller=continued)['offer_ids']==['123']
     else:assert mod.verified_scope(ref,now=now)['offer_ids']==['123']
 
 
 def fixture(tmp_path,monkeypatch):
     scope=dict(campaign='legacy/itemApply/1',shop='shop',start='2026-09-28 00:00:00',end='2026-10-07 19:59:59',
                old_window=dict(start='2026-09-28 00:00:00',end='2026-09-30 23:59:59'),offer_ids=['123'])
-    path=tmp_path/'scope.json';path.write_text(json.dumps(dict(scope=scope)),encoding='utf-8')
+    path=tmp_path/'scope.json';path.write_text(json.dumps(dict(scope=scope,offer_ids=['123'])),encoding='utf-8')
     monkeypatch.setattr(mod,'verified_scope',lambda ref:scope)
     offer=dict(offer_id='bundle:old',platform_offer_id='123',start=scope['old_window']['start'],end=scope['old_window']['end'],
                items=[dict(item='1',status='success'),dict(item='2',status='unknown')],rows=[],
