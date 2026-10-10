@@ -123,18 +123,30 @@ test('switching product refreshes SKU candidates and shows the full calculation'
   await openQuotePage(page);
   await page.getByPlaceholder('例如：榉木餐桌改2米，宽90cm，台面改白色岩板').fill('榉木岩板餐桌2米，宽度90');
   await page.getByRole('button', { name: '生成报价' }).click();
+  await page.getByRole('button', { name: '取消，不算价' }).click();
   const skuRow = page.getByText('当前产品 SKU（切换产品后实时更新）:').locator('..').locator('..');
   await skuRow.locator('.ant-select').click();
   await expect(page.getByText('实木餐桌-200cm')).toBeVisible();
   await page.keyboard.press('Escape');
 
-  const productRow = page.getByText('匹配产品(不一定准, 选错可改后自动重算):').locator('..').locator('..');
+  const productRow = page.getByText('匹配产品(不一定准, 修改后需重新确认):').locator('..').locator('..');
   await productRow.locator('.ant-select').click();
   await page.getByText(/榉木岩板餐桌/).last().click();
 
   await skuRow.locator('.ant-select').click();
   await expect(page.getByText('榉木餐桌-1.8米-白色岩板')).toBeVisible();
   await expect(page.getByText('实木餐桌-200cm')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '算价', exact: true }).click();
+  const modal = page.getByRole('dialog');
+  await modal.getByLabel('确认精确款式').click();
+  await page.locator('.ant-select-item-option-content').getByText('榉木餐桌-2.0米-黑色岩板 · SLAB-200-B', { exact:true }).click();
+  await modal.getByLabel('确认价格口径').click();
+  await page.locator('.ant-select-item-option-content').getByText('定价表大促价（不是大促到手价）', {exact:true}).click();
+  await modal.getByLabel('确认具体主材').click();
+  await page.locator('.ant-select-item-option-content').getByText('榉木', {exact:true}).click();
+  await modal.getByRole('checkbox').check();
+  await modal.getByRole('button', {name:'确认本次信息并计算'}).click();
   await page.getByText('查看计算依据', { exact: true }).click();
   await expect(page.getByText('计算规格明细')).toBeVisible();
   await expect(page.getByText('2m × 90cm × 75cm · ¥3300.00')).toBeVisible();
@@ -153,13 +165,14 @@ test('quote parameters have one entry in the top-right dialog', async ({ page })
 
 test('price tier menu keeps promo tiers and adds buyer-price tiers', async ({ page }) => {
   await openQuotePage(page);
-  const tierSelect = page.locator('.ant-select').filter({ hasText: '大促到手价' });
+  const tierSelect = page.locator('.ant-select').filter({ hasText: '价格口径（未确认）' });
   await expect(tierSelect).toBeVisible();
   await tierSelect.click();
-  await expect(page.getByText('报价档·大促', { exact: true })).toBeVisible();
-  await expect(page.getByText('报价档·中促', { exact: true })).toBeVisible();
-  await expect(page.locator('.ant-select-item-option-content').getByText('大促到手价', { exact: true })).toBeVisible();
-  await expect(page.getByText('中促到手价', { exact: true })).toBeVisible();
+  await expect(page.getByText('定价表大促价（不是大促到手价）', { exact: true })).toBeVisible();
+  await expect(page.getByText('定价表中促价（不是中促到手价）', { exact: true })).toBeVisible();
+  await expect(page.locator('.ant-select-item-option-content').getByText('大促到手价（买家最终到手口径）', { exact: true })).toBeVisible();
+  await expect(page.getByText('中促到手价（买家最终到手口径）', { exact: true })).toBeVisible();
+  await expect(page.getByText('定价表日常价', { exact: true })).toBeVisible();
   await expect(page.getByText('报价档·小促', { exact: true })).toHaveCount(0);
   await expect(page.getByText('报价档·日常', { exact: true })).toHaveCount(0);
 });

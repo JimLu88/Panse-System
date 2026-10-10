@@ -45,8 +45,10 @@ _BUYER_PRICE_TIERS = {
 }
 
 _PRICE_TIER_LABELS = {
-    "mid": "报价档·中促",
-    "big": "报价档·大促",
+    "mid": "定价表中促价",
+    "big": "定价表大促价",
+    "daily": "定价表日常价",
+    "list": "定价表标价",
     "mid_buyer": "中促到手价",
     "big_buyer": "大促到手价",
 }
@@ -1620,6 +1622,7 @@ def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 10
             if _is_quoteable_sku(s)]
     core = re.split(r"[，,。;；、]|计算价格|算价|样式", text or "")[0]
     sa = set(core)
+    product = db.query(Product).filter(Product.code == product_code).first()
     out = []
     for s in skus:
         name = s.sku or s.sku_code or ""
@@ -1627,6 +1630,7 @@ def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 10
         conf = len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
         price = s.big_promo if s.big_promo is not None else s.daily_price
         out.append({"sku_code": s.sku_code, "sku_name": name,
+                    "original_material": detect_wood(product.name if product else '') or detect_wood(product.main_material if product else '') or detect_wood(name),
                     "price": round(float(price), 2) if price is not None else None,
                     "confidence": round(conf, 2)})
     out.sort(key=lambda c: c["confidence"], reverse=True)

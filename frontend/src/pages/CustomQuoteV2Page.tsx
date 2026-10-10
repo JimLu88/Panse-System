@@ -32,6 +32,7 @@ import {
 import { CompetitorImportButton } from '../components/CompetitorImportButton';
 import { QuoteSettingsTab } from './CustomizationPage';
 import './CustomQuoteV2Page.css';
+import { confirmQuote, confirmedBody, QUOTE_TIERS } from '../components/QuoteConfirmation';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -52,7 +53,7 @@ interface ClassifyResult {
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
   candidates?: { product_code: string; product_name: string; sku?: string | null; confidence: number; size_flag?: boolean }[];
-  sku_candidates?: { sku_code: string; sku_name: string; price: number | null; confidence: number }[];
+  sku_candidates?: { sku_code: string; sku_name: string; price: number | null; confidence: number; original_material?: string | null }[];
   ai_used?: boolean;
   size_warning?: boolean;
 }
@@ -524,7 +525,7 @@ export default function CustomQuoteV2Page() {
   const [wid, setWid] = useState<number | null>(null);   // 宽/深(cm), 空=该长度的标准宽
   const [hgt, setHgt] = useState<number | null>(null);   // 高(cm), 空=标准高
   const [mat, setMat] = useState('');
-  const [tier, setTier] = useState('big_buyer');   // 报价档位 (默认大促到手价)
+  const [tier, setTier] = useState<string>(); // No implicit quote tier.
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -555,6 +556,17 @@ export default function CustomQuoteV2Page() {
   // ── 留痕对账 ──
   const [logs, setLogs] = useState<QuoteLog[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
+  const quoteSeq = useRef(0);
+  useEffect(() => () => { quoteSeq.current++; abortRef.current?.abort(); Modal.destroyAll(); }, []);
+  const requestKey = JSON.stringify([desc, clsImages.map(f => [f.name, f.size, f.lastModified])]);
+  const requestKeyRef = useRef(requestKey); requestKeyRef.current = requestKey;
+  const inputKey = JSON.stringify([requestKey, pcode, selectedSku, len, wid, hgt, mat, tier, parts, ptype, hlen, boards, tDepth, tHeight, tDrawers, tDoors]);
+  const inputKeyRef = useRef(inputKey);
+  inputKeyRef.current = inputKey;
+  useEffect(() => {
+    quoteSeq.current += 1;
+    setLight(null); setCustomQ(null); setHeavy(null); setCustomBoards([]);
+  }, [inputKey]);
 
   // A3: 加载增减部位下拉数据(常用部位 + 物料表); 命中产品后按其品类补 BOM 部位
   useEffect(() => {
@@ -598,6 +610,11 @@ export default function CustomQuoteV2Page() {
       return;
     }
     const ac = new AbortController();
+    abortRef.current?.abort();
+    const startedRequest = requestKeyRef.current;
+    quoteSeq.current += 1;
+    setLight(null); setCustomQ(null); setHeavy(null);
+    setMat(''); setTier(undefined); setSelectedSku(undefined);
     abortRef.current = ac;
     setRunning(true);
     setClsLoading(true);
@@ -614,16 +631,17 @@ export default function CustomQuoteV2Page() {
       });
       if (!resp.ok) throw new Error('分类失败');
       const r = (await resp.json()) as ClassifyResult;
+      if (ac.signal.aborted || requestKeyRef.current !== startedRequest) return;
       setCls(r);
       setWorkspaceMode(r.customization_type === '特殊定制' ? 'heavy' : 'light');
       setCandidates(r.candidates ?? []);
       setSkuCandidates(r.sku_candidates ?? []);
       setSelectedSku(undefined);
-      if (r.base_product_code) setPcode(r.base_product_code);
-      if (r.target_length_m) setLen(r.target_length_m);
-      if (r.target_height_cm) setHgt(r.target_height_cm);
-      if (r.target_width_cm) setWid(r.target_width_cm);
-      if (r.target_material) setMat(r.target_material);
+      setPcode(r.base_product_code || '');
+      setLen(r.target_length_m ?? null);
+      setHgt(r.target_height_cm ?? null);
+      setWid(r.target_width_cm ?? null);
+      setMat(r.target_material || '');
       // 分类器识别出的增减部位 → 自动填入可编辑表(用户可改/删/加)
       const detected: EditPart[] = [];
       (r.add_parts ?? []).forEach((p) =>
@@ -643,7 +661,8 @@ export default function CustomQuoteV2Page() {
       // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
       if (autoQuote && !ac.signal.aborted) {
         if (r.customization_type === '普通定制' && r.base_product_code) {
-          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, undefined, r.target_height_cm ?? null, r.target_width_cm ?? null);
+          // Wait for the identified form to render, then the same confirmation gate as manual calculation.
+          pendingIdentified.current = true;
         } else if (r.customization_type === '特殊定制') {
           message.info(
             r.category_guess
@@ -662,6 +681,8 @@ export default function CustomQuoteV2Page() {
   };
 
   const stop = () => {
+    quoteSeq.current += 1;
+    pendingIdentified.current = false;
     abortRef.current?.abort();
     setRunning(false);
     setClsLoading(false);
@@ -681,7 +702,7 @@ export default function CustomQuoteV2Page() {
     matStr: string,
     partsList: EditPart[],
     signal?: AbortSignal,
-    tierVal: string = tier,
+    tierVal: string | undefined = tier,
     skuVal: string | undefined = selectedSku,
     hgtVal: number | null = hgt,
     widVal: number | null = wid,
@@ -690,6 +711,13 @@ export default function CustomQuoteV2Page() {
       message.warning('请填基础产品编码');
       return;
     }
+    const key = inputKeyRef.current;
+    const sequence = ++quoteSeq.current;
+    setLight(null); setCustomQ(null);
+    const chosen = await confirmQuote({ identity: code.trim(), skus: skuCandidates,
+      materials: partOpts.woods, detail: `长${lenM ?? '标准'}m / 宽${widVal ?? '标准'}cm / 高${hgtVal ?? '标准'}cm；${partsList.length}项部件修改` });
+    if (!chosen || sequence !== quoteSeq.current || key !== inputKeyRef.current || signal?.aborted) return;
+    tierVal = chosen.tier; skuVal = chosen.sku; matStr = chosen.material;
     setLightLoading(true);
     setLight(null);
     setCustomQ(null);
@@ -698,7 +726,7 @@ export default function CustomQuoteV2Page() {
         spec: LightResult;
         custom: { final_price: number | null; note?: string; error?: string; from_bom?: boolean } | null;
         custom_boards?: { part: string; material: string; length_cm: number; width_cm: number; qty: number; unit?: string; is_accessory?: boolean }[] | null;
-      }>('/v2/quote-both', {
+      }>('/v2/quote-both', confirmedBody({
         base_product_code: code.trim(),
         target_length_m: lenM ?? undefined,
         target_width_cm: widVal ?? undefined,
@@ -716,7 +744,8 @@ export default function CustomQuoteV2Page() {
         price_tier: tierVal,
         base_sku_code: skuVal,
         description: desc.trim() || undefined,
-      }, signal);
+      }), signal);
+      if (sequence !== quoteSeq.current || key !== inputKeyRef.current || signal?.aborted) return;
       const r = both.spec;
       setLight(r);
       if (r.final_price != null) {
@@ -730,17 +759,7 @@ export default function CustomQuoteV2Page() {
           width_cm: b.width_cm, qty: b.qty, unit: b.unit, is_accessory: b.is_accessory,
         })),
       );
-      // C: 后端解析的尺寸回填到部位行(空的才填), 让用户看到+可继续手调快速改价
-      if (r.parts_detail && r.parts_detail.length) {
-        setParts((ps) =>
-          ps.map((p) => {
-            const d = (r.parts_detail || []).find((x) => x.change === p.change && x.name === p.material.trim());
-            return d && (p.length_cm == null || p.width_cm == null)
-              ? { ...p, length_cm: p.length_cm ?? d.length_cm, width_cm: p.width_cm ?? d.width_cm }
-              : p;
-          }),
-        );
-      }
+      // Resolved part dimensions remain in the result; never mutate the confirmed request afterwards.
       if (r.error) message.warning(r.error);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') message.error((e as Error).message);
@@ -750,11 +769,18 @@ export default function CustomQuoteV2Page() {
   };
 
   const doLight = () => runLight(pcode, len, mat, parts);
+  const pendingIdentified = useRef(false);
+  useEffect(() => {
+    if (pendingIdentified.current && !clsLoading && !running) {
+      pendingIdentified.current = false;
+      void runLight(pcode, len, mat, parts);
+    }
+  }, [clsLoading, running]);
   // 用户从「匹配产品」下拉手选纠正 → 立即换产品并重算
   const onPickProduct = async (code: string) => {
     setPcode(code);
     await loadSkuCandidates(code);
-    await runLight(code, len, mat, parts, undefined, tier, undefined);
+    setMat(''); setTier(undefined); // Changing product invalidates, never calculates silently.
   };
 
   const doTemplate = async () => {
@@ -793,6 +819,11 @@ export default function CustomQuoteV2Page() {
       message.warning('请先填上方「品类」和「整体长度」');
       return;
     }
+    const key = inputKeyRef.current; const sequence = ++quoteSeq.current;
+    setHeavy(null);
+    const chosen = await confirmQuote({identity: ptype, costOnly: true, materials: partOpts.materials,
+      detail: `长${hlen}m / 深${tDepth ?? '标准'}cm / 高${tHeight ?? '标准'}cm；模板自动出板`});
+    if (!chosen || key !== inputKeyRef.current || sequence !== quoteSeq.current) return;
     setTplLoading(true);
     try {
       const body: Record<string, unknown> = { category: ptype.trim(), length_cm: hlen * 100 };
@@ -802,15 +833,17 @@ export default function CustomQuoteV2Page() {
       if (tDoors != null) body.doors = tDoors;
       const r = await apiPost<
         HeavyResult & { generated_boards: { part: string; material: string; length_cm: number; width_cm: number; qty: number }[] }
-      >('/v2/quote-from-template', body);
+      >('/v2/quote-from-template', confirmedBody({...body, main_material: chosen.material, price_tier: chosen.tier}));
+      if (key !== inputKeyRef.current || sequence !== quoteSeq.current) return;
       setBoards(
         (r.generated_boards || []).map((b, i) => ({
           key: i + 1, part: b.part, material: b.material,
           length_cm: b.length_cm, width_cm: b.width_cm, qty: b.qty,
         })),
       );
-      setHeavy(r);
-      message.success('已按外形自动出板单(满配上限·只高不低, 请删减到实际再算价)');
+      // Generated boards change the request; require a fresh confirmation before displaying a price.
+      setHeavy(null);
+      message.success('板单已生成，请核对各部件材料后确认并算价');
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -823,17 +856,25 @@ export default function CustomQuoteV2Page() {
       message.warning('请填品类和整体长度');
       return;
     }
+    const key = inputKeyRef.current; const sequence = ++quoteSeq.current;
+    setHeavy(null);
+    const chosen = await confirmQuote({ identity: ptype, costOnly: true,
+      materials: boards.filter(b => !b.is_accessory).map(b => b.material),
+      detail: boards.map(b => `${b.part}: ${b.material} ${b.length_cm}×${b.width_cm}×${b.qty}`).join('；') });
+    if (!chosen || key !== inputKeyRef.current || sequence !== quoteSeq.current) return;
     setHeavyLoading(true);
     setHeavy(null);
     try {
-      const r = await apiPost<HeavyResult>('/v2/quote-heavy', {
+      const r = await apiPost<HeavyResult>('/v2/quote-heavy', confirmedBody({
+        main_material: chosen.material, price_tier: chosen.tier,
         product_type: ptype.trim(),
         length_m: hlen,
         boards: boards.filter((b) => b.part || b.material).map((b) => ({
           part: b.part, material: b.material, length_cm: b.length_cm, width_cm: b.width_cm,
           qty: b.qty, unit: b.unit || '平方米', is_accessory: b.is_accessory,
         })),
-      });
+      }));
+      if (key !== inputKeyRef.current || sequence !== quoteSeq.current) return;
       setHeavy(r);
     } catch (e) {
       message.error((e as Error).message);
@@ -922,7 +963,7 @@ export default function CustomQuoteV2Page() {
                 {clsImages.length} 张图
               </Tag>
             )}
-            <Checkbox checked={autoQuote} onChange={(e) => setAutoQuote(e.target.checked)}>识别后自动算价</Checkbox>
+            <Checkbox checked={autoQuote} onChange={(e) => setAutoQuote(e.target.checked)}>识别后打开报价确认（不自动算价）</Checkbox>
             </Space>
             <Space>
             {running && (
@@ -1005,7 +1046,7 @@ export default function CustomQuoteV2Page() {
           {candidates.length > 0 && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
-                匹配产品(不一定准, 选错可改后自动重算):
+                匹配产品(不一定准, 修改后需重新确认):
               </Text>
               <Select
                 style={{ width: 440 }}
@@ -1029,7 +1070,7 @@ export default function CustomQuoteV2Page() {
               <Select
                 style={{ width: 440 }}
                 value={selectedSku}
-                onChange={(v) => { setSelectedSku(v); runLight(pcode, len, mat, parts, undefined, tier, v); }}
+                onChange={(v) => { setSelectedSku(v); setMat(''); setTier(undefined); }}
                 allowClear
                 loading={skuLoading}
                 disabled={skuLoading || skuCandidates.length === 0}
@@ -1038,7 +1079,7 @@ export default function CustomQuoteV2Page() {
                   : '选具体 SKU → 锁定该变体计算'}
                 options={skuCandidates.map((s) => ({
                   value: s.sku_code,
-                  label: `${Math.round(s.confidence * 100)}%　${s.sku_name}${s.price != null ? `　¥${s.price}` : ''}`,
+                  label: `${Math.round(s.confidence * 100)}%　${s.sku_name} · ${s.sku_code}`,
                 }))}
               />
             </Space>
@@ -1064,21 +1105,17 @@ export default function CustomQuoteV2Page() {
               value={mat || undefined}
               onChange={(v) => setMat(v ?? '')}
               style={{ width: 220 }}
-              placeholder="改材质(下拉选, 可空)"
+              placeholder="主材候选（算价前须再确认）"
               allowClear
               showSearch
               options={partOpts.woods.map((w) => ({ value: w, label: w }))}
             />
             <Select
               value={tier}
-              onChange={(v) => { setTier(v); if (pcode) runLight(pcode, len, mat, parts, undefined, v); }}
-              style={{ width: 160 }}
-              options={[
-                { value: 'big', label: '报价档·大促' },
-                { value: 'mid', label: '报价档·中促' },
-                { value: 'big_buyer', label: '大促到手价' },
-                { value: 'mid_buyer', label: '中促到手价' },
-              ]}
+              onChange={(v) => setTier(v)}
+              placeholder="价格口径（未确认）"
+              style={{ width: 260 }}
+              options={QUOTE_TIERS}
             />
             <Button type="primary" loading={lightLoading} onClick={doLight}>
               算价

@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-26.3'
+VERSION = '2026-09-27.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -53,6 +53,8 @@ NODES = [
     node('price.current','日常/中促/大促价格','price','PricingSku.daily_price / mid_promo / big_promo','models/pricing.py'),
     node('price.version','历史价格版本','price','PricingVersion','services/pricing_version_service.py'),
     node('price.formula','定价公式','price','PricingFormula','models/pricing_formula.py'),
+    node('quote.confirm','每次报价显式确认','price','本次精确SKU / 价格口径 / 主材 / 请求快照','services/quote_confirmation.py','class ConfirmedQuoteIn','前端每次重选，后端缺确认或请求变化拒绝；不是修改价表或客户发送'),
+    node('quote.calculate','确认后定制计算','price','v2_quote_light / v2_quote_both / 板单模板','api/customization.py','def v2_quote_light','精确SKU所属和所选价字段必有；旧截图直接估价停用，板单只用明确成本口径'),
     node('campaign.mapping','淘宝商品SKU映射','campaign','TaobaoListing / SkuIdentity','models/taobao_listing.py'),
     node('campaign.window','精确活动窗口与计划','campaign','CampaignPlan','models/campaign.py'),
     node('campaign.files','模板与价格文件','campaign','campaign_workflow_service','services/campaign_workflow_service.py'),
@@ -178,6 +180,11 @@ EDGES = [
     edge('bom.lines','bom.drift','计算BOM成本差异','有可计算的物料价格','空价格不当零','services/pricing_bom_sync_service.py','def check_sku'),
     edge('bom.drift','price.current','禁止自动改售价','成本漂移只产生提示','售价仍由原定价流程决定','services/pricing_bom_sync_service.py',kind='protect'),
     edge('price.formula','price.current','派生价格字段','显式重算入口','日常/中促/大促口径不能互换','services/pricing_calc_service.py'),
+    edge('product.sku','quote.confirm','确认本次款式','精确SKU属于产品','不自动选择代表档','services/quote_confirmation.py','def validate_light_context'),
+    edge('price.current','quote.confirm','区分表价和到手价','明确price_tier且字段有值','不得跨价型回退','services/quote_confirmation.py','def validate_light_context'),
+    edge('bom.material','quote.confirm','显式确认具体主材','每次确认含本次输入','沿用原材也须确认，不静默沿用历史','services/quote_confirmation.py'),
+    edge('quote.confirm','quote.calculate','校验通过才计算','三项确认及完整请求一致','修改输入后必须新确认','api/customization.py','def v2_quote_both'),
+    edge('quote.calculate','price.current','禁止报价改价表','只读计算','不写原价格、成本、物料记录','services/custom_quote_v2_service.py','def quote_light',kind='protect'),
     edge('price.current','price.version','保存价格版本','版本服务入口','历史版本边界需核对','services/pricing_version_service.py',evidence='review'),
     edge('price.version','finance.estimate','按订单日期取价','历史快照存在','不得用现价覆盖历史依据','services/order_cost_service.py','def _asof_pricing'),
     edge('product.sku','campaign.mapping','规格身份映射','ERP编码与平台SKU唯一','缺失不猜映射','models/sku_identity.py'),

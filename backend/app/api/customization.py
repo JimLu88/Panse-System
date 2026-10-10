@@ -1,7 +1,7 @@
 """尺寸微定制 API (业务需求 §2)."""
 import asyncio
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services import customization_ai_service, customization_service
+from app.services.quote_confirmation import ConfirmedQuoteIn, PriceTier, validate_light_context
 
 router = APIRouter(prefix="/api/customization", tags=["customization"])
 
@@ -118,23 +119,8 @@ async def ai_quote(
     image: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    data = await image.read()
-    mime = image.content_type or "image/jpeg"
-    result = await asyncio.to_thread(customization_ai_service.ai_quote, db, data, mime)
-    _log_quote(db, source="ai_quote", user_message=f"{result.base_product or ''} {result.changes}",
-               ai_response=" | ".join(f"{b.label}:{b.amount}" for b in result.breakdown),
-               model=result.model, extra={"est_price": result.est_price, "base_sku": result.base_sku})
-    return AiQuoteOut(
-        base_product=result.base_product,
-        base_sku=result.base_sku,
-        base_size=result.base_size,
-        changes=result.changes,
-        est_price=result.est_price,
-        breakdown=[PriceBreakdownItemOut(**b.__dict__) for b in result.breakdown],
-        ai_used=result.ai_used,
-        model=result.model,
-        error=result.error,
-    )
+    # Old image-only API has no exact SKU/tier/material confirmation contract.
+    raise HTTPException(409, '请进入定制报价页 /custom-quote-v2，识别后明确确认款式、价型和主材；旧截图直接估价已停用')
 
 
 @router.post("/confirm", response_model=ConfirmOut, status_code=201)
@@ -256,7 +242,9 @@ class BoardIn(BaseModel):
     is_drawer_rail: bool = False
 
 
-class BoardQuoteIn(BaseModel):
+class BoardQuoteIn(ConfirmedQuoteIn):
+    price_tier: Literal['cost_quote']
+    main_material: str = Field(..., min_length=1)
     product_type: str
     length_m: float
     overall_width_m: Optional[float] = None
@@ -292,6 +280,8 @@ class BoardQuoteOut(BaseModel):
 
 @router.post("/board-quote", response_model=BoardQuoteOut)
 def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
+    if payload.main_material.strip() not in {b.material.strip() for b in payload.boards if not b.is_accessory}:
+        raise HTTPException(422, '确认的主材必须是本次板单中的具体材料')
     """按板单实时算价 (单价/人工/系数全从后台配置读)."""
     from app.services import custom_quote_service as q
     from app.services import custom_quote_config_service as cfg_svc
@@ -345,17 +335,17 @@ class V2ClassifyIn(BaseModel):
     image_count: int = 0
 
 
-class V2QuoteLightIn(BaseModel):
+class V2QuoteLightIn(ConfirmedQuoteIn):
     base_product_code: str = Field(..., min_length=1)
     target_length_m: Optional[float] = None
     target_width_cm: Optional[float] = None
     target_height_cm: Optional[float] = None
-    target_material: Optional[str] = None
+    target_material: str = Field(..., min_length=1)
     add_parts: list[dict] = Field(default_factory=list)
     remove_parts: list[dict] = Field(default_factory=list)
     modify_parts: list[dict] = Field(default_factory=list)
-    price_tier: str = "big"
-    base_sku_code: Optional[str] = None
+    price_tier: PriceTier
+    base_sku_code: str = Field(..., min_length=1)
     category: Optional[str] = None      # quote-both 用: 纯定制口径出板单的品类(空则从产品取)
     lower_cabinet_height_cm: Optional[float] = None   # quote-both 用: 下柜高(门/玻璃取尺寸)
     description: Optional[str] = None                  # quote-both 用: 选组合SKU的BOM
@@ -372,7 +362,9 @@ class V2BoardIn(BaseModel):
     is_drawer_rail: bool = False
 
 
-class V2QuoteHeavyIn(BaseModel):
+class V2QuoteHeavyIn(ConfirmedQuoteIn):
+    price_tier: Literal['cost_quote']
+    main_material: str = Field(..., min_length=1)
     product_type: str = Field(..., min_length=1)
     length_m: float = Field(..., gt=0)
     boards: List[V2BoardIn] = Field(default_factory=list)
@@ -485,6 +477,7 @@ def v2_sku_candidates(
 def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
     """普通定制报价: 真实SKU锚点价 + 尺寸/材质/增减部位 delta (0 AI, 纯算术)。"""
     from app.services import custom_quote_v2_service as v2
+    validate_light_context(db, payload)
     r = v2.quote_light(
         db, base_product_code=payload.base_product_code,
         target_length_m=payload.target_length_m,
@@ -506,6 +499,7 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
 def v2_quote_both(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
     """命中标准产品时并排两种口径: spec=按我们的规格(锚点) + custom=纯定制方向(板单引擎), 用户拍板选用。"""
     from app.services import custom_quote_v2_service as v2
+    validate_light_context(db, payload)
     r = v2.quote_both(
         db, base_product_code=payload.base_product_code, category=payload.category,
         target_length_m=payload.target_length_m,
@@ -529,6 +523,8 @@ def v2_quote_both(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dic
 def v2_quote_heavy(payload: V2QuoteHeavyIn, db: Session = Depends(get_db)) -> dict:
     """特殊定制报价: 板单 → quote_from_spec 引擎 + 自动推五金。"""
     from app.services import custom_quote_v2_service as v2
+    if payload.main_material.strip() not in {b.material.strip() for b in payload.boards if not b.is_accessory}:
+        raise HTTPException(422, '确认的主材必须是本次板单中的具体材料')
     boards = [
         {"part": b.part, "material": b.material, "length_cm": b.length_cm,
          "width_cm": b.width_cm, "qty": b.qty, "unit": b.unit,
@@ -580,7 +576,8 @@ def v2_quote_logs(limit: int = 50, db: Session = Depends(get_db)) -> dict:
     } for r in rows]}
 
 
-class V2TemplateIn(BaseModel):
+class V2TemplateIn(ConfirmedQuoteIn):
+    price_tier: Literal['cost_quote']
     category: str = Field(..., min_length=1)
     length_cm: float = Field(..., gt=0)
     depth_cm: Optional[float] = None
@@ -589,7 +586,7 @@ class V2TemplateIn(BaseModel):
     drawers: Optional[int] = None
     doors: Optional[int] = None
     shelves: Optional[int] = None
-    main_material: Optional[str] = None
+    main_material: str = Field(..., min_length=1)
     back_material: Optional[str] = None
     drawer_material: Optional[str] = None
 
