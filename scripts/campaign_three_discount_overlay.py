@@ -38,7 +38,10 @@ def overlay(offers):
     entries=[]
     for name in WINDOWS:
         for item in sorted(ITEMS):
-            folder=ROOT/name/item;terminal=folder/'terminal.json'
+            folder=ROOT/name/item
+            latest=ROOT.parent/'enamel-final-rotation/discounts'/name
+            if item=='1090473184978' and ((latest/'terminal.json').exists() or (latest/'include-intent.json').exists()):folder=latest
+            terminal=folder/'terminal.json'
             if terminal.exists():
                 raw=terminal.read_bytes();entry=json.loads(raw)
                 entry['_evidence']={'path':str(terminal),'sha256':hashlib.sha256(raw).hexdigest(),'kind':'exact_three_verified_correction'}
