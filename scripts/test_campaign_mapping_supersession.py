@@ -12,6 +12,14 @@ def sample(tmp_path):
 def test_current_replaces_not_mutates(tmp_path):
  s=sample(tmp_path);old=deepcopy(s);assert apply(s)==[s[1]];assert s==old
 
+def test_unrelated_aliases_preserved(tmp_path):
+ s=sample(tmp_path)
+ aliases=[{'item':'7','erp_code':'other','sku':'8'},{'item':'7','erp_code':'other','sku':'9'}]
+ for source in s:source['document']['restored'].extend(deepcopy(aliases))
+ assert apply(s)==[s[1]]
+ s[1]['document']['restored'][-1]['sku']='10'
+ with pytest.raises(ValueError,match='unrelated mapping changed'):apply(s)
+
 @pytest.mark.parametrize('change',['scope','sku','proof','predecessor'])
 def test_rejects_drift(tmp_path,change):
  s=sample(tmp_path);d=s[1]['document']
