@@ -35,14 +35,14 @@ def verify_withdrawal():
 class ThreeReentryAuthority(Authority):
     def blocked(self,campaign,phase,start,end,*,historical_only=False):
         result=super().blocked(campaign,phase,start,end,historical_only=historical_only)
-        if phase!='signup' or campaign!=CAMPAIGN:return result
+        if phase!='signup' or campaign!=CAMPAIGN or (start,end)!=('2026-10-20 20:00:00','2026-11-13 23:59:59'):return result
         verify_withdrawal()
         attempts=[dict(r) for r in self.db.execute('SELECT id,item,status FROM attempts WHERE campaign=? AND phase=?',(campaign,phase))]
         # A separately registered outcome is never erased by this exact attempt
         # waiver. Current source inspection found no such outcomes for these 3.
         extra=set()
         for source in self.sources():
-            doc=source['document']
+            doc=source['document'] or {}
             if doc.get('phase')=='signup' and doc.get('campaign')==campaign:
                 extra.update(r['item'] for r in doc.get('items',[]) if r.get('status') in ('success','unknown'))
             if '/'.join(str(doc.get(k,'')) for k in ('campaign_id','united_activity_id','sign_record_id'))==campaign:
