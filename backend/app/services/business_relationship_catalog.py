@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-09-26.3'
+VERSION = '2026-10-10.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -72,6 +72,7 @@ NODES = [
     node('factory.archive','不可变已发图片档案','factory','ImportedFile.row_summary.rendered_line','services/order_sheet_archive_service.py','def archive_sent_line_snapshot'),
     node('factory.void','原图作废与更正','factory','order_line_delivery_service','services/order_line_delivery_service.py'),
     node('factory.order','工厂采购/生产单据','factory','FactoryOrder','models/order.py','class FactoryOrder'),
+    node('factory.cards','工厂制作单身份与搜索','factory','Order.order_no / OrderDetail.sub_order_no / factory_no','api/orders.py','def factory_production','只读母单卡片；有效子单编号优先，多个编号全部显示，不修改生产或发货状态'),
     node('purchase.quote','询价与供应商决策','purchase','ProcurementTask','models/procurement.py'),
     node('purchase.parts','配件采购与到货','purchase','PartPurchase','models/order.py','class PartPurchase'),
     node('purchase.supplier','供应商资料与评分','purchase','Supplier / SupplierScore','models/supplier.py'),
@@ -130,6 +131,8 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('order.child','factory.cards','投影有效子单工厂编号与搜索身份','导入子单且需工厂处理、未退款/关闭/发货，排除母单汇总行','多编号显示完整列表；存在导入子单时不回退旧母单编号；不写订单或发送消息','api/orders.py','def factory_production'),
+    edge('order.parent','factory.cards','搜索订单号与兼容旧单编号','原在制筛选不变，无导入子单才兼容母单编号','延期状态、数量、编辑/重推入口仍属原母单，不据显示标签推定子单已发货','api/orders.py','def factory_production',kind='protect'),
     edge('finance.installation_lines','finance.freight','保留商品明细并归一整单费用','万师傅导出包含同单多商品','全部明细保留；整单费用只记一次；不把商品序号当购买数量','services/wanshifu_order_service.py','def _coalesce_order_records'),
     edge('product.sku','product.taobao_links','按精确编码读取当前淘宝映射','产品精选/全列/SKU展开','不拼接不同款式ID，不用历史备用SKU；缺失与冲突可见','services/product_taobao_links.py','def build_link_maps'),
     edge('finance.agg_settlement','order.parent','以母订单号关联收款凭据','账单含淘宝订单编号或主订单id','原单号逐笔核对；没有订单列则拒绝导入，不将扣款或保证金误当订单收款','services/settlement_import_service.py','def import_bill'),

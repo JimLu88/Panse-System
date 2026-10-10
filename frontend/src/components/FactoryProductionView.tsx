@@ -136,8 +136,8 @@ export default function FactoryProductionView() {
     } else if (sortBy === 'factory_no') {
       arr.sort((a, b) => {
         // 正式工厂单按畔色号升序；远期单不占工厂号，排在正式单之后并按远期序号升序。
-        const aFactory = a.factory_no ?? Number.MAX_SAFE_INTEGER;
-        const bFactory = b.factory_no ?? Number.MAX_SAFE_INTEGER;
+        const aFactory = a.factory_nos?.[0] ?? a.factory_no ?? Number.MAX_SAFE_INTEGER;
+        const bFactory = b.factory_nos?.[0] ?? b.factory_no ?? Number.MAX_SAFE_INTEGER;
         if (aFactory !== bFactory) return aFactory - bFactory;
         const aRemote = a.remote_seq ?? Number.MAX_SAFE_INTEGER;
         const bRemote = b.remote_seq ?? Number.MAX_SAFE_INTEGER;
@@ -343,7 +343,7 @@ export default function FactoryProductionView() {
           ]}
         />
         <span style={{ color: '#ddd' }}>｜</span>
-        <Input.Search placeholder="按产品搜索(名称/编码/SKU)" allowClear style={{ width: 240 }}
+        <Input.Search placeholder="订单号/工厂单号/产品名称/编码/SKU" allowClear style={{ width: 340 }}
           onSearch={setProdQ} onChange={(e) => { if (!e.target.value) setProdQ(''); }} />
       </Space>
       {/* 按紧急度分类筛选(点色块切换) */}

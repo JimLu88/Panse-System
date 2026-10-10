@@ -177,7 +177,7 @@ def export_factory_dispatch(
 
 @router.get("/factory-production")
 def factory_production(
-    product: Optional[str] = Query(None, description="产品名称/编码/SKU 模糊搜索 (含内部产品名)"),
+    product: Optional[str] = Query(None, description="订单号/子订单号/工厂单号/产品名称/编码/SKU"),
     db: Session = Depends(get_db),
 ):
     """工厂制作单视图: 列出"已付款待发货"(在工厂制作中)的订单卡片。
@@ -185,7 +185,7 @@ def factory_production(
     默认发货截止 = 下单日 + 30天; 手动 ship_deadline 优先；客户延期单在备注
     明确写“开始制作”前按远期挂起，写明后才按客户确认的新日期倒计时。
     days_left = 生效截止 − 今天(负数=超期)。
-    product 非空时只返回匹配该产品(名称/编码/SKU/内部名)的订单卡片。
+    product 非空时匹配订单身份或产品(名称/编码/SKU/内部名)。
     """
     from app.models.product import Product
     # DB 里状态可能是中文/遗留写法(等待卖家发货/买家已付款…), 用规范化函数判"已付款待发货"。
@@ -197,6 +197,30 @@ def factory_production(
     ).scalars().all()
     # 在制口径与配件采购视图共用 order_service.is_in_factory_production (已付款待发货且未退款)
     orders = [o for o in all_orders if order_service.is_in_factory_production(o)]
+    from app.models.order import OrderDetail
+    from app.services.order_line_delivery_service import is_master_summary_line, line_is_refunded
+    imported_by_order: dict[str, list[OrderDetail]] = {}
+    order_nos = [o.order_no for o in orders]
+    if order_nos:
+        for line in db.execute(select(OrderDetail).where(
+            OrderDetail.order_no.in_(order_nos), OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None), OrderDetail.sub_order_no != "",
+        ).order_by(OrderDetail.id)).scalars():
+            imported_by_order.setdefault(line.order_no, []).append(line)
+    # Read-only identity projection. Do not copy a child's number into the parent.
+    active_by_order = {
+        number: [line for line in lines if line.factory_delivery_required
+                 and not line_is_refunded(line) and not is_master_summary_line(db, line)
+                 and order_service.normalize_status(line.line_status) in {"paid", "production"}]
+        for number, lines in imported_by_order.items()
+    }
+    factory_nos = {
+        o.order_no: sorted({line.factory_no for line in active_by_order.get(o.order_no, [])
+                            if line.factory_no is not None})
+        if o.order_no in imported_by_order else ([o.factory_no] if o.factory_no is not None else [])
+        for o in orders
+    }
+    product = (product or "").strip()
     if product:
         # 按产品搜索: 内部产品名(产品总表反查编码) + 订单自带名称/编码/SKU 模糊
         from app.models.product import Product as _P
@@ -206,6 +230,11 @@ def factory_production(
         s = product.lower()
 
         def _match(o: Order) -> bool:
+            lines = active_by_order.get(o.order_no, [])
+            identities = [o.order_no, *(line.sub_order_no for line in lines),
+                          *(f"畔色{n}单" for n in factory_nos[o.order_no])]
+            if any(s in str(value).lower() for value in identities if value):
+                return True
             if o.product_code and o.product_code in pcodes:
                 return True
             return any(s in (getattr(o, f) or "").lower()
@@ -229,6 +258,10 @@ def factory_production(
         days = schedule["days_left"]
         st = schedule["urgency"]
         _rdate = schedule["remote_resume_date"]
+        numbers = factory_nos[o.order_no]
+        label = "、".join(f"畔色{n}单" for n in numbers)
+        if not label and st == "remote":
+            label = f"远期单{o.remote_seq}" if o.remote_seq else "远期单"
         out.append({
             "id": o.id,
             "order_no": o.order_no,
@@ -265,11 +298,11 @@ def factory_production(
             ),
             "taobao_remote_report_keyword": o.taobao_remote_report_keyword,
             "status": st,   # remote/overdue/critical/urgent/normal
-            "factory_no": o.factory_no,
+            "factory_no": numbers[0] if len(numbers) == 1 else None,
+            "factory_nos": numbers,
             "remote_seq": o.remote_seq,
             # 工厂下单号显示 (用户 2026-07-09): 远期单→"远期单N"(内部序号, 不占工厂号); 正式单→"畔色N单"; 未排→空
-            "order_label": (f"远期单{o.remote_seq}" if o.remote_seq else "远期单") if st == "remote"
-                           else (f"畔色{o.factory_no}单" if o.factory_no else ""),
+            "order_label": label,
             "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
         })
     return out
