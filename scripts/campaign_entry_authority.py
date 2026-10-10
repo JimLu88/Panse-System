@@ -141,7 +141,8 @@ class Authority:
             except (OSError,ValueError):
                 if source['kind']!='fixed':raise
                 result.append({**source,'path':str(path),'document':None,'unavailable':True})
-        return result
+        from campaign_mapping_supersession import apply
+        return apply(result)
 
     def correct_fixed_floor_source(self, old_path, old_sha, new_path, new_sha):
         """Audited precision-only replacement; cannot rebase originals or scope."""
