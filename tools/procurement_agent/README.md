@@ -16,16 +16,32 @@ ERP 不能远程把执行器从 `dry_run` 切到 `live`。
 
 - token 只放环境变量 `PROCUREMENT_AGENT_TOKEN`，不写配置文件、不提交 Git。
 - sidecar 不接收或保存淘宝、1688、拼多多、小红书的密码和 cookie。
-- 同一家商家只有一个租约，避免两台电脑重复发送。
+- ERP 租约不能单独保证平台不重复发送；租约过期不是“未发送”证据。
 - 平台回执用 `external_message_id` 幂等，重复回调不会重复记账。
-- 三次可重试失败后自动转人工；验证码、账号异常、加微信应由驱动立即返回
-  `outcome=manual`。
+- review/live 必须配置仓库外的固定绝对路径 `send_journal_path`；缺失即拒绝运行。
+  同一桌面的所有配置/进程必须共用一个账本，不按 agent_id 或新租约换账本。
+- 调用发送驱动前先持久记录任务、商家和消息轮次；数据库写入失败时不调用驱动。
+  不存正文、Cookie、令牌或完整 URL。OS 文件锁覆盖搜索、会话轮转及发送。
+- 发送异常、超时、确认回调丢失、未知输出一律禁止自动重发；即使驱动声称
+  `retryable=true` 也不接受。未决记录同时暂停后续发送、搜索与会话切换。
+- 验证码、账号异常、加微信应由驱动返回 `outcome=manual`；该轮次仍保留并停机待核。
+  搜索发现阶段与发送不同，既有搜索失败重试规则暂不改动。
 - 每个渠道按 ERP 任务的每日上限领取，不提供绕过平台限制的功能。
+
+这是 0.1.1 的本机保守止损层，不是完整自主询价系统。尚未实现 ERP 原子发送意图、
+账号级全局名额、一次只读核对和安全解除隔离、跨机接管或 48 小时截止。旧客户端、
+不同账本路径或人工操作不在此锁的保护内。不要删除账本/换路径/换 agent_id 来恢复，
+不要将 SQLite 文件放网络盘；未决结果应保留到后续正式核对流程处理。当前不开放真实
+供应商联调，P6 的同一批 10 家才做真实收发验收。
 
 ## 启动
 
 先把 `config.example.json` 复制到仓库外的本机配置目录，保持 `mode=dry_run`，
 再运行：
+
+`dry_run` 可保持 `send_journal_path=null`。未来启用 review/live 前，应将它设为本机
+私有目录下的绝对路径（例如 `C:/Users/Jane/Desktop/AI/procurement-agent/send-journal.sqlite3`），
+并验证同桌面所有执行器共用同一路径。本次改造没有自动创建常驻进程或打开 live 开关。
 
 ```powershell
 $env:PROCUREMENT_AGENT_TOKEN = '<与 ERP 一致的独立令牌>'
@@ -40,6 +56,10 @@ python -m tools.procurement_agent --config 'C:\Users\Jane\Desktop\AI\procurement
 `browser_review_driver.mjs` 使用单独的采购 Chrome 档案，绝不读取个人 Chrome
 档案。它能执行候选搜索并打开商品页面；发送阶段只展示审核页、复制 ERP 已确认话术，
 由采购人员亲自在平台发送并点击“我已在平台实际发送”。它不会自动点击发送、下单或付款。
+
+0.1.1 不再把人工按钮确认伪装成平台回读，也不生成 `human-review-*` 平台消息 ID。
+人工点“已发送”后转入待核对；超时同样不能说未发送。旧人工流程因此会保守停在待核对，
+不再自动推进到追问；补齐真实回读前不将其宣传为可连续使用的采购流程。
 
 首次联调前分别人工登录（登录结果只留在本机采购 Chrome 档案）：
 
@@ -96,12 +116,36 @@ JSON 对象。
 {"outcome": "manual", "reason": "出现验证码或商家要求加微信"}
 ```
 
-可重试失败：
+发送结果不确定（禁止自动重发）：
 
 ```json
-{"outcome": "failed", "reason": "窗口暂时未找到", "retryable": true}
+{"outcome": "unknown", "reason": "发送或回读超时", "retryable": false}
 ```
 
 轮询回复时输入的 `operation` 为 `poll_replies`，返回
 `{"replies": [...]}`。每条回复必须包含 `inquiry_id`、
 `external_message_id`、`content`；报价字段可选。
+
+完整落地范围与仍缺能力见 `docs/procurement-send-safety-20260926.md`。离线测试使用临时
+SQLite 和 MockDriver，不代表平台权限、真实收件或平台消息回读已经验收。
+
+## 0.1.2：48 小时批次持久协议（尚非可用自动采购）
+
+`bounded_runtime.BoundedDispatcher` 复用同一 `SendJournal` 文件和跨进程锁，
+通过独立 dispatch-v1 机器接口完成预留、短期许可、落盘、单次发送、回执补记、一次只读核对。
+默认主循环没有启用它：现有 `ExternalCommandDriver` 和人工 review 驱动不能满足最终点击检查，
+不允许用于新协议。不把“兼容方法存在”当作真实平台适配已完成。
+
+- 发送许可用 Windows 当前用户 DPAPI 加密后落盘；没有明文回退。ERP 令牌仍只在环境变量中。
+- API 要求既有采购专用令牌，并将 `X-Procurement-Executor` 与服务端明确登记的执行器匹配。
+- `PROCUREMENT_DISPATCH_EXECUTOR_ID` 为空时拒绝整个新协议。
+- `PROCUREMENT_DISPATCH_ENABLED` 默认不设；只有值为 `1` 才能申请预留/新许可。
+  停新发送后仍允许原回执补记、未知状态归档与一次只读核对。**当前不要开启该开关**。
+- 本机停止标志在准备前及最后点击前检查。服务端停止后最多已有 5 秒在途许可，
+  不能宣称撤销能追回已交给平台的输入。
+- 服务器确认丢失时保存平台回执，重启只重试补记；不再次调用发送或申请许可。
+- 许可响应丢失/落盘失败时不点击，保守保留待人工核对；不自动释放未知名额。
+- 原始聊天正文不进本机恢复表，只有标识摘要、加密短许可和最小回执；私有账本放仓库外。
+
+详情：`docs/procurement-local-dispatch-20260926.md`。协议合同联调仅使用合成商家、
+临时数据库及内存 HTTP 测试客户端；真实三平台驱动、自动收件、附件子意图、报价前五和部署仍待完成。

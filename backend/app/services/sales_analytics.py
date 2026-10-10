@@ -25,6 +25,7 @@ from app.models.material import Material
 from app.models.order import FactoryOrder, Order
 from app.models.product import Product
 from app.services import product_coder
+from app.services.order_purchase_facts import sales_projections
 
 # ── 真实成交订单口径 (用户拍板 2026-06-17) ─────────────────────────────────────
 # 只算「买家已付款且成交」的单, 全系统统一口径, 不能疏漏:
@@ -93,6 +94,9 @@ class SalesSummary:
 def _profit_for(o: Order, coef: dict, aftersales: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     """统一会计成本口径 (用户拍板 2026-06-18 全系统同口径): 返回 (真实收入, 会计总成本, 利润, 物理成本)。
     真实收入=实付−退款; 会计总成本=物理+物流+安装/上楼+额外售后(按订单归属)+平台扣点(实付−实收)+税。"""
+    if getattr(o, "_quantity_only", False):
+        return (Decimal("0"),) * 4
+    o = getattr(o, "_financial_source", o)
     from app.services import order_financials as ofin
     revenue = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)   # 收入扣退款 (统一口径)
     return (revenue, ofin.accounting_cost(o, coef, aftersales=aftersales),
@@ -129,7 +133,7 @@ def summary(db: Session, *, start: date, end: date,
     orders = db.execute(q).scalars().all()
     if brand:
         orders = [o for o in orders if brand_of(o) == brand]
-
+    orders = [o for o in sales_projections(db, orders) if not getattr(o, "_quantity_only", False)]
     # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
     name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
 
@@ -187,6 +191,7 @@ def product_breakdown(
     ).scalars().all()
     if brand:
         orders = [o for o in orders if brand_of(o) == brand]
+    orders = sales_projections(db, orders)
     # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
     name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
     from app.services import order_financials as ofin
@@ -196,14 +201,17 @@ def product_breakdown(
     for o in orders:
         revenue, cost, net, phys = _profit_for(o, coef, Decimal(as_by_order.get(o.order_no, 0)))
         key = (o.product_code or "?", o.sku_code or o.sku or "?")
-        d = by_sku.setdefault("|".join(key), {
+        quantity_only = getattr(o, "_quantity_only", False)
+        d = by_sku.setdefault("|".join(key) + ("|quantity_only" if quantity_only else ""), {
             "product_code": o.product_code,
             "product_name": name_map.get(o.product_code) or o.product_name,
             "sku_code": o.sku_code, "sku": o.sku,
             "qty": 0, "revenue": Decimal("0"), "phys": Decimal("0"),
             "cost": Decimal("0"), "net_profit": Decimal("0"),
+            "money_pending": quantity_only, "unknown_quantity_count": 0,
         })
-        d["qty"] += o.qty or 1
+        d["qty"] += o.qty or 0
+        d["unknown_quantity_count"] += int(getattr(o, "_quantity_unknown", False))
         d["revenue"] += revenue
         d["cost"] += cost              # 会计总成本
         d["phys"] += phys              # 物理成本 (算毛利率用)
@@ -665,6 +673,7 @@ def _internal_names(db: Session, codes: set[str]) -> tuple[dict[str, str], dict[
 
 
 def _sales_summary(db: Session, orders: list[Order], *, top_n: int) -> dict:
+    orders = [o for o in sales_projections(db, orders) if not getattr(o, "_quantity_only", False)]
     name_map, canon_map = _internal_names(db, {o.product_code for o in orders if o.product_code})
     revenue = Decimal("0")
     count = 0
@@ -757,6 +766,7 @@ def product_ranking(
     ).scalars().all()
 
     # #19/#25: 用内部短名(Product.name)替淘宝长名 + 合并 P↔PPS 前缀漂移去重
+    orders = sales_projections(db, orders)
     name_map, canon_map = _internal_names(db, {o.product_code for o in orders if o.product_code})
 
     buckets: dict[str, dict[str, dict]] = {}
@@ -777,15 +787,21 @@ def product_ranking(
         d = bp.setdefault(key, {
             "product_code": canon, "product_name": name,
             "qty": 0, "revenue": Decimal("0"), "net_profit": Decimal("0"), "order_count": 0,
+            "unallocated_order_count": 0, "unknown_quantity_count": 0,
         })
         if iname and d["product_name"] != iname:
             d["product_name"] = iname     # 优先内部短名 (同款 P/PPS 合并后统一显示)
-        d["qty"] += int(o.qty or 1)
+        d["qty"] += int(o.qty or 0)
+        d["unknown_quantity_count"] += int(getattr(o, "_quantity_unknown", False))
+        if getattr(o, "_quantity_only", False):
+            d["unallocated_order_count"] += 1
+            continue
         # #25 总销售额去退款: 实付 - 退款 (全退订单计 0)
         rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)
         d["revenue"] += rev if rev > 0 else Decimal("0")
         # 净利 = 实付−退款−会计总成本; 与逐单核对/月度P&L 同口径 (order_financials.net_profit)
-        d["net_profit"] += ofin.net_profit(o, coef, aftersales=Decimal(as_by_order.get(o.order_no, 0)))
+        d["net_profit"] += ofin.net_profit(getattr(o, "_financial_source", o), coef,
+                                           aftersales=Decimal(as_by_order.get(o.order_no, 0)))
         d["order_count"] += 1
 
     def _rate(np_: Decimal, rev: Decimal) -> float:
@@ -834,6 +850,8 @@ def product_ranking(
                 "net_profit": float(r["net_profit"]),       # 利润额 (¥) — 利润率榜旁显示 (用户要)
                 "profit_rate": _rate(r["net_profit"], r["revenue"]),  # 利润率 (0~1)
                 "order_count": r["order_count"],
+                "unallocated_order_count": r["unallocated_order_count"],
+                "unknown_quantity_count": r["unknown_quantity_count"],
             })
 
     return {

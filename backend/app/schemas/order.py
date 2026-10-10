@@ -46,6 +46,10 @@ class OrderStatusChange(BaseModel):
 
 class OrderOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    platform_remark_tags: Optional[str] = None
+    platform_remark_tags_source: Optional[str] = None
+    customer_shipping_month: Optional[str] = None
+    customer_shipping_month_source: Optional[str] = None
     id: int
     platform: str
     order_no: str

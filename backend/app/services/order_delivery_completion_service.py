@@ -71,20 +71,17 @@ def complete_recovered_order_delivery(
     }
     error = str(delivery.get("_error") or "") if delivery.get("_run_status") == "fail" else ""
 
-    factory_dispatch = None
-    if not error:
-        try:
-            factory_dispatch = factory_dispatch_feishu_service.sync_if_enabled(db)
-        except Exception as exc:  # noqa: BLE001 - keep the order chain retryable
-            db.rollback()
-            factory_dispatch = {
-                "ok": False,
-                "errors": [f"{type(exc).__name__}: {exc}"],
-            }
-        result["factory_dispatch"] = factory_dispatch
-        if not factory_dispatch.get("ok"):
-            details = "; ".join(str(item) for item in (factory_dispatch.get("errors") or [])[:5])
-            error = f"飞书系统下单表同步失败: {details or '未知原因'}"
+    # Projection now represents unknown production facts safely. One held image
+    # must not hide unrelated rows; still retain BOTH independent failure states.
+    try:
+        factory_dispatch = factory_dispatch_feishu_service.sync_if_enabled(db)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        factory_dispatch = {"ok": False, "errors": [f"{type(exc).__name__}: {exc}"]}
+    result["factory_dispatch"] = factory_dispatch
+    if not factory_dispatch.get("ok"):
+        details = "; ".join(str(item) for item in (factory_dispatch.get("errors") or [])[:5])
+        error = '; '.join(x for x in [error, f"飞书系统下单表同步失败: {details or '未知原因'}"] if x)
 
     if error:
         result["_run_status"] = "fail"
@@ -129,11 +126,15 @@ def complete_recovered_order_delivery(
         db.commit()
         return result
 
-    pushed = int(delivery.get("images_pushed") or 0)
+    parent_pushed = int(delivery.get("images_pushed") or 0)
+    line_pushed = int(delivery.get("line_images_pushed") or 0)
+    pushed = parent_pushed + line_pushed
     deferred = int(delivery.get("images_deferred_no_address") or 0)
     detail = (
-        f"恢复来源={source}；下单图送达{pushed}张；"
-        f"地址脱敏暂缓{deferred}张；工厂下单表已同步"
+        f"恢复来源={source}；下单图送达{pushed}张"
+        f"（主单{parent_pushed}张、子单{line_pushed}张）；"
+        f"地址脱敏暂缓{deferred}张；"
+        + ("工厂下单表自动同步已关闭，未同步" if factory_dispatch.get('skipped') else "工厂下单表已同步并回读")
     )
     if is_current_business_day:
         automation_pipeline_service.record_stage(
@@ -166,6 +167,8 @@ def complete_recovered_order_delivery(
             "order_batch_id": order_batch_id,
             "order_business_date": order_business_date,
             "images_pushed": pushed,
+            "parent_images_pushed": parent_pushed,
+            "line_images_pushed": line_pushed,
             "images_deferred_no_address": deferred,
             "factory_dispatch": {
                 "ok": bool((factory_dispatch or {}).get("ok")),

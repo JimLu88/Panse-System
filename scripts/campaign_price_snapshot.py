@@ -1,0 +1,156 @@
+"""One read-only ERP pricing snapshot; no prepare chain or platform operations."""
+import argparse
+from copy import deepcopy
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+ROOT = Path(__file__).resolve().parents[1]
+SQL = """BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+SET LOCAL statement_timeout = '20s';
+SELECT row_to_json(q) FROM (
+ SELECT s.product_code, s.sku_code AS code, s.product_name, s.sku AS sku_name,
+ p.taobao_item_id::text AS item, p.taobao_sku_id::text AS sku,
+ p.alt_taobao_sku_ids AS alt, s.daily_price::text AS daily,
+ p.mid_buyer_price::text AS medium_target, p.big_buyer_price::text AS big_target,
+ s.is_custom_placeholder AS custom, g.listing_status,
+ g.taobao_id AS product_item_id, g.alt_taobao_ids AS product_alt_item_ids,
+ s.updated_at::text AS price_updated_at, p.updated_at::text AS mapping_updated_at
+ FROM pricing_sku s LEFT JOIN pricing_sku_promo p ON p.sku_code=s.sku_code
+ LEFT JOIN products g ON g.code=s.product_code ORDER BY s.product_code,s.sku_code
+) q;
+SELECT json_build_object('_catalog_state',true,'delisted_skuids',value_plain)
+FROM system_settings WHERE key='delisted_skuids' AND is_secret=false;
+SELECT json_build_object('_item_exclusion',true,'item',taobao_item_id,'reason',reason,'source',source)
+FROM campaign_item_exclusions WHERE active=true ORDER BY taobao_item_id;
+SELECT json_build_object('_custom_correspondence',true,'document',value_plain::json)
+FROM system_settings WHERE key='campaign_custom_correspondence_724042164333_20260927' AND is_secret=false;
+COMMIT;
+"""
+
+
+class SnapshotRows(list):
+    """One transaction's prices plus non-price listing registry evidence."""
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def load_rows():
+    command = 'sudo -n /var/packages/ContainerManager/target/usr/bin/docker exec -i panse-system-db-1 psql -X -v ON_ERROR_STOP=1 -U panse -d panse_erp -At'
+    run = subprocess.run(['C:/Program Files/Git/usr/bin/ssh.exe', '-i', str(Path.home()/'.ssh/panse_nas'), '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=15', '-p', '2222', '15068803006@DS923plus', command], input=SQL, capture_output=True, text=True, encoding='utf-8', timeout=45, check=True)
+    parsed = [json.loads(line) for line in run.stdout.splitlines() if line.startswith('{')]
+    rows = SnapshotRows(r for r in parsed if not r.get('_catalog_state') and not r.get('_item_exclusion') and not r.get('_custom_correspondence'))
+    aliases=[r['document'] for r in parsed if r.get('_custom_correspondence')]
+    if len(aliases)>1:raise ValueError('custom_correspondence_not_unique')
+    rows.registered_custom_correspondence=aliases[0] if aliases else None
+    from campaign_custom_correspondence_policy import approved_rows
+    approved_rows(rows.registered_custom_correspondence)
+    rows.registered_item_exclusions = [{k:r[k] for k in ('item','reason','source')}
+                                      for r in parsed if r.get('_item_exclusion')]
+    state=[r for r in parsed if r.get('_catalog_state')]
+    if len(state)>1:raise ValueError('catalog_registry_not_unique')
+    rows.registered_delisted_sku_ids=json.loads(state[0]['delisted_skuids']) if state else []
+    if not isinstance(rows.registered_delisted_sku_ids,list) or not all(isinstance(s,str) and s.isdigit() for s in rows.registered_delisted_sku_ids):
+        raise ValueError('invalid_delisted_sku_registry')
+    if not rows or len({r['code'] for r in rows}) != len(rows):
+        raise ValueError('empty_or_duplicate_erp_snapshot')
+    return rows
+
+
+def apply_rotation_receipt(rows, receipt):
+    """A provenance-bearing file overlay, never a database mapping mutation."""
+    result = deepcopy(rows)
+    if receipt.get('official_success') is not True:
+        raise ValueError('rotation_receipt_not_confirmed')
+    mapping = receipt.get('new_sku_mapping') or {}
+    if not mapping or len(set(mapping.values())) != len(mapping):
+        raise ValueError('invalid_rotation_mapping')
+    for old, new in mapping.items():
+        candidates = [r for r in result if old in [str(r.get('sku')), *map(str, r.get('alt') or [])] or new in [str(r.get('sku')), *map(str, r.get('alt') or [])]]
+        if len(candidates) != 1 or candidates[0]['item'] not in receipt['item_ids']:
+            raise ValueError('rotation_identity_not_unique:' + old)
+        row = candidates[0]
+        evidence={'old': old, 'new': new, 'batch': receipt['batch_id']}
+        if evidence not in row.setdefault('rotation_source_ids', []):
+            row['rotation_source_ids'].append(evidence)
+        if str(row.get('sku')) == old:
+            row['sku'] = new
+        row['alt'] = list(dict.fromkeys(new if str(x) == old else str(x) for x in row.get('alt') or []))
+        row['alt'] = [x for x in row['alt'] if x != row.get('sku')]
+    return result
+
+
+def build_snapshot(rows, receipt=None):
+    from campaign_custom_correspondence_policy import approved_rows
+    correspondence=deepcopy(getattr(rows,'registered_custom_correspondence',None))
+    approved_rows(correspondence)
+    resolved = apply_rotation_receipt(rows, receipt) if receipt is not None else deepcopy(rows)
+    active = [r for r in resolved if r.get('listing_status') == '在售']
+    ids = set()
+    for r in active:
+        for value in [r.get('item'), r.get('product_item_id'), *(r.get('product_alt_item_ids') or [])]:
+            if str(value or '').isdigit():
+                ids.add(str(value))
+    exclusions = deepcopy(getattr(rows,'registered_item_exclusions',[]))
+    excluded = exclusion_ids({'registered_item_exclusions':exclusions})
+    return {
+        'schema': 'campaign_erp_price_snapshot_v1', 'captured_at': datetime.now(timezone.utc).isoformat(),
+        'source': 'ERP pricing_sku + pricing_sku_promo + products, one repeatable-read read-only transaction',
+        'erp_price_version_sha256': digest(rows), 'resolved_price_version_sha256': digest(resolved),
+        'rotation_receipt_sha256': digest(receipt) if receipt else None,
+        'database_write': False, 'platform_write': False, 'no_sales_filter_applied': False,
+        'registered_delisted_sku_ids': sorted(set(getattr(rows,'registered_delisted_sku_ids',[]))),
+        'registered_item_exclusions': exclusions,
+        'registered_custom_correspondence': correspondence,
+        'item_exclusions_source': 'campaign_item_exclusions active rows in the same read-only ERP transaction',
+        'catalog_registry_source': 'system_settings.delisted_skuids in the same read-only ERP transaction',
+        'all_erp_rows': resolved, 'current_sellable_item_ids': sorted(ids-excluded),
+        'unknown_listing_status_codes': [r['code'] for r in resolved if not r.get('listing_status')],
+        'unmapped_sellable_codes': [r['code'] for r in active if not r.get('item') or not r.get('sku')],
+        'notes': 'ERP listing status is a local source, not a fresh platform scan. All raw rows and unknown states are retained. Use the current official template for actual enabled SKU range; never use historical no-sales to filter. Daily/medium/big are stored values, not recomputed. Custom original floors must come from separate confirmed provenance, not current daily.',
+    }
+
+
+def exclusion_ids(snapshot):
+    rows=snapshot.get('registered_item_exclusions',[])
+    if not isinstance(rows,list):raise ValueError('invalid_item_exclusion_registry')
+    ids=[]
+    for r in rows:
+        if not isinstance(r,dict) or not isinstance(r.get('item'),str) or not r['item'].isascii() or not r['item'].isdigit() or not r.get('reason') or not r.get('source'):
+            raise ValueError('invalid_item_exclusion_registry')
+        ids.append(r['item'])
+    if len(ids)!=len(set(ids)):raise ValueError('duplicate_item_exclusion_registry')
+    return set(ids)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--rotation-receipt', type=Path)
+    args = parser.parse_args()
+    if args.output.exists():
+        raise ValueError('snapshot_output_already_exists_no_overwrite')
+    receipt = json.loads(args.rotation_receipt.read_text(encoding='utf-8-sig')) if args.rotation_receipt else None
+    snapshot = build_snapshot(load_rows(), receipt)
+    from campaign_entry_authority import Authority, file_sha
+    authority=Authority()
+    try:
+        if args.rotation_receipt:
+            authority.register_source(args.rotation_receipt,'rotation',file_sha(args.rotation_receipt))
+        snapshot=authority.resolve_snapshot(snapshot)
+    finally:
+        authority.close()
+    from campaign_sku_fact_store import bind_latest
+    snapshot = bind_latest(snapshot)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open('x', encoding='utf-8') as stream:
+        json.dump(snapshot, stream, ensure_ascii=False, indent=2)
+    print(json.dumps({k:v for k,v in snapshot.items() if k not in ('all_erp_rows', 'notes')}, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()

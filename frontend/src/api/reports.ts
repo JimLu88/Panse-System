@@ -12,6 +12,8 @@ export interface RankRow {
   net_profit?: number;    // 利润额 (¥) — metric=profit 时返回
   profit_rate?: number;   // 利润率 (0~1) — metric=profit 时返回
   order_count: number;
+  unallocated_order_count?: number;
+  unknown_quantity_count?: number;
 }
 
 export interface RankPeriod {

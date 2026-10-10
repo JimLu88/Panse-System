@@ -15,7 +15,7 @@ from decimal import Decimal
 from html import escape
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
@@ -287,6 +287,15 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
         _notes.append(f"<b>生产备注</b> {e(sheet.production_note)}")
     note_html = ("<div class='z'><div class='zt'>客户备注　NOTE</div>"
                  f"<div class='zb' style='color:#dc2626;font-weight:700'>{'<br>'.join(_notes)}</div></div>") if _notes else ""
+    # A custom/top-up link's purchased units may be money units, not furniture.
+    quantity_link = any(w in ((sheet.sku or '') + (sheet.product_name or ''))
+                        for w in ('定制', '咨询', '补差', '差价', '补拍'))
+    quantity_text = (f'拍下数量 {int(sheet.qty)}；成品件数以确认备注为准'
+                     if quantity_link or sheet.is_custom_variant
+                     else f'本子单共 {int(sheet.qty)} 件（不是整笔主订单合计）')
+    if getattr(sheet, 'quantity_confirmation', None):
+        from app.services.factory_production_evidence import purchase_quantity_label
+        quantity_text = f'已确认成品 {int(sheet.qty)} 件（原拍下数量 {purchase_quantity_label(sheet.purchase_qty)}）'
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
@@ -298,8 +307,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
 <title>{e(sheet.sheet_title)}</title><style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}}
 body{{background:#fff;}}
-.page{{width:1684px;height:1190px;background:#fff;padding:22px;}}
-.card{{position:relative;width:1640px;height:1146px;background:#fff;border:3px solid {A};}}
+.page{{width:1684px;min-height:1190px;background:#fff;padding:22px;}}
+.card{{position:relative;width:1640px;min-height:1146px;background:#fff;border:3px solid {A};}}
 table{{border-collapse:collapse;}}
 .hd{{width:100%;height:150px;background:none;color:#000;}}
 {hd_extra}
@@ -336,7 +345,8 @@ table{{border-collapse:collapse;}}
 <table class="mid"><tr>
   <td class="pic">{pic_html}</td>
   <td class="zwrap">
-    <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
+    <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br><b>本SKU：{e(sheet.sku or '规格待核对')}</b>　<span style="font-size:20px">{e(sheet.sku_code or '编码待核对')}</span><br>{mat_txt}</div></div>
+    <div class="z"><div class="zt">数量核对　QUANTITY</div><div class="zb" style="font-size:36px;font-weight:900;color:#dc2626">{e(quantity_text)}</div></div>
     {note_html}
     <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}</div></div>
     <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
@@ -494,6 +504,10 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
+    if any(getattr(w, 'code', '') == 'variant_size_unverified' for w in getattr(sheet, 'warnings', [])):
+        raise ValueError('本SKU专属尺寸未核实，不能用其他规格尺寸发送生产单')
+    if any(getattr(w, 'code', '') == 'production_quantity_unverified' for w in getattr(sheet, 'warnings', [])):
+        raise ValueError('定制拍下数量不是已核成品件数，停止自动生产发送，待核对实物数量')
     return _html_to_png(render_html(sheet), width=1684)
 
 
@@ -544,6 +558,7 @@ def archive_sent_line_snapshot(
     content: bytes,
     *,
     source: str = "factory_push",
+    rendered_sheet: "factory_sheet.FactorySheet | None" = None,
 ) -> ImportedFile:
     """归档已发送的子订单商品图；这是新链路的唯一送达凭证。"""
     from app.services import order_flags
@@ -571,6 +586,15 @@ def archive_sent_line_snapshot(
             "render_width": 1684,
             "pushed": True,
             "line_delivery": True,
+            # Never reconstruct a historical rendered quantity from a mutable row.
+            "rendered_line": ({
+                "schema": "factory-line-v2", "qty": int(rendered_sheet.qty),
+                "sku_code": rendered_sheet.sku_code,
+                "product_code": rendered_sheet.product_code,
+                "purchase_qty": rendered_sheet.purchase_qty,
+                "quantity_confirmation": rendered_sheet.quantity_confirmation,
+                "content_sha256": __import__('hashlib').sha256(content).hexdigest(),
+            } if rendered_sheet is not None else None),
             # 激活态是送达幂等的一部分。缺少它会让下一轮
             # repush_activated 把刚发成功的子订单再次判成旧图并重推。
             "activated": order_flags.is_activated(order),
@@ -579,7 +603,9 @@ def archive_sent_line_snapshot(
     return result.file
 
 
-def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
+def reconcile_order_line_delivery(
+    db: Session, *, limit: int = 50, only_sub_order_nos: set[str] | None = None,
+) -> dict:
     """按淘宝子订单逐件生成并推送尚未送达的实体商品。
 
     仅处理 ``factory_delivery_required`` 的新/已迁移行；历史未绑定记录不会被全量重推。
@@ -597,14 +623,19 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
         return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "no_chat_id"}
+    from app.services import factory_quantity_request_service
+    factory_quantity_request_service.complete_pending_receipts(db, only_sub_order_nos=only_sub_order_nos)
     sent = line_delivery.sent_line_evidence(db)
     pushed: list[str] = []
     failed: list[dict] = []
     for line in line_delivery.active_lines(db):
         sub_order_no = str(line.sub_order_no or "")
+        if only_sub_order_nos is not None and sub_order_no not in only_sub_order_nos:
+            continue
         if sub_order_no in sent or len(pushed) + len(failed) >= limit:
             continue
-        if line.factory_delivery_state in {"sending_caption", "sending_image", "uncertain"}:
+        if (line.factory_delivery_state in {"rendering", "sending_caption", "sending_image", "uncertain", "sent"}
+                or line.factory_delivery_message_id):
             failed.append({
                 "order_no": line.order_no,
                 "sub_order_no": sub_order_no,
@@ -628,6 +659,19 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
                 "deferred": "address_masked",
             })
             continue
+        # Claim the row before rendering. Parallel scheduler/manual workers must
+        # not both deliver it; a process crash leaves a visible, non-replayable claim.
+        claimed = db.execute(update(OrderDetail).where(
+            OrderDetail.id == line.id,
+            or_(OrderDetail.factory_delivery_state.is_(None),
+                OrderDetail.factory_delivery_state.in_(["", "failed"])),
+            or_(OrderDetail.factory_delivery_message_id.is_(None),
+                OrderDetail.factory_delivery_message_id == ""),
+        ).values(factory_delivery_state="rendering"))
+        if claimed.rowcount != 1:
+            db.rollback()
+            failed.append({"sub_order_no": sub_order_no, "reason": "子单已被其他执行占用，未重复发送"})
+            continue
         if line.factory_no is None:
             line.factory_no = line_delivery.next_factory_no(db)
             db.flush()
@@ -644,18 +688,38 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
                 line.id,
                 address_pending_for_production=address_pending_for_production,
             )
+            if any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
+                from app.services import factory_quantity_request_service as quantities
+                line.factory_delivery_state = 'failed'
+                line.factory_delivery_error = '实际成品数量待确认，请回复飞书对应数量卡片并 @机器人'
+                db.commit()
+                question = quantities.request_quantity(db, line_id=line.id)
+                failed.append({'order_no': order.order_no, 'sub_order_no': sub_order_no,
+                               'factory_no': line.factory_no, 'reason': line.factory_delivery_error,
+                               'quantity_question': question})
+                continue
             png = render_png(sheet)
             image_key = feishu_client.upload_image(db, png)
             line.factory_delivery_state = "sending_image"
             db.commit()
             send_stage = "sending_image"
             image_result = feishu_client.send_image(db, chat_id, image_key) or {}
-            archive_sent_line_snapshot(db, order, line, png)
+            if not _feishu_message_id(image_result):
+                raise RuntimeError("飞书未返回消息ID，送达结果未知，不自动重发")
+            archive_sent_line_snapshot(db, order, line, png, rendered_sheet=sheet)
             line.factory_delivery_state = "sent"
             line.factory_delivery_sent_at = datetime.now().astimezone()
             line.factory_delivery_message_id = _feishu_message_id(image_result)
             db.commit()
             pushed.append(sub_order_no)
+            # The image has already been sent: a failed explanatory message must
+            # never roll its state back to failed/uncertain or cause another image.
+            try:
+                from app.services import factory_quantity_request_service as quantities
+                quantities.complete_delivery(db, line)
+            except Exception:
+                db.rollback()
+                _logger.exception('数量确认解释发送未完成，保留已发送状态 line=%s', line.id)
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             line = db.get(OrderDetail, line.id)
@@ -668,6 +732,7 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
             failed.append({
                 "order_no": order.order_no,
                 "sub_order_no": sub_order_no,
+                "factory_no": getattr(line, 'factory_no', None),
                 "reason": f"{type(exc).__name__}: {exc}"[:500],
             })
             _logger.warning("子订单下单图发送失败 %s", sub_order_no, exc_info=True)
@@ -692,6 +757,11 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
     )
     sent = line_delivery.sent_line_evidence(db)
     already_void = line_delivery.void_line_evidence(db)
+    failed: list[dict] = [
+        {"sub_order_no": sub, "reason": "作废通知结果未知，需核对飞书回执，未自动重发"}
+        for sub, record in already_void.items()
+        if (record.row_summary or {}).get("delivery_state") == "unknown"
+    ]
     targets = [
         line for line in line_delivery.physical_lines(db)
         if line.sub_order_no
@@ -700,14 +770,13 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
         and str(line.sub_order_no) not in already_void
     ]
     if not targets:
-        return {"voided": 0, "failed": 0, "sub_order_nos": [], "failures": []}
+        return {"voided": 0, "failed": len(failed), "sub_order_nos": [], "failures": failed}
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "notify_disabled"}
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
         return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "no_chat_id"}
     voided: list[str] = []
-    failed: list[dict] = []
     for line in targets[:limit]:
         order = db.execute(select(Order).where(Order.order_no == line.order_no)).scalar_one_or_none()
         if order is None:
@@ -716,8 +785,9 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
             sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
             content = render_void_png(sheet)
             image_key = feishu_client.upload_image(db, content)
-            feishu_client.send_image(db, chat_id, image_key)
-            import_storage.archive(
+            label = f"畔色{line.factory_no}单"
+            notice = f"{label}已作废（订单关闭／退款成功）。请停止制作、不要发货；本消息不是新增下单。"
+            record = import_storage.archive(
                 db,
                 content=content,
                 original_name=(
@@ -736,9 +806,26 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
                     ),
                     "render_width": 1684,
                     "line_void": True,
-                    "pushed": True,
+                    "pushed": False,
+                    "delivery_state": "unknown",
+                    "void_notice_version": 2,
+                    "notice_text": notice,
                 },
-            )
+            ).file
+            # 发送前持久化，超时或进程中断不能导致下一轮盲目重发。
+            db.commit()
+            # 文本与图片在同一条消息中，防止只收到一张像新下单的图片。
+            receipt = feishu_client.send_card(db, chat_id, {
+                "header": {"template": "red", "title": {"tag": "plain_text", "content": f"作废通知｜{label}"}},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "plain_text", "content": notice}},
+                    {"tag": "img", "img_key": image_key, "alt": {"tag": "plain_text", "content": f"{label} 作废"}},
+                ],
+            })
+            if not receipt.get("message_id"):
+                raise RuntimeError("作废通知未取得飞书消息回执，需核对，不能视为发送成功")
+            record.row_summary = dict(record.row_summary, pushed=True,
+                                      delivery_state="sent", delivery_message_id=receipt["message_id"])
             db.commit()
             voided.append(str(line.sub_order_no))
         except Exception as exc:  # noqa: BLE001
@@ -1479,6 +1566,15 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     unexplained_line_missing = sorted(gate_missing - address_deferred)
     result["line_delivery_gate"]["deferred_no_address"] = sorted(address_deferred)
     result["line_delivery_gate"]["unexplained_missing_sub_order_nos"] = unexplained_line_missing
+    if line_gate.get("master_summary_sent_sub_order_nos"):
+        errors.append(
+            "主订单汇总被作为子订单发送，需人工确认处理；未自动作废或重发: "
+            + ",".join(line_gate["master_summary_sent_sub_order_nos"])
+        )
+    result['line_content_unverified'] = line_gate.get('content_unverified', [])
+    if line_gate.get('content_mismatches'):
+        errors.append('已发送图与当前SKU/件数不一致，未自动重发: ' + ','.join(
+            str(item.get('sub_order_no')) for item in line_gate['content_mismatches']))
     if unexplained_line_missing or line_gate.get("unvoided_refunded_sub_order_nos"):
         errors.append(
             "子订单送达数量不一致: 有效商品 "
@@ -1840,13 +1936,14 @@ def push_daily(db: Session) -> dict:
 # 归档 kind=order_sheet_void (档案页单独分类), 删掉原下单图, 只生成一次并推送。
 
 _VOID_OVERLAY = """
-<div style="position:fixed;inset:0;pointer-events:none;z-index:99;">
-  <div style="position:absolute;inset:0;background:
-    linear-gradient(45deg, transparent 47.5%, rgba(220,38,38,.8) 47.5%, rgba(220,38,38,.8) 52.5%, transparent 52.5%),
-    linear-gradient(-45deg, transparent 47.5%, rgba(220,38,38,.8) 47.5%, rgba(220,38,38,.8) 52.5%, transparent 52.5%);"></div>
-  <div style="position:absolute;top:42%;left:50%;transform:translate(-50%,-50%) rotate(-16deg);
-    font-size:56px;font-weight:900;color:#dc2626;background:rgba(255,255,255,.88);
-    border:6px solid #dc2626;padding:10px 36px;border-radius:10px;white-space:nowrap;">已退款 · 作废</div>
+<!-- wkhtmltoimage 的旧 Qt 不支持 inset；使用明确坐标和尺寸。 -->
+<div data-void-notice-version="2" style="position:absolute;top:0;left:0;width:100%;height:1190px;pointer-events:none;z-index:99;">
+  <div style="position:absolute;top:365px;left:24%;width:52%;text-align:center;
+    font-size:230px;line-height:1.2;font-weight:900;color:#dc2626;background:#fff;
+    border:14px solid #dc2626;padding:10px;white-space:nowrap;">作废</div>
+  <div style="position:absolute;top:690px;left:15%;width:70%;text-align:center;
+    font-size:48px;font-weight:900;color:#dc2626;background:#fff;
+    border:4px solid #dc2626;padding:15px;">订单已作废 · 停止制作 · 禁止发货<br>作废通知，不是新增下单</div>
 </div>
 """
 

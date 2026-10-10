@@ -24,6 +24,7 @@ from app.models.procurement import (
     ProcurementTask,
 )
 from app.services import ai_provider, settings_service
+from app.services import procurement_batch_service as batches
 
 
 CHANNELS = ("taobao", "1688", "pinduoduo", "xiaohongshu")
@@ -114,13 +115,13 @@ def clean_search_queries(values: Iterable[str], *, fallback: list[str]) -> list[
 
 def create_task(db: Session, payload: dict[str, Any], *, created_by: str) -> ProcurementTask:
     channels = _clean_channels(payload.get("channels") or ["taobao"])
-    planned = int(payload.get("planned_merchant_count") or 10)
+    planned = payload.get("planned_merchant_count", 10)
     sample = int(payload.get("ab_test_sample_size") or 0)
-    if not 1 <= planned <= 50:
+    if type(planned) is not int or not 1 <= planned <= 50:
         raise ValueError("计划询问商家数必须在 1 到 50 之间")
     if not 0 <= int(payload.get("max_followup_rounds") or 0) <= 5:
         raise ValueError("自动追问轮数必须在 0 到 5 之间")
-    if payload.get("ab_test_enabled", True):
+    if payload.get("ab_test_enabled", False):
         if sample < 2 or sample > planned:
             raise ValueError("A/B 测试商家数必须在 2 到计划询问数之间")
     else:
@@ -165,13 +166,16 @@ def create_task(db: Session, payload: dict[str, Any], *, created_by: str) -> Pro
         followup_intervals_hours=intervals,
         planned_merchant_count=planned,
         max_followup_rounds=int(payload.get("max_followup_rounds") or 0),
-        ab_test_enabled=bool(payload.get("ab_test_enabled", True)),
+        ab_test_enabled=bool(payload.get("ab_test_enabled", False)),
         ab_test_sample_size=sample,
         script_a=(payload.get("script_a") or "").strip() or None,
         script_b=(payload.get("script_b") or "").strip() or None,
         status="draft",
         created_by=created_by,
+        batch_policy_version=payload.get("batch_policy_version"),
     )
+    if task.batch_policy_version not in {None, batches.POLICY_VERSION}:
+        raise ValueError("不支持的采购批次策略版本")
     if task.category not in CATEGORIES:
         raise ValueError(f"不支持的采购类型: {task.category}")
     if task.execution_mode not in {"assisted", "agent"}:
@@ -225,6 +229,7 @@ def _extract_json(text: str) -> dict[str, Any]:
 
 def generate_scripts(db: Session, task: ProcurementTask) -> dict[str, Any]:
     """AI 生成 A/B 话术；调用失败时明确回落到本地模板。"""
+    batches.require_draft(task)
     fallback = fallback_scripts(task)
     cfg = settings_service.get_ai_config(db, "diagnose")
     if not cfg.get("api_key"):
@@ -317,6 +322,7 @@ def review_scripts(
     人工确认不等于必须改字。若 AI 原稿已经准确，采购人员可以原样确认；
     真正发送前仍需在商家询价记录上进行逐条最终确认。
     """
+    batches.require_draft(task)
     actual_a = (script_a or "").strip()
     actual_b = (script_b or "").strip()
     if not actual_a:
@@ -356,12 +362,15 @@ def prepare_inquiries(
     ).scalars().all()
     if existing:
         return list(existing)
+    batches.require_draft(task)
     if task.scripts_reviewed_at is None:
         raise ValueError("请先人工确认 A/B 话术，再生成商家询价队列")
     if not task.script_a or (task.ab_test_enabled and not task.script_b):
         raise ValueError("已确认话术不完整，请重新检查 A/B 文案")
 
     seeds = merchant_seeds or []
+    if len(seeds) > task.planned_merchant_count:
+        raise ValueError("商家数量超过本批计划，不能静默丢弃或扩大联系范围")
     channels = _clean_channels(task.channels or ["taobao"])
     rows: list[ProcurementInquiry] = []
     seen_candidate_keys: set[str] = set()
@@ -470,6 +479,10 @@ def experiment_metrics(db: Session, task: ProcurementTask) -> dict[str, Any]:
 
 
 def apply_winner(db: Session, task: ProcurementTask, variant: Optional[str] = None) -> dict[str, Any]:
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
+        if not batches.window_open(task, now=utcnow()):
+            raise ValueError("批次未在有效执行窗口内，不能激活优胜话术队列")
     metrics = experiment_metrics(db, task)
     selected = variant or metrics["winner"]
     if selected not in ("A", "B"):
@@ -484,7 +497,8 @@ def apply_winner(db: Session, task: ProcurementTask, variant: Optional[str] = No
         row.message_variant = selected
         row.status = "ready"
     task.winning_variant = selected
-    task.status = "ready"
+    if not batches.bounded(task):
+        task.status = "ready"
     db.flush()
     return {"winner": selected, "activated": len(rows), "metrics": metrics}
 
@@ -558,6 +572,10 @@ def review_inquiry_message(
     reviewed_by: str,
 ) -> dict[str, Any]:
     """为某个商家的当前轮次保存一份可审计的人工确认稿。"""
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
+        if task.status in {"cancelled", "expired", "completed"} or (task.started_at and not batches.window_open(task, now=utcnow())):
+            raise ValueError("批次已关闭或不在执行窗口，不能再批准待发文案")
     overdue_waiting_reply = False
     if inquiry.status == "waiting_reply" and inquiry.next_followup_at is not None:
         due_at = inquiry.next_followup_at
@@ -610,6 +628,27 @@ def mark_message_sent(
     message_meta: Optional[dict[str, Any]] = None,
 ) -> ProcurementMessage:
     """仅供执行器在确认平台发送成功后回写。"""
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
+    server_now = utcnow()
+    if batches.bounded(task) and not task.started_at:
+        raise ValueError("批次尚未启动，不能标记发送")
+    if batches.is_supplement(task, now=server_now):
+        batches.close_batch(db, task, now=server_now)
+        actual = (content or inquiry.approved_message or "").strip()
+        if not actual:
+            raise ValueError("迟到回执必须提供实际内容")
+        message = ProcurementMessage(
+            inquiry_id=inquiry.id, direction="outbound", content=actual,
+            event_at=sent_at or server_now, external_message_id=external_message_id,
+            message_meta={**(message_meta or {}), "late_supplement": True,
+                          "confirmed_sent": False, "server_recorded_at": server_now.isoformat()},
+        )
+        db.add(message)
+        db.flush()
+        return message
+    if batches.bounded(task) and not batches.window_open(task, now=server_now):
+        raise ValueError("批次不在有效执行窗口内，不能标记发送")
     if inquiry.status in {"waiting_winner", "needs_manual", "completed"}:
         raise ValueError(f"当前状态 {inquiry.status} 不允许自动发送")
     suggested = (
@@ -672,6 +711,7 @@ def mark_message_sent(
                 else None
             ),
             **(message_meta or {}),
+            "server_recorded_at": server_now.isoformat(),
         },
     )
     inquiry.approved_message = None
@@ -701,10 +741,33 @@ def record_reply(
     message_meta: Optional[dict[str, Any]] = None,
 ) -> ProcurementMessage:
     """归档商家回复、识别人工接管点，并决定是否继续追问。"""
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
+        if not task.started_at:
+            raise ValueError("批次尚未启动，不能把历史回复记成本批结果")
     actual = content.strip()
     if not actual:
         raise ValueError("回复内容不能为空")
     now = received_at or utcnow()
+    server_now = utcnow()
+    evidence_meta = {
+        **(message_meta or {}), "server_recorded_at": server_now.isoformat(),
+        "quote_evidence": batches.json_value({
+            "quote_complete": quote_complete, "quote_amount": quote_amount,
+            "normalized_unit_price": normalized_unit_price, "quote_payload": quote_payload or {},
+            "response_quality": response_quality,
+        }),
+    }
+    if batches.is_supplement(task, now=server_now):
+        batches.close_batch(db, task, now=server_now)
+        message = ProcurementMessage(
+            inquiry_id=inquiry.id, direction="inbound", content=actual,
+            event_at=now, external_message_id=external_message_id,
+            message_meta={**evidence_meta, "late_supplement": True},
+        )
+        db.add(message)
+        db.flush()
+        return message
     inquiry.last_inbound_message = actual
     inquiry.last_message_at = now
     inquiry.first_response_at = inquiry.first_response_at or now
@@ -763,7 +826,7 @@ def record_reply(
         message_meta={
             "channel": inquiry.channel,
             "manual_reason": manual_reason,
-            **(message_meta or {}),
+            **evidence_meta,
         },
     )
     db.add(message)
@@ -832,6 +895,11 @@ def due_actions(
     actions = []
     remaining: dict[tuple[int, str], int] = {}
     for inquiry, task in db.execute(q).all():
+        if not batches.window_open(task, now=now):
+            continue
+        # The legacy agent does not enforce an atomic final-send permit.
+        if agent_only and batches.bounded(task):
+            continue
         key = (task.id, inquiry.channel)
         if key not in remaining:
             daily_limit = int((task.channel_daily_limits or {}).get(inquiry.channel, 1))
@@ -997,6 +1065,8 @@ def claim_discovery_actions(
     ).all()
     actions: list[dict[str, Any]] = []
     for inquiry, task in rows:
+        if batches.bounded(task):
+            continue  # P2/P3 protocol not ready; do not expose a legacy UI action.
         capability = _required_capability(task, inquiry)
         if capability not in capabilities:
             continue
@@ -1556,6 +1626,8 @@ def agent_watch_list(
     ).all()
     result = []
     for inquiry, task in rows:
+        if batches.bounded(task):
+            continue  # No new-batch platform polling before adapter acceptance.
         required = _required_capability(task, inquiry)
         if required not in capabilities:
             continue

@@ -53,6 +53,10 @@ from app.models.procurement import (  # noqa: F401 - 智能采购询价工作台
     ProcurementMessage,
     ProcurementTask,
 )
+from app.models.procurement_dispatch import (  # noqa: F401
+    ProcurementAccountBinding, ProcurementTaskAccount, ProcurementInputGroup,
+    ProcurementContactClaim, ProcurementSendIntent,
+)
 from app.models.scheduled_job import ScheduledJobRun
 from app.models.alert import Alert
 from app.models.inventory_lock import InventoryLockLedger
@@ -164,4 +168,9 @@ __all__ = [
     "ProcurementAgentState",
     "ProcurementInquiry",
     "ProcurementMessage",
+    "ProcurementInputGroup",
+    "ProcurementAccountBinding",
+    "ProcurementTaskAccount",
+    "ProcurementContactClaim",
+    "ProcurementSendIntent",
 ]

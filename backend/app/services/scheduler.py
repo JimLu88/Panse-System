@@ -1551,6 +1551,11 @@ def _job_order_sheets_daily(db: Session) -> dict:
     )
     if not agent_ingest_service.order_data_fresh(db, not_before_hour=18):
         upstream = automation_pipeline_service.get_pipeline(db, "order_delivery")
+        orch = agent_ingest_service._load_json(db, agent_ingest_service.KEY_ORCH_STATE)
+        if orch.get("running") and (orch.get("current") == "taobao_orders"
+                                    or orch.get("order_business_date") == date.today().isoformat()):
+            return {"skipped": "order_pull_in_progress", "_run_status": "skipped",
+                    "note": "原批次仍在取数，推送等待终态，不计为失败"}
         if upstream.get("failures") or upstream.get("waiting_input"):
             # 18:00 取数已经留下精确原因（如口令不匹配、登录失效、导入失败）时，
             # 18:10 推送门只应等待，不能再用通用“数据未刷新”覆盖原因或重复发一条失败。
@@ -1673,6 +1678,15 @@ def _job_pull_catchup(db: Session) -> dict:
             retry_times=_ORDER_RETRY_TIMES,
         )
 
+    recovered = ai.recover_order_receipt(db)
+    if recovered.get("recovered"):
+        ai.finalize_order_pull_after_shipping_password(db, on=date.today())
+    if recovered.get("reason") == "order_export_running":
+        return {"skipped": "order_pull_in_progress", "_run_status": "skipped"}
+    if recovered.get("reason") in ("invalid_order_receipt", "order_export_receipt_missing",
+                                   "receipt_artifact_ingest_failed"):
+        return _finish({"_run_status": "fail",
+                        "_error": "订单原批次回执需要程序核对，未重启取数：" + recovered["reason"]})
     if ai.order_data_fresh(db, not_before_hour=18):
         # 数据新鲜不等于图片已送达。即使口令回调或 18:30 日报在发送阶段中断，
         # 每小时补跑仍用 pushed 幂等标记收口，不重复发已成功的图片。
@@ -1752,7 +1766,9 @@ def _job_pull_catchup(db: Session) -> dict:
     )  # 强制补18:00后的订单快照，并复用同一业务批次号
     out = {
         "ran_orchestrate": True,
-        "tasks": len(res.get("tasks", [])),
+        "tasks": res.get("tasks") or [],
+        "task_count": len(res.get("tasks", [])),
+        "order_attempt_id": res.get("order_attempt_id"),
         "pending_manual": len(res.get("pending_manual", [])),
         "order_batch_id": res.get("order_batch_id") or active_batch_id,
         "order_business_date": res.get("order_business_date") or date.today().isoformat(),
@@ -2072,7 +2088,7 @@ def _job_campaign_discovery(db: Session) -> dict:
     → 落 CampaignCalendar → 距开始<3天飞书提醒运营报名 (同活动一天只提醒一次)。
     WA 失败 → 飞书报错「活动发现抓取失败请手动查看」。"""
     from app.services import campaign_discovery_service
-    result = campaign_discovery_service.run_daily_discovery(db)
+    result = campaign_discovery_service.run_periodic_discovery(db)
     if result.get("ok") is False:
         result["_run_status"] = "fail"
         result["_error"] = result.get("reason") or result.get("error")
@@ -2323,7 +2339,14 @@ def _job_review_asset_remind(db: Session) -> dict:
     }
 
 
+def _job_procurement_deadline(db: Session) -> dict:
+    from app.services.procurement_batch_service import close_due_batches
+    return close_due_batches(db)
+
+
 def _register_default_jobs() -> None:
+    register_job("procurement_deadline_1min", "采购48小时截止快照（不外发）",
+                 _job_procurement_deadline, interval_minutes=1)
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
     # 夜间模式 (2026-06-23): 深夜任务挪到 22:3x-22:5x 批量跑完, 让 NAS 盘 23:00-06:30 连续休眠
@@ -2614,6 +2637,11 @@ def start(timezone_name: Optional[str] = None) -> None:
     for job_id in _REGISTRY:
         _add_to_scheduler(job_id, overrides)
     _SCHEDULER.start()
+    factory_job = _SCHEDULER.get_job("feishu_sync_30min")
+    _logger.info("factory_dispatch_schedule: enabled=%s next_run_at=%s trigger=%s",
+                 bool(factory_job),
+                 factory_job.next_run_time.isoformat() if factory_job and factory_job.next_run_time else None,
+                 str(factory_job.trigger) if factory_job else None)
     # 启动补跑 (用户 2026-07-13 "现在补上"): 60s 后查一遍错过的关键班次(部署/重启撞触发点该班即丢),
     # 在名单宽限内且无运行记录 → 依序补跑。60s 让应用先热身, 也避开与 lifespan 其余初始化抢资源。
     from datetime import timedelta as _td

@@ -45,6 +45,8 @@ def line_is_factory_eligible(db: Session, line: OrderDetail, order: Order | None
         return False
     if line_is_refunded(line):
         return False
+    if is_master_summary_line(db, line):
+        return False
     text = f"{line.product_name or ''} {line.sku_name or ''}"
     if any(key in text for key in ("样块", "样品", "小样", "样木")):
         return False
@@ -53,6 +55,24 @@ def line_is_factory_eligible(db: Session, line: OrderDetail, order: Order | None
         return False
     topup, _reason = order_sheet_archive_service._is_parts_topup(db, order)
     return not topup
+
+
+def is_master_summary_line(db: Session, line: OrderDetail) -> bool:
+    """A parent-ID fallback without SKU is not another item beside real children.
+
+    Keep historical rows and sent receipts intact. Single-item legacy imports
+    without a distinct child identifier remain supported.
+    """
+    if (not line.order_no or line.sub_order_no != line.order_no
+            or line.sku_code or line.sku_name):
+        return False
+    return db.execute(select(OrderDetail.id).where(
+        OrderDetail.order_no == line.order_no,
+        OrderDetail.source == "import",
+        OrderDetail.sub_order_no.isnot(None),
+        OrderDetail.sub_order_no != "",
+        OrderDetail.sub_order_no != line.order_no,
+    ).limit(1)).scalar_one_or_none() is not None
 
 
 def active_lines(db: Session, order_no: str | None = None) -> list[OrderDetail]:
@@ -139,15 +159,73 @@ def delivery_count_gate(db: Session) -> dict:
     }
     unvoided_refunds = sorted(refunded_sent - set(voided))
     extra = sorted(set(sent) - active_ids - refunded_sent)
-    ok = len(active_ids) == len(sent_ids) and not missing and not unvoided_refunds
+    summary_sent = sorted(
+        str(line.sub_order_no) for line in physical_lines(db, required_only=False)
+        if is_master_summary_line(db, line)
+        and str(line.sub_order_no) in sent and str(line.sub_order_no) not in voided
+    )
+    content = audit_sent_line_content(active, sent)
+    ok = (len(active_ids) == len(sent_ids) and not missing
+          and not unvoided_refunds and not summary_sent and not content['mismatches'])
     return {
         "ok": ok,
         "active_product_count": len(active_ids),
         "sent_factory_sheet_count": len(sent_ids),
         "missing_sub_order_nos": missing,
         "extra_sent_sub_order_nos": extra,
+        "master_summary_sent_sub_order_nos": summary_sent,
         "unvoided_refunded_sub_order_nos": unvoided_refunds,
+        "content_verified": not content['mismatches'] and not content['unverified'],
+        "complete_verified": ok and not content['unverified'],
+        "content_mismatches": content['mismatches'],
+        "content_unverified": content['unverified'],
+        "expected_unit_count": sum(int(line.qty or 1) for line in active),
     }
+
+
+def audit_sent_line_content(lines: list[OrderDetail], sent: dict[str, ImportedFile]) -> dict:
+    """Read-only quantity/SKU reconciliation, independent of message count.
+
+    Callers may pass shipped/signed lines for historical incident audits.
+    Old evidence stays unknown; never backfill a made-up rendering snapshot.
+    """
+    mismatches, unverified = [], []
+    for line in lines:
+        evidence = sent.get(str(line.sub_order_no or ''))
+        if evidence is None or line_is_refunded(line):
+            continue
+        summary = evidence.row_summary or {}
+        snapshot = summary.get('rendered_line')
+        identity = {'order_no': line.order_no, 'sub_order_no': line.sub_order_no,
+                    'file_id': evidence.id, 'expected_qty': line.qty}
+        if not isinstance(snapshot, dict) or snapshot.get('schema') != 'factory-line-v2':
+            unverified.append({**identity, 'reason': 'historical_render_snapshot_missing'})
+            continue
+        wrong = []
+        confirmation = snapshot.get('quantity_confirmation')
+        valid_confirmation = (isinstance(confirmation, dict)
+            and confirmation.get('schema') == 'factory-quantity-v1'
+            and confirmation.get('identity', {}).get('line_id') == line.id
+            and confirmation.get('identity', {}).get('order_no') == line.order_no
+            and confirmation.get('identity', {}).get('sub_order_no') == line.sub_order_no
+            and confirmation.get('identity', {}).get('sku_code') == line.sku_code
+            and confirmation.get('identity', {}).get('purchase_qty') == line.qty
+            and confirmation.get('physical_qty') == snapshot.get('qty')
+            and snapshot.get('purchase_qty') == line.qty
+            and bool(confirmation.get('actor')) and bool(confirmation.get('evidence_ref')))
+        if confirmation and not valid_confirmation:
+            wrong.append('quantity_confirmation_invalid')
+        if snapshot.get('qty') != line.qty and not valid_confirmation:
+            wrong.append('quantity_changed')
+        if snapshot.get('sku_code') != line.sku_code:
+            wrong.append('sku_changed')
+        if snapshot.get('product_code') != line.product_code:
+            wrong.append('product_changed')
+        if not snapshot.get('content_sha256') or snapshot['content_sha256'] != evidence.file_hash:
+            wrong.append('image_hash_unverified')
+        if wrong:
+            mismatches.append({**identity, 'rendered_qty': snapshot.get('qty'), 'reasons': wrong})
+    return {'mismatches': mismatches, 'unverified': unverified}
 
 
 def bind_unambiguous_legacy_evidence(db: Session) -> dict:

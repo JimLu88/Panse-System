@@ -6,6 +6,7 @@ ERP 页面或远程 API 不能把执行器从 dry_run 提权到 live。
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import socket
@@ -17,6 +18,7 @@ from typing import Any, Optional
 from . import __version__
 from .client import AgentApiError, ProcurementApiClient
 from .drivers import DiscoveryResult, ExternalCommandDriver, PlatformDriver, SendResult
+from .send_journal import SendBlocked, SendJournal
 
 LIVE_ACK = "I_UNDERSTAND_MESSAGES_WILL_BE_SENT"
 
@@ -55,6 +57,7 @@ class ProcurementAgent:
         host_label: Optional[str] = None,
         max_actions: int = 1,
         lease_seconds: int = 180,
+        send_journal: Optional[SendJournal] = None,
     ) -> None:
         if mode not in {"dry_run", "review", "live"}:
             raise ValueError("mode 必须是 dry_run、review 或 live")
@@ -67,6 +70,7 @@ class ProcurementAgent:
         self.host_label = host_label or socket.gethostname()
         self.max_actions = max(1, min(max_actions, 10))
         self.lease_seconds = max(60, min(lease_seconds, 900))
+        self.send_journal = send_journal
         self.counters = {
             "discovered": 0,
             "sent": 0,
@@ -119,8 +123,13 @@ class ProcurementAgent:
             "lease_token": action["lease_token"],
         }
         if result.outcome == "sent":
-            if not result.external_message_id:
+            if not isinstance(result.external_message_id, str) or not result.external_message_id.strip():
                 raise RuntimeError("驱动报告 sent 但缺少 external_message_id")
+            if result.external_message_id.startswith("human-review-"):
+                raise RuntimeError("人工确认编号不是平台消息 ID")
+            if result.sent_content != action["suggested_message"]:
+                raise RuntimeError("驱动回读正文与批准内容不一致或缺失")
+            self.send_journal.mark(action, "sent_observed")
             self.client.confirm_sent(
                 inquiry_id,
                 {
@@ -130,25 +139,41 @@ class ProcurementAgent:
                     "external_thread_id": result.external_thread_id,
                 },
             )
+            self.send_journal.mark(action, "confirmed")
             self.counters["sent"] += 1
         elif result.outcome == "manual":
+            self.send_journal.mark(action, "manual")
             self.client.manual_handoff(
                 inquiry_id,
                 {**base, "reason": result.reason or "平台驱动请求人工接管"},
             )
             self.counters["manual"] += 1
         else:
+            # A driver has already been entered. A generic failure/timeout does
+            # not prove there were no platform effects, even if retryable=true.
+            self.send_journal.mark(action, "unknown")
             self.client.report_failure(
                 inquiry_id,
                 {
                     **base,
-                    "error": result.reason or "平台驱动发送失败",
-                    "retryable": result.retryable,
+                    "error": "发送结果未确认；保留本机执行记录，禁止自动重发",
+                    "retryable": False,
                 },
             )
             self.counters["failed"] += 1
 
+    def _execution_lock(self):
+        if self.mode == "dry_run":
+            return nullcontext()
+        if self.send_journal is None:
+            raise SendBlocked("review/live 必须配置固定的持久发送账本")
+        return self.send_journal.execution_lock()
+
     def process_actions_once(self) -> list[dict[str, Any]]:
+        with self._execution_lock():
+            return self._process_actions_once()
+
+    def _process_actions_once(self) -> list[dict[str, Any]]:
         response = self.client.claim(self._claim_payload())
         actions = response.get("actions") or []
         if self.mode == "dry_run":
@@ -182,18 +207,33 @@ class ProcurementAgent:
                 continue
             self.heartbeat(status="busy", current_inquiry_id=int(action["inquiry_id"]))
             try:
+                self.send_journal.begin(action)
+            except SendBlocked as exc:
+                self.client.manual_handoff(
+                    int(action["inquiry_id"]),
+                    {"agent_id": self.agent_id, "lease_token": action["lease_token"],
+                     "reason": str(exc)},
+                )
+                self.counters["manual"] += 1
+                break
+            # Storage errors above propagate before any driver is invoked.
+            try:
                 self._handle_result(action, driver.send(action, mode=self.mode))
-            except Exception as exc:  # 驱动异常需要释放租约并可审计
+            except Exception as exc:
+                self.send_journal.mark(action, "unknown")
                 self.client.report_failure(
                     int(action["inquiry_id"]),
                     {
                         "agent_id": self.agent_id,
                         "lease_token": action["lease_token"],
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "retryable": True,
+                        "error": f"发送或确认结果未知（{type(exc).__name__}）；禁止自动重发",
+                        "retryable": False,
                     },
                 )
                 self.counters["failed"] += 1
+                break
+            if self.send_journal.state(action) != "confirmed":
+                break
         return actions
 
     def _handle_discovery_result(
@@ -244,6 +284,12 @@ class ProcurementAgent:
             self.counters["failed"] += 1
 
     def process_discoveries_once(self) -> list[dict[str, Any]]:
+        with self._execution_lock():
+            if self.send_journal is not None and self.mode != "dry_run":
+                self.send_journal.require_clear_desktop()
+            return self._process_discoveries_once()
+
+    def _process_discoveries_once(self) -> list[dict[str, Any]]:
         response = self.client.claim_discovery(self._claim_payload())
         actions = response.get("actions") or []
         if self.mode == "dry_run":
@@ -294,8 +340,18 @@ class ProcurementAgent:
         return actions
 
     def poll_replies_once(self) -> int:
+        with self._execution_lock():
+            if self.send_journal is not None and self.mode != "dry_run":
+                self.send_journal.require_clear_desktop()
+            return self._poll_replies_once()
+
+    def _poll_replies_once(self) -> int:
         response = self.client.watch(self.capabilities)
         conversations = response.get("conversations") or []
+        if self.mode == "dry_run":
+            # Inbox drivers can switch real conversations; preview must not
+            # invoke them or write synthetic replies back to ERP.
+            return 0
         count = 0
         for capability, driver in self.drivers.items():
             subset = [
@@ -341,7 +397,7 @@ class ProcurementAgent:
         while True:
             try:
                 self.run_once()
-            except AgentApiError as exc:
+            except (AgentApiError, SendBlocked) as exc:
                 # pythonw.exe has no stderr. A transient ERP/network outage must not
                 # terminate the unattended Windows agent while it is retrying.
                 if sys.stderr is not None:
@@ -371,6 +427,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     drivers = build_drivers(config)
     if mode != "dry_run" and not drivers:
         raise SystemExit("review/live 模式至少要配置一个平台驱动")
+    journal = None
+    if mode != "dry_run":
+        journal_path = config.get("send_journal_path")
+        if not journal_path:
+            raise SystemExit("review/live 必须设置仓库外固定绝对路径 send_journal_path")
+        journal_path = Path(journal_path)
+        if not journal_path.is_absolute():
+            raise SystemExit("send_journal_path 必须是固定绝对路径")
+        journal_path = journal_path.resolve()
+        if journal_path.is_relative_to(Path(__file__).resolve().parents[2]):
+            raise SystemExit("send_journal_path 不得放在程序仓库内")
+        journal = SendJournal(
+            journal_path,
+            server_scope=str(config.get("erp_base_url") or "http://127.0.0.1:8000"),
+        )
     agent = ProcurementAgent(
         client=ProcurementApiClient(
             str(config.get("erp_base_url") or "http://127.0.0.1:8000"),
@@ -384,6 +455,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         host_label=config.get("host_label"),
         max_actions=int(config.get("max_actions") or 1),
         lease_seconds=int(config.get("lease_seconds") or 180),
+        send_journal=journal,
     )
     if args.once:
         agent.run_once()

@@ -18,6 +18,7 @@ const yuan = (v: number) => `¥${Number(v || 0).toLocaleString('zh-CN', { maximu
 const pct = (v: number | undefined) => `${(Number(v || 0) * 100).toFixed(1)}%`;
 const medal = (r: number) => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `#${r}`);
 const profitColor = (v: number | undefined) => ((Number(v || 0)) >= 0 ? '#389e0d' : '#cf1322');
+const pendingMoney = (row: RankRow) => !!row.unallocated_order_count && row.order_count === 0;
 
 // 手机端: 排行榜用「列表」而非挤压的表格 (研究结论: ranked content 用 list)。产品名为主, 名次徽章 + 主指标右侧高亮。
 function MobileRankList({ rows, metric }: { rows: RankRow[]; metric: RankMetric }) {
@@ -30,7 +31,7 @@ function MobileRankList({ rows, metric }: { rows: RankRow[]; metric: RankMetric 
           : metric === 'qty'
             ? `销售额 ${yuan(row.revenue)} · 订单 ${row.order_count} 单`
             : `利润 ${yuan(row.net_profit ?? 0)} · 销售额 ${yuan(row.revenue)}`;   // 利润率榜: 旁边带利润额
-        const mainVal = metric === 'revenue' ? yuan(row.revenue)
+        const mainVal = metric !== 'qty' && pendingMoney(row) ? '待分摊' : metric === 'revenue' ? yuan(row.revenue)
           : metric === 'qty' ? `${row.qty} 件`
             : pct(row.profit_rate);   // 利润率为主指标
         const mainColor = metric === 'profit' ? profitColor(row.net_profit) : '#1677ff';
@@ -42,7 +43,7 @@ function MobileRankList({ rows, metric }: { rows: RankRow[]; metric: RankMetric 
                 {row.product_name || '(未命名)'}
                 {row.product_code ? <Tag style={{ marginLeft: 6 }}>{row.product_code}</Tag> : null}
               </div>
-              <div style={{ marginTop: 2, fontSize: 12, color: '#94a3b8' }}>{sub}</div>
+              <div style={{ marginTop: 2, fontSize: 12, color: '#94a3b8' }}>{row.unallocated_order_count ? '含多商品子单：金额另列待分摊，当前金额仅含已归属部分' : sub}</div>
             </div>
             <div style={{ flexShrink: 0, fontWeight: 700, color: mainColor, fontSize: 15 }}>
               {mainVal}
@@ -119,21 +120,25 @@ export default function SalesRankingPage(
   const colProduct: ColumnsType<RankRow>[number] = {
     title: '产品', dataIndex: 'product_name', ellipsis: true,
     render: (v: string, row) => (
-      <span>{v}{row.product_code ? <Tag style={{ marginLeft: 6 }}>{row.product_code}</Tag> : null}</span>
+      <span>{v}{row.product_code ? <Tag style={{ marginLeft: 6 }}>{row.product_code}</Tag> : null}
+        {!!row.unallocated_order_count && <Tag color="orange">含金额待分摊子单</Tag>}
+        {!!row.unknown_quantity_count && <Tag color="orange">数量待核实</Tag>}
+      </span>
     ),
   };
-  const colOrders: ColumnsType<RankRow>[number] = { title: '订单数', dataIndex: 'order_count', width: 80, align: 'right' };
+  const colOrders: ColumnsType<RankRow>[number] = { title: '订单数', dataIndex: 'order_count', width: 110, align: 'right',
+    render: (v: number, row) => row.unallocated_order_count ? `${v}已归属 / 含待分摊` : v };
 
   // 利润率榜: 利润率(主, 高亮) + 利润额(¥) + 销售额(参照); 其余: 销量 + 销售额
   const rankCols: ColumnsType<RankRow> = isProfit
     ? [
         colRank, colProduct,
         { title: '利润率', dataIndex: 'profit_rate', width: 100, align: 'right',
-          render: (v: number) => <b style={{ color: '#1677ff' }}>{pct(v)}</b> },
+          render: (v: number, row) => pendingMoney(row) ? '待分摊' : <b style={{ color: '#1677ff' }}>{pct(v)}</b> },
         { title: '利润额', dataIndex: 'net_profit', width: 120, align: 'right',
-          render: (v: number) => <b style={{ color: profitColor(v) }}>{yuan(v)}</b> },
+          render: (v: number, row) => pendingMoney(row) ? '待分摊' : <b style={{ color: profitColor(v) }}>{yuan(v)}</b> },
         { title: '销售额', dataIndex: 'revenue', width: 120, align: 'right',
-          render: (v: number) => yuan(v) },
+          render: (v: number, row) => pendingMoney(row) ? '待分摊' : yuan(v) },
         colOrders,
       ]
     : [
@@ -142,7 +147,7 @@ export default function SalesRankingPage(
           render: (v: number) => metric === 'qty'
             ? <b style={{ color: '#1677ff' }}>{v} 件</b> : `${v} 件` },
         { title: '销售额', dataIndex: 'revenue', width: 130, align: 'right',
-          render: (v: number) => metric === 'revenue'
+          render: (v: number, row) => pendingMoney(row) ? '待分摊' : metric === 'revenue'
             ? <b style={{ color: '#1677ff' }}>{yuan(v)}</b> : yuan(v) },
         colOrders,
       ];

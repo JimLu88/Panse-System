@@ -1,5 +1,117 @@
 # Panse-System agent instructions
 
+## Business relationship maintenance (2026-09-20)
+
+Read `docs/business-relationships-maintenance.md` when changing business fields or flows.
+Before and after a code change, use `python -m app.cli.business_relationships --changed <paths>`
+from backend to inspect downstream checks and unmapped changes. Review protection boundaries;
+do not treat an absent edge as no impact. Update the catalogue and explicitly freeze reviewed
+source fingerprints only after semantic review. `--check` detects stale sources.
+This is a maintenance review aid, not a new campaign/order preflight, business executor or AI polling loop.
+Keep source evidence, local tests, external delivery and factory table readback separate.
+
+## Program-owned campaign execution (2026-09-14)
+
+Read `docs/campaign-program-owned-execution-20260914.md`. AI confirms identity and
+starts once, then consumes terminal results only. No per-job AI polling,
+stepwise dispatch or repeated maintenance wakeups. The fixed controller owns
+the middle; frozen prices, human rotation gate and no-replay rules are unchanged.
+
+## User operational acceptance amendment (2026-09-13)
+
+Read `docs/campaign-automation-amendment-20260913.md` for the five newly approved
+fixed custom bases, authorized-but-deferred lift-desk rotation, and separation
+of business readiness from historical video capture gaps. Historical missing
+frames remain warnings, not a standalone recurring-dispatch blocker. Official
+receipts, prices, idle terminal state, artifact integrity and no replay remain
+mandatory. Do not execute the deferred rotation without its explicit activation.
+
+## Failure handling confirmed 2026-09-12
+
+Read `docs/campaign-failure-remediation-20260912.md` for automatic failed-scope
+continuation. Recurring custom reductions at/above the established fixed 20%
+floor and ordinary final-price delta <=2 CNY are directly user-authorized.
+Do not ask again. No-sales failures skip this campaign only. Invalid/disabled
+SKUs require one recorded full export and exact ID/code reconciliation before
+file-only exclusion. Rotation still requires confirmation. Successful/unknown
+claims stay protected, and daily tasks use fixed Web Agent only.
+
+## Current continuous-campaign migration (user approved 2026-09-11)
+
+User additionally approved segmented timing: read
+`docs/campaign-segmented-time-20260911.md`. Super-reduce platform validity is
+NOT its single-discount window. New timed bundles use M in daily gaps and B
+in exact big-campaign windows; preserve old hashes/claims and successful offers.
+Already enrolled super-reduce items may need a new discount segment but MUST
+NOT be enrolled again. This is pure generation/controller logic, no preflight.
+
+Read `docs/campaign-continuous-flow-20260911.md` for new automatic signup work.
+The user-approved new flow supersedes conflicting old preparation steps for new
+runs: ERP sellable intersect Taobao on-sale, fixed official discovery entry,
+no historical preflight, continuous changed-failure repair, human-approved rotation.
+Preserve old claim/rule fingerprints for existing batches. The new controller
+is NOT yet connected to verified live Web-Agent transport. Do not restore the
+retired preflight pipeline or advertise fake/offline adapters as production-ready.
+
+## Browser failures (not a campaign preflight)
+
+After a browser-control failure, use `docs/browser-control-short-recovery.md`.
+Keep the current authorized Edge session and sole business-page owner. Distinguish
+caller timeout/kernel reset, stale tab, ownership conflict, debugger detach,
+policy failure and file-transfer failure. Unknown action outcomes are not retries.
+Use bounded single-stage calls and fresh semantic page evidence; never invent a
+connect button, reset profiles, open full CDP, or change frozen campaign rules.
+`scripts/browser_control_triage.py` is offline advisory classification only, not
+a mandatory signup gate or a browser runtime replacement.
+
+## Campaign signup authority
+
+For the current user-established 78+4 custom baselines, read
+`docs/campaign-user-established-baselines-20260911.md`. Use the 78-row v2 receipt;
+the v1 precision error is retained only for audit. Fixed original times 20% is
+exact; a fractional-cent floor is rounded UP only for the submittable price.
+Do not ask again for this established baseline or rebase after later reductions.
+
+For the current failed ordinary-SKU existing-discount amendment only, use
+`docs/campaign-discount-amend-20260911.md`. The local claim/record guard produces
+an exact in-place-edit payload, not a new offer or bulk replay. The browser owner
+must supply real old-value and post-save readbacks; unknown remains blocked.
+
+Current 2026-09-11 user authorization: see `docs/campaign-autumn-two-yuan-20260911.md`.
+Only that exact autumn campaign/window/12%/big target accepts actual reused final
+price absolute delta <= 2 CNY. Generation and claim must share the pinned receipt.
+This is not a global tolerance or instruction to subtract two; custom floors,
+ordinary daily signup and success/unknown replay protection remain unchanged.
+
+Local campaign files/submission use `docs/campaign-entry-guards.md`:
+`campaign_generate_current_files.py` with exact `--campaign-key`, followed by
+`campaign_submission_gate.py claim/record` (or `run_once` in the existing owner
+transport). Keep the same persistent authority SQLite across conversations.
+Pure `build_rows`/byte writers and raw browser/API calls are not fully guarded
+business entry points. Do not claim this change intercepts those bypasses.
+Reused discounts must be checked using actual successfully uploaded amounts,
+not the newly calculated but unsubmitted ideal deductions. No tolerance expansion.
+
+Single-discount template is the user's fixed 2026-09-09 master:
+`D:/AI/畔色ERP系统/活动准备/固定模板/单品立减-SKU级-固定官方模板.xlsx`.
+Never download it again or ask the user to do so. Fill a new copy using current
+SKU/amount rows; never reuse previous filled rows. Activity signup templates
+still require the current exact campaign's official download. See the frozen
+contract's single_discount_template field; prices/windows/short flow unchanged.
+
+For campaign work, first read `docs/campaign-signup-frozen-steps.md` and
+`docs/campaign-signup-frozen-contract.json`. They record the user's September 4–6
+short-flow rules and exact successful scope; older preparation/recovery documents
+are history, not authority to restore preflight scans or replay successful batches.
+Routine signup belongs to `01｜畔色ERP系统`; maintenance does not execute it.
+Do not change frozen rules without the user's current direct instruction.
+The offline receipt tests are maintenance verification, not a new signup gate.
+The user now communicates through 02; 01 remains the sole business/browser writer.
+Necessary custom reserve work requires the current scoped instruction. Prefer
+verified existing inactive reserves, preserve stock and the first-original 20%
+floor across exact old/new SKU mappings. Unknown inventory is not a missing SKU;
+ordinary SKUs and successful campaigns are never implicitly rotated or replayed.
+
 ## First read
 
 Before modifying the logistics-bill product analytics feature, read:

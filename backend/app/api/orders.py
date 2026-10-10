@@ -236,6 +236,10 @@ def factory_production(
             "ship_deadline": o.ship_deadline.isoformat() if o.ship_deadline else None,
             "original_deadline": original_deadline.isoformat() if original_deadline else None,
             "is_customer_delayed": o.is_customer_delayed,
+            "customer_shipping_month": o.customer_shipping_month,
+            "shipping_delay_description": order_flags.shipping_delay_label(o),
+            "platform_remark_tags": o.platform_remark_tags,
+            "platform_remark_tags_source": o.platform_remark_tags_source,
             "customer_delay_deadline": (
                 o.customer_delay_deadline.isoformat() if o.customer_delay_deadline else None
             ),
@@ -361,6 +365,11 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
     from app.services import order_flags, remote_report_service
     was_remote = order_flags.is_remote(o)
     data = body.model_dump(exclude_unset=True)
+    if order_flags.shipping_month(o) and (
+        data.get("is_remote_ship") or data.get("is_customer_delayed") is False
+        or data.get("customer_delay_deadline") is not None
+    ):
+        raise HTTPException(422, "该单已有用户确认的月粒度发货要求，不能用旧日期编辑覆盖；需明确修改发货要求")
     if "ship_deadline" in data:
         o.ship_deadline = data["ship_deadline"]
     if "production_note" in data:
@@ -371,7 +380,7 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
         o.customer_delay_deadline = data["customer_delay_deadline"]
     if "is_customer_delayed" in data:
         if data["is_customer_delayed"]:
-            if not o.customer_delay_deadline:
+            if not o.customer_delay_deadline and not order_flags.shipping_month(o):
                 raise HTTPException(422, "标记客户延期时必须填写延期后的截止日期")
             o.is_customer_delayed = True
             o.is_remote_ship = False

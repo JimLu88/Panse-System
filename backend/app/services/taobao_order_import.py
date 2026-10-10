@@ -22,10 +22,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -86,13 +87,18 @@ def _map_status(raw: Any) -> str:
     return _resolve_status(raw)[0]
 
 
-_SERVICE_NAME_KW = ("送货", "入户", "安装", "上门")
+_SERVICE_NAME_KW = ("商家安装", "送货入户", "送货上门", "上门安装", "安装服务",
+                    "送货服务", "上门服务", "官方服务", "安装", "送货")
 
 
 def _is_service_line_name(name: Any) -> bool:
     """送货入户/商家安装/上门 等服务行 (多行订单里不该抢主商品名)。"""
-    n = str(name or "")
-    return any(k in n for k in _SERVICE_NAME_KW)
+    n = str(name or "").strip()
+    # Product titles such as 入户玄关柜 and 免安装床头柜 are physical goods.
+    # Only a whole service label (possibly repeated) is a service line.
+    return bool(re.fullmatch(
+        r"(?:" + "|".join(map(re.escape, _SERVICE_NAME_KW)) + r")[\s、/，,]*"
+        r"(?:(?:" + "|".join(map(re.escape, _SERVICE_NAME_KW)) + r")[\s、/，,]*)*", n))
 
 
 def _norm_pps_code(code: Any) -> Any:
@@ -333,6 +339,15 @@ class _OrderRow:
     shop: Any = None                 # 店铺名称
     buyer_message: Any = None        # 买家留言 (平台, 重导覆盖)
     seller_memo: Any = None          # 卖家备注/商家备注 (平台, 重导覆盖)
+    platform_remark_tags: Any = None
+    platform_remark_tags_present: bool = False  # Missing column != explicit empty cell.
+    platform_remark_tags_source: str | None = None
+    source_fields: dict = field(default_factory=dict)
+    source_sha256: str | None = None
+    source_observed_at: datetime | None = None
+    source_kind: str | None = None
+    source_scope_complete: bool = True
+    protected_fields: set = field(default_factory=set)
     # 订单级财务权威度 (2026-07-09): "order"=单级权威源(订单报表/已卖出宝贝导出, 一单一行, 财务列完整);
     # "line"=行级销售明细(一行一商品, 订单级金额需按行求和, 不完整时会低估)。重导幂等护栏据此决定
     # 是否允许覆盖已有订单的订单级财务字段 —— 行级源不许覆盖(防不完整明细把订单报表的正确值压掉)。
@@ -469,6 +484,22 @@ def detect_report_role(filename: str, raw: bytes) -> str | None:
 
 
 # ── 解析: 千牛多表 Excel ──────────────────────────────────────────────────────
+def _merge_platform_tags(order: _OrderRow, value, present: bool, rep: TaobaoImportReport, raw: bytes) -> None:
+    if not present:
+        return
+    prior = _clean(order.platform_remark_tags) or ""
+    current = _clean(value) or ""
+    # A blank child row is not proof of a blank entire order. Keep all distinct tags.
+    pieces = list(dict.fromkeys(x for x in (prior.split("\n") + current.split("\n")) if x))
+    if prior and current and current not in prior.split("\n"):
+        warning = "同主单备注标签存在多种非空值，全部保留；发货冲突需核实"
+        if warning not in rep.warnings:
+            rep.warnings.append(warning)
+    order.platform_remark_tags = "\n".join(pieces)
+    order.platform_remark_tags_present = True
+    order.platform_remark_tags_source = "淘宝导入：备注标签 sha256:" + hashlib.sha256(raw).hexdigest()
+
+
 def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _OrderRow]:
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
     orders: dict[str, _OrderRow] = {}
@@ -492,6 +523,8 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
             if not no:
                 continue
             rpt[no] = {
+                "source_row": {key: row[idx] for key, idx in h.items() if idx < len(row)},
+                "source_headers": set(h),
                 "addr": g(row, "收货地址"),
                 "carrier": g(row, "物流公司", "快递公司"),
                 "tracking": g(row, "物流单号", "运单号"),
@@ -508,6 +541,8 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "ship_time": g(row, "发货时间"),
                 "confirm_time": g(row, "确认收货时间"),
                 "shop": g(row, "店铺名称"),
+                "tags": g(row, "备注标签"),
+                "tags_present": "备注标签" in h,
             }
 
     # 发货报表: 单级 客户信息
@@ -566,10 +601,23 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                     ship_time=r.get("ship_time") or g3(row, "发货时间"),
                     confirm_time=r.get("confirm_time") or g3(row, "确认收货时间"),
                     shop=r.get("shop"),
-                    buyer_message=g3(row, "买家留言", "买家留言备注", "买家备注"),
+                    buyer_message=g3(row, "买家留言", "主订单买家留言", "买家留言备注", "买家备注"),
                     seller_memo=g3(row, "卖家备注", "商家备注", "卖家留言"),
+                    platform_remark_tags=r.get("tags") if r.get("tags_present") else g3(row, "备注标签"),
+                    platform_remark_tags_present=bool(r.get("tags_present") or "备注标签" in h),
                 )
                 orders[no] = o
+            _merge_platform_tags(o, r.get("tags") if r.get("tags_present") else g3(row, "备注标签"),
+                                 bool(r.get("tags_present") or "备注标签" in h), rep, raw)
+            from app.services import platform_field_provenance as provenance
+            source_row = {key: row[idx] for key, idx in h.items() if idx < len(row)}
+            # Master fields, when present, own parent facts; never mix blank
+            # child aliases into a nonempty master snapshot.
+            master_headers = r.get('source_headers', set())
+            master_aliases = {name for names in provenance.ALIASES.values()
+                              if any(name in master_headers for name in names) for name in names}
+            provenance.observe(o, r.get('source_row', {}), master_headers, raw)
+            provenance.observe(o, source_row, set(h) - master_aliases, raw)
             merchant = g3(row, "商家编码", "外部系统编号")
             o.lines.append({
                 "sub_order_no": _clean(g3(row, "子订单编号")) or no,
@@ -666,10 +714,15 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
                 ship_time=gv(row, "发货时间"),
                 confirm_time=gv(row, "确认收货时间"),
                 shop=gv(row, "店铺名称"),
-                buyer_message=gv(row, "买家留言", "买家留言备注", "买家备注"),
+                buyer_message=gv(row, "买家留言", "主订单买家留言", "买家留言备注", "买家备注"),
                 seller_memo=gv(row, "卖家备注", "商家备注", "卖家留言", "常用备注"),
+                platform_remark_tags=row.get("备注标签"),
+                platform_remark_tags_present="备注标签" in row,
             )
             orders[no] = o
+        _merge_platform_tags(o, row.get("备注标签"), "备注标签" in row, rep, raw)
+        from app.services import platform_field_provenance as provenance
+        provenance.observe(o, row, _hdr, raw)
         merchant = gv(row, "商家编码", "外部系统编号")
         o.lines.append({
             "sub_order_no": _clean(gv(row, "子订单编号")) or no,
@@ -706,7 +759,39 @@ def _persist_order_lines(
 
     sku_code 经对应表 resolve 成 PPS 编码(否则匹配不到定价/成本); 服务行(送货/安装)不写; 幂等(按 sync_key)。
     """
+    # Validate before touching any row: two products must never overwrite the
+    # same child identity, including reports using the parent ID as fallback.
+    identities = {}
+    unique_lines = []
+    for ln in lines:
+        child = _clean(ln.get('sub_order_no'))
+        if child and not _is_service_line_name(ln.get('product_name')):
+            signature = tuple(str(ln.get(k) or '') for k in
+                              ('product_name', 'sku_code', 'sku', 'qty'))
+            if child in identities:
+                if identities[child] != signature:
+                    raise ValueError(f'订单 {order_no} 子单 {child} 对应多条冲突商品，未覆盖原明细')
+                continue
+            identities[child] = signature
+        unique_lines.append(ln)
+    lines = unique_lines
+    distinct_children = {
+        _clean(ln.get("sub_order_no")) for ln in lines
+        if _clean(ln.get("sub_order_no")) not in (None, "", order_no)
+    }
+    has_children = bool(distinct_children) or db.execute(
+        select(OrderDetail.id).where(
+            OrderDetail.order_no == order_no, OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None),
+            OrderDetail.sub_order_no != "", OrderDetail.sub_order_no != order_no,
+        ).limit(1)
+    ).scalar_one_or_none() is not None
     for idx, ln in enumerate(lines):
+        if (has_children and _clean(ln.get("sub_order_no")) == order_no
+                and not any(_clean(ln.get(k)) for k in ("sku_code", "sku", "sku_id"))):
+            # A master report can arrive before or after sales-detail rows.
+            # It must not manufacture an extra factory item using the parent ID.
+            continue
         if _is_service_line_name(ln.get("product_name")):
             continue
         scode = _norm_pps_code(ln.get("sku_code"))
@@ -747,7 +832,16 @@ def _persist_order_lines(
             refund_amount=_to_decimal(ln.get("refund")),
         )
         if row:
+            if row.order_no != order_no:
+                raise ValueError(f'子单 {sub_order_no} 已属于其他主单，未覆盖')
             for k, v in vals.items():
+                # Shipping/master reports can omit SKU and quantity. Absence
+                # is not an instruction to erase a sales-detail variant or to
+                # replace two ordered units with the parser's default one.
+                if k in {"product_code", "sku_code", "sku_name", "product_name"} and v in (None, ""):
+                    continue
+                if k == "qty" and ln.get("qty") in (None, ""):
+                    continue
                 setattr(row, k, v)
             if enable_factory_delivery:
                 row.factory_delivery_required = True
@@ -771,6 +865,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
     _locked_orders: set[str] = set()
     for _lf in _LOCK_FIELDS:
         _locked_orders |= _fcs.human_pks(db, table="orders", field=_lf)
+    from app.services import platform_field_provenance as provenance
+    protected_fields = {key: _fcs.human_pks(db, table='orders', field=key)
+                        for key in provenance.ALIASES}
     seen: set[str] = set()
     for no, o in orders.items():
         if not no:
@@ -791,6 +888,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         # 主商品行: 优先在"非服务行"里取金额最大的一行 —— 送货入户/商家安装等服务行(常为¥0)不抢主位
         # (用户实测 2026-06-18: ¥11212 的餐边柜单被错标成"送货入户")。全是服务行才退而取金额最大。
         lines = o.lines or [{}]
+        before_lines = db.execute(select(OrderDetail.sub_order_no, OrderDetail.sku_code, OrderDetail.qty).where(
+            OrderDetail.order_no == no, OrderDetail.source == 'import')).all()
+        existing_line_keys = {r[0] for r in before_lines}
+        new_line_keys = {_clean(line.get('sub_order_no')) for line in lines}
+        o.source_scope_complete = ((o.fin_source == 'order' and o.status_trusted)
+                                   or (existing_line_keys - {None, ''}).issubset(new_line_keys))
+        o.protected_fields = {key for key, keys in protected_fields.items() if no in keys}
         if len(lines) > 1:
             rep.multi_line_orders += 1
         # 2026-08-12: 单商品也必须保存淘宝子订单号。工厂制单/退款/送达从此以
@@ -1003,23 +1107,25 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 existing.ship_date = ship_dt
             # 物流单号/承运商: 重导时回填(只填空, 不覆盖已手工改的)。
             # 修复(2026-06-15): 原更新分支漏了这两个 → 已发货订单重导也补不上物流号(图四常驻27)。
-            _trk = _clean(o.tracking_no)
-            if _trk and not existing.tracking_no:
-                _trace("tracking_no", "物流单号", existing.tracking_no, _trk)
-                existing.tracking_no = _trk
             _car = _clean(o.carrier)
             if _car and not existing.carrier:
                 existing.carrier = _car
             # 平台备注随重导覆盖 (用户拍板: 买家留言/商家备注是淘宝侧会变的数据;
             # 非空才覆盖, 防止不含该列的旧格式文件把留言抹掉)
-            _bmsg = _clean(o.buyer_message)
-            if _bmsg:
-                _trace("buyer_message", "买家留言", existing.buyer_message, _bmsg)
-                existing.buyer_message = _bmsg
-            _smemo = _clean(o.seller_memo)
-            if _smemo:
-                _trace("seller_memo", "商家备注", existing.seller_memo, _smemo)
-                existing.seller_memo = _smemo
+            before_source_fields = {key: getattr(existing, key) for key in provenance.ALIASES}
+            before_source_ship_date = existing.ship_date
+            provenance.apply(existing, o, rep.warnings)
+            for key, label in (('buyer_message', '买家留言'), ('seller_memo', '商家备注'), ('tracking_no', '物流单号')):
+                _trace(key, label, before_source_fields[key], getattr(existing, key))
+            _trace('ship_date', '发货日期', before_source_ship_date, existing.ship_date)
+            if o.platform_remark_tags_present:
+                tags = _clean(o.platform_remark_tags) or ""
+                tags_source = o.platform_remark_tags_source or "淘宝导入：备注标签"
+                if existing.platform_remark_tags != tags or existing.platform_remark_tags_source != tags_source:
+                    _trace("platform_remark_tags", "平台备注标签", existing.platform_remark_tags, tags)
+                    existing.platform_remark_tags = tags
+                    existing.platform_remark_tags_source = tags_source
+                    existing.platform_remark_tags_updated_at = datetime.now(timezone.utc)
             if _shop and not existing.shop:
                 existing.shop = _shop
             if _pname and not existing.product_name:
@@ -1040,6 +1146,23 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 existing.customer_address, o.customer_address
             )
             remote_report_service.capture_transition(existing, was_remote=was_remote)
+            # A later complete sales-detail report may repair a missing child or
+            # quantity after the master was imported. Refresh derived costs,
+            # not paid/refund/actual invoices, only when purchase facts changed.
+            db.flush()
+            after_lines = db.execute(select(OrderDetail.sub_order_no, OrderDetail.sku_code, OrderDetail.qty).where(
+                OrderDetail.order_no == no, OrderDetail.source == 'import')).all()
+            parent_qty_changed = False
+            if (len(_non_service) == 1 and len(after_lines) == 1
+                    and primary.get('qty') not in (None, '')
+                    and _sku_code and existing.sku_code == _sku_code):
+                source_qty = _to_int(primary.get('qty'), default=0)
+                if source_qty > 0 and existing.qty != source_qty:
+                    _trace('qty', '购买数量', existing.qty, source_qty)
+                    existing.qty = source_qty
+                    parent_qty_changed = True
+            if set(before_lines) != set(after_lines) or parent_qty_changed:
+                order_cost_service.recompute_and_save(db, existing)
             rep.updated += 1
             continue
 
@@ -1071,8 +1194,12 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             remark=remark,
             buyer_message=_clean(o.buyer_message),
             seller_memo=_clean(o.seller_memo),
+            platform_remark_tags=(_clean(o.platform_remark_tags) or "") if o.platform_remark_tags_present else None,
+            platform_remark_tags_source=(o.platform_remark_tags_source or "淘宝导入：备注标签") if o.platform_remark_tags_present else None,
+            platform_remark_tags_updated_at=datetime.now(timezone.utc) if o.platform_remark_tags_present else None,
             warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )
+        provenance.apply(order, o, rep.warnings, new=True)
         remote_report_service.capture_transition(order, was_remote=False)
         db.add(order)
         rep.inserted += 1
@@ -1130,7 +1257,9 @@ def maybe_decrypt(raw: bytes, password: Optional[str]) -> bytes:
 def import_taobao_orders(db: Session, filename: str, raw: bytes,
                          platform: str = "淘宝",
                          force_format: Optional[str] = None,
-                         password: Optional[str] = None) -> TaobaoImportReport:
+                         password: Optional[str] = None,
+                         source_observed_at: Optional[datetime] = None,
+                         source_kind: Optional[str] = None) -> TaobaoImportReport:
     """自动识别格式并导入。force_format 可强制指定; password 用于解密加密发货报表。"""
     rep = TaobaoImportReport()
     if is_encrypted_ooxml(raw):
@@ -1169,6 +1298,9 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     # 比较的设计缺陷, 不是真有坏文件。导入本就是 upsert (只增改、从不删行, 见 _commit_orders),
     # 残缺文件也抹不掉已有数据 → 该防护既误报又多余, 删除 (不再读写 last_order_import_count)。
 
+    for parsed in orders.values():
+        parsed.source_observed_at = source_observed_at
+        parsed.source_kind = source_kind
     _commit_orders(db, orders, platform, rep)
     if apply_refill_flags(db):   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
         db.commit()

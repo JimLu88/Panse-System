@@ -1,6 +1,9 @@
 import { api } from './base';
 
 // ----- 定价总表 (#3) -----
+export interface TaobaoLinkInfo {
+  url: string; item_id: string; sku_id: string | null; label: string;
+}
 export interface PricingSku {
   id: number;
   product_code: string;
@@ -318,6 +321,8 @@ export const resolvePriceVariance = (id: number, action: 'update_material' | 'fa
 
 // ----- Products -----
 export interface Product {
+  taobao_links?: TaobaoLinkInfo[];
+  taobao_link_status?: string;
   id: number;
   code: string;
   name: string;
@@ -755,8 +760,12 @@ export const matchProductRanked = (product_name: string, sku?: string, limit = 1
     .then(r => r.data);
 
 // -- 产品 SKU 列表 (展开行用)
+export type ProductPricingSku = PricingSku & {
+  taobao_links?: TaobaoLinkInfo[];
+  taobao_link_status?: string;
+};
 export const listProductSkus = (product_code: string) =>
-  api.get<PricingSku[]>(`/api/products/${product_code}/skus`).then(r => r.data);
+  api.get<ProductPricingSku[]>(`/api/products/${product_code}/skus`).then(r => r.data);
 
 export interface SkuShippingMeasurementPatch {
   product_weight_kg?: number | null;

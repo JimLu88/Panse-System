@@ -13,10 +13,12 @@ class AgentApiError(RuntimeError):
 
 
 class ProcurementApiClient:
-    def __init__(self, base_url: str, token: str, *, timeout: int = 20) -> None:
+    def __init__(self, base_url: str, token: str, *, timeout: int = 20,
+                 executor_id: Optional[str] = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.executor_id = executor_id
 
     def _request(
         self,
@@ -37,16 +39,45 @@ class ProcurementApiClient:
                 "X-API-Key": self.token,
                 "Content-Type": "application/json",
                 "User-Agent": "Panse-Procurement-Agent/0.1",
+                **({"X-Procurement-Executor": self.executor_id} if self.executor_id else {}),
             },
         )
         try:
             with urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise AgentApiError(f"ERP HTTP {exc.code}: {detail[:500]}") from exc
+            # Error bodies may echo request bodies, message text or permits.
+            # Keep them out of terminal/heartbeat logs.
+            raise AgentApiError(f"ERP HTTP {exc.code}；请核对服务端脱敏诊断") from None
         except (URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise AgentApiError(f"ERP 请求失败: {type(exc).__name__}: {exc}") from exc
+
+    def reserve(self, action: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/api/procurement/agent/dispatch/reserve", {
+            **{k: action[k] for k in ("task_id", "inquiry_id", "account_id", "action_key")},
+            "content": action["suggested_message"],
+        })
+
+    def _dispatch(self, intent_id: str, operation: str, payload=None):
+        from uuid import UUID
+        # Never interpolate untrusted path fragments from a driver.
+        canonical = str(UUID(intent_id))
+        return self._request("POST", f"/api/procurement/agent/dispatch/{canonical}/{operation}", payload)
+
+    def permit(self, intent_id: str):
+        return self._dispatch(intent_id, "permit")
+
+    def unknown(self, intent_id: str):
+        return self._dispatch(intent_id, "unknown")
+
+    def begin_reconcile(self, intent_id: str):
+        return self._dispatch(intent_id, "reconcile")
+
+    def unresolved(self, intent_id: str):
+        return self._dispatch(intent_id, "unresolved")
+
+    def confirm(self, intent_id: str, receipt: dict, permit: str):
+        return self._dispatch(intent_id, "receipt", {**receipt, "permit": permit})
 
     def heartbeat(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/procurement/agent/heartbeat", payload)

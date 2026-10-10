@@ -30,6 +30,7 @@ from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import sku_utils
+from app.services.order_purchase_facts import purchase_lines, positive_quantity
 
 _CENTS = Decimal("0.01")
 
@@ -651,30 +652,34 @@ def _effective_qty(order: Order, unit_cost: Decimal) -> int:
     return qty if paid > 0 and (paid / qty) >= unit_cost else 1
 
 
+def _purchase_lines_for_cost(db: Session, order: Order) -> tuple[list, bool]:
+    """Use real purchase rows consistently for all three derived cost totals.
+
+    A parent summary is not an additional item. Explicit cancelled/full-refund
+    lines leave the cost set; partial monetary refunds alone do not erase goods.
+    Retain the legacy amount-match rule only when no line refund facts exist.
+    """
+    return purchase_lines(db, order)
+
+
 def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
     """一单多宝贝 → 按 order_details(source='import')各商品行 pricing物理成本×qty 汇总成本。
 
     需 ≥2 个能取到定价的商品行才算多产品(否则 None, 走原单SKU路径, 保留BOM精度)。
     杜绝塌单漏算(餐桌+床这类: 导入只留主商品, 成本只算一个 → 这里按全部商品行汇总)。
     """
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     # 口径A(用户拍板 2026-06-22): 成本只算"留下的"子产品。排除被退的那一行
     # (其 amount ≈ 订单剩余退款额 refund_amount; refund 已被 _normalize_refund 归0的单无需排除→全留)。
-    _refund = Decimal(str(getattr(order, "refund_amount", None) or 0))
-    if _refund > 0:
-        lines = [ln for ln in lines
-                 if abs(Decimal(str(ln.amount or 0)) - _refund) >= Decimal("0.5")]
-        if len(lines) < 1:
-            return None
+    if not lines:
+        return Decimal("0")
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
     for ln in lines:
+        if positive_quantity(ln.qty) is None:
+            return None
         cost = None
         if ln.sku_code:
             ps = db.execute(
@@ -693,7 +698,7 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
         cost = _asof_pricing(db, ln.sku_code, ln.product_code, _on, "physical_cost", cost)  # 老单老价
         if cost is None:
             return None   # 有商品行查不到定价 → 整单成本不完整, 回退兜底路径(勿把缺行的部分和当整单成本, 否则漏算副商品→利润虚高)
-        total += cost * int(ln.qty or 1)
+        total += cost * positive_quantity(ln.qty)
     if total <= 0:
         return None
     # 口径A护栏(2026-06-22): 子行成本和 > 实付×1.1 → 实付只覆盖了部分子产品(部分付款/漏退/qty异常),
@@ -738,16 +743,14 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
 
     任一商品行查不到 wood_cost → None (整单木作估算不完整, 不写 wood_cost_est, physical_cost 退回旧行为)。
     """
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
     for ln in lines:
+        if positive_quantity(ln.qty) is None:
+            return None
         wc = None
         if ln.sku_code:
             wc = db.execute(
@@ -764,15 +767,15 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
                            Decimal(str(wc)) if wc is not None else None)  # 老单老价
         if wc is None:
             return None
-        total += Decimal(str(wc)) * int(ln.qty or 1)
-    return total if total > 0 else None
+        total += Decimal(str(wc)) * positive_quantity(ln.qty)
+    return total
 
 
-def _set_wood_est(order: Order, wood: Optional[Decimal]) -> None:
+def _set_wood_est(order: Order, wood: Optional[Decimal], quantity: int = 1) -> None:
     """写 order.wood_cost_est (木作估算)。取不到(None/≤0) → 不写, 留原值,
     让 physical_cost 退回旧行为(actual_cost 直接当物理成本)。"""
     if wood is not None and wood > 0:
-        order.wood_cost_est = wood.quantize(_CENTS)
+        order.wood_cost_est = (wood * quantity).quantize(_CENTS)
 
 
 def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
@@ -823,16 +826,14 @@ def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
     """一单多宝贝 → 各 import 商品行 SKU 的定价表 external_parts_cost × qty 之和。与 _multi_product_wood 对称。
 
     < 2 行 → None(非多宝贝, 走单 SKU 路径)。某行查不到配件估值视作 0(配件可选, 不像木作要求齐全)。"""
-    from app.models.order import OrderDetail
-    lines = db.execute(
-        select(OrderDetail).where(
-            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
-    ).scalars().all()
-    if len(lines) < 2:
+    lines, multiple = _purchase_lines_for_cost(db, order)
+    if not multiple:
         return None
     total = Decimal("0")
     _on = getattr(order, "order_date", None)
     for ln in lines:
+        if positive_quantity(ln.qty) is None:
+            return None
         ep = None
         if ln.sku_code:
             ep = db.execute(
@@ -845,7 +846,7 @@ def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
             ).scalar_one_or_none()
         ep = _asof_pricing(db, ln.sku_code, ln.product_code, _on, "external_parts_cost",
                            Decimal(str(ep)) if ep is not None else None)  # 老单老价
-        total += Decimal(str(ep or 0)) * int(ln.qty or 1)
+        total += Decimal(str(ep or 0)) * positive_quantity(ln.qty)
     return total
 
 
@@ -864,10 +865,27 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     传 ratios (类目/全店成本率) 时, BOM/定价表都查不到的订单按 实付×成本率 兜底 (用户拍板 2026-06-17),
     标记为「估算」并由 auto_cost_backfill 写异常待人工补实际成本。
     """
+    # Establish completeness before touching any stored estimate. Missing child
+    # pricing/quantity cannot authorize a fallback to the parent's first SKU.
+    _lines, _multiple = _purchase_lines_for_cost(db, order)
+    _mp = _multi_product_cost(db, order) if _multiple and not order.is_refill else None
+    if _multiple and not order.is_refill and _mp is None:
+        issue = db.scalar(select(DataException).where(DataException.source_table == "orders",
+            DataException.source_pk == order.order_no,
+            DataException.exception_type == "multi_child_cost_incomplete").limit(1))
+        if issue is None:
+            db.add(DataException(source_table="orders", source_pk=order.order_no,
+                exception_type="multi_child_cost_incomplete", severity="warning", status="open",
+                description="多子订单成本未完整确认；原估值保留，不能视为已核清成本。",
+                suggestion_action="核对全部有效子单的数量和精确SKU成本，不用首SKU替代整单"))
+        return CostBreakdown(order_no=order.order_no, sku_code=order.sku_code,
+            qty=sum(positive_quantity(line.qty) or 0 for line in _lines),
+            unit_cost=Decimal("0"), total_cost=Decimal("0"), resolved=False,
+            cost_incomplete=True, note="多子订单成本未完整确认：缺价格/数量或触发实付护栏；保留原估值和真实账单，不回退母单SKU")
     # 每次重算从干净状态开始: 木作估算/配件标准估值只在能取到的分支回填, 旧值不残留(防改判后污染)
     order.wood_cost_est = None
     order.est_parts = None       # 配件标准估值(派生列); 不碰 actual_parts(真实值, 人工/汇总设)
-    reason = zero_cost_reason(order)
+    reason = zero_cost_reason(order) if not _multiple or order.is_refill else None
     if reason is not None:
         order.theoretical_cost = Decimal("0")
         return CostBreakdown(
@@ -876,8 +894,11 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
             resolved=True, note=f"理论成本归0: {reason}",
         )
     # 一单多宝贝: 按 order_details(source='import')各商品行汇总成本(杜绝塌单漏算; 片段封顶在 physical_cost 读取时统一处理)
-    _mp = _multi_product_cost(db, order)
     if _mp is not None:
+        for issue in db.scalars(select(DataException).where(DataException.source_table == "orders",
+            DataException.source_pk == order.order_no, DataException.exception_type == "multi_child_cost_incomplete",
+            DataException.status == "open")):
+            issue.status = "resolved"
         order.theoretical_cost = _mp.quantize(_CENTS)
         _set_wood_est(order, _multi_product_wood(db, order))
         _mpp = _multi_product_parts(db, order)
@@ -892,7 +913,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     if bd.resolved:
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
-        _set_wood_est(order, _pricing_wood_for(db, order))
+        _set_wood_est(order, _pricing_wood_for(db, order), _effective_qty(order, _unit))
         _set_parts_est(order, _pricing_parts_for(db, order), _effective_qty(order, _unit))
         return bd
     # 无 BOM → 回退定价表物理总成本
@@ -904,7 +925,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表物理总成本"
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
-        _set_wood_est(order, _pricing_wood_for(db, order))
+        _set_wood_est(order, _pricing_wood_for(db, order), _effective_qty(order, _unit))
         _set_parts_est(order, _pricing_parts_for(db, order), _effective_qty(order, _unit))
         return bd
     # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
@@ -1011,7 +1032,7 @@ def auto_cost_backfill(db: Session) -> dict:
     for o in db.execute(
         select(Order).where(Order.theoretical_cost.isnot(None), Order.theoretical_cost != 0)
     ).scalars().all():
-        if zero_cost_reason(o) is not None:
+        if zero_cost_reason(o) is not None and (o.is_refill or not _purchase_lines_for_cost(db, o)[1]):
             o.theoretical_cost = Decimal("0")
             rezeroed += 1
     if rezeroed:
@@ -1035,7 +1056,7 @@ def auto_cost_backfill(db: Session) -> dict:
         _mp = _multi_product_cost(db, _o)
         if _mp is not None and Decimal(str(_o.theoretical_cost or 0)) != _mp.quantize(_CENTS):
             _o.theoretical_cost = None
-            _o.actual_cost = None    # 多产品按子行汇总; 留 actual 会让 physical_cost 忽略汇总
+            # Derived reconciliation must never erase a real factory bill.
             mp_reset += 1
     if mp_reset:
         db.flush()
@@ -1143,6 +1164,11 @@ def backfill_theoretical_from_pricing(
         if skip_closed and o.status in _CLOSED_STATUSES:
             closed += 1
             continue
+        if _purchase_lines_for_cost(db, o)[1] and not o.is_refill:
+            bd = recompute_and_save(db, o)
+            updated += int(bd.resolved)
+            no_pricing += int(not bd.resolved)
+            continue
         # 补单/安装SKU → 直接归 0, 不查定价表
         if zero_cost_reason(o) is not None:
             o.theoretical_cost = Decimal("0")
@@ -1177,6 +1203,14 @@ def backfill_est_parts(db: Session, *, skip_closed: bool = True) -> dict:
     for o in orders:
         if skip_closed and o.status in _CLOSED_STATUSES:
             closed += 1
+            continue
+        if _purchase_lines_for_cost(db, o)[1] and not o.is_refill:
+            parts = _multi_product_parts(db, o)
+            if parts is None:
+                no_pricing += 1
+            else:
+                o.est_parts = parts.quantize(_CENTS)
+                set_cnt += 1
             continue
         if zero_cost_reason(o) is not None:
             o.est_parts = Decimal("0")

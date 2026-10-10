@@ -92,8 +92,12 @@ def list_products(
             counts["total"] += 1
             counts["review"] += int(status == "review_required")
     out = []
+    from app.services.product_taobao_links import build_link_maps
+    product_links, _ = build_link_maps(db)
     for r in rows:
         base = ProductOut.model_validate(r)
+        base.taobao_links = product_links.get(r.code, {}).get('taobao_links', [])
+        base.taobao_link_status = product_links.get(r.code, {}).get('taobao_link_status', '缺淘宝商品映射')
         base.gallery_image_url = gallery_urls.get(r.code)
         counts = dimension_counts.get(r.code, {})
         base.dimension_asset_count = counts.get("total", 0)
@@ -434,10 +438,13 @@ def list_product_skus(
     from app.services.gallery_lookup import sku_gallery_url_map
     gallery_urls = sku_gallery_url_map(
         [(r.product_code, r.sku_code, r.sku) for r in rows])
+    from app.services.product_taobao_links import build_link_maps
+    _, sku_links = build_link_maps(db)
     out = []
     for r in rows:
         base = PricingSkuOut.model_validate(r).model_dump()
         base["gallery_image_url"] = gallery_urls.get(r.sku_code)
+        base.update(sku_links.get(r.sku_code, {}))
         out.append(PricingSkuOut.model_validate(base))
     return out
 

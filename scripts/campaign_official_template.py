@@ -1,0 +1,544 @@
+"""Preserve the official XLSX package; project only explicitly selected SKU rows.
+
+Artifact-tool has no documented byte-preserving custom-property/package API.
+This ZIP/XML adapter preserves every other part, including the platform marker.
+It makes no network calls and ignores unreliable worksheet dimension metadata.
+"""
+from copy import copy
+from decimal import Decimal, InvalidOperation
+from io import BytesIO
+from pathlib import PurePosixPath
+import re
+from xml.sax.saxutils import escape
+from xml.etree import ElementTree as ET
+from zipfile import ZipFile
+
+NS = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+RID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+ROW = re.compile(r'<row\b[^>]*\br="(\d+)"[^>]*>.*?</row>', re.S)
+CELL = re.compile(r'<c\b[^>]*?\br="([A-Z]+)(\d+)"[^>]*?(?:/>|>.*?</c>)', re.S)
+REF = re.compile(r'^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$')
+
+
+class MergeRanges(list):
+    """Index the same merge geometry once, without rewriting source cells."""
+    def __init__(self, values):
+        super().__init__(values)
+        self.columns={};self.cache={}
+        for ref in values:
+            m=REF.fullmatch(ref)
+            if m and (m[3] or m[1])==m[1]:
+                self.columns.setdefault(m[1],[]).append((int(m[2]),int(m[4] or m[2])))
+
+    def owners(self,n,column):
+        key=(n,column)
+        if key not in self.cache:
+            self.cache[key]=[begin for begin,end in self.columns.get(column,[]) if begin<=n<=end]
+        return self.cache[key]
+
+
+def money(value):
+    try:
+        result = Decimal(str(value))
+        if not result.is_finite() or result < 0 or result != result.quantize(Decimal('.01')):
+            raise ValueError('invalid_money')
+        return result
+    except InvalidOperation as exc:
+        raise ValueError('invalid_money') from exc
+
+
+def _archive(raw):
+    archive = ZipFile(BytesIO(raw))
+    names = archive.namelist()
+    if len(names) != len(set(names)) or sum(p.file_size for p in archive.infolist()) > 100_000_000:
+        archive.close()
+        raise ValueError('invalid_package_size_or_duplicate_parts')
+    return archive
+
+
+def sheet_path(archive, name):
+    wb = ET.fromstring(archive.read('xl/workbook.xml'))
+    candidates = [s for s in wb.findall('s:sheets/s:sheet', NS) if s.get('name') == name]
+    if len(candidates) != 1:
+        raise ValueError('sheet_not_unique:' + name)
+    relationships = ET.fromstring(archive.read('xl/_rels/workbook.xml.rels'))
+    links = [r for r in relationships if r.get('Id') == candidates[0].get(RID)]
+    if len(links) != 1 or links[0].get('TargetMode') == 'External':
+        raise ValueError('invalid_sheet_relationship')
+    target = links[0].get('Target', '')
+    if '..' in PurePosixPath(target).parts or '\\' in target:
+        raise ValueError('invalid_sheet_target')
+    return target.lstrip('/') if target.startswith('/') else 'xl/' + target
+
+
+def _read(archive, path):
+    xml = archive.read(path).decode('utf-8')
+    root = ET.fromstring(xml)
+    shared = []
+    if 'xl/sharedStrings.xml' in archive.namelist():
+        strings = ET.fromstring(archive.read('xl/sharedStrings.xml'))
+        shared = [''.join(t.itertext()) for t in strings]
+    rows = {}
+    for row in root.findall('s:sheetData/s:row', NS):
+        n = int(row.get('r'))
+        if n in rows:
+            raise ValueError('duplicate_row')
+        cells = {}
+        for cell in row.findall('s:c', NS):
+            match = REF.fullmatch(cell.get('r', ''))
+            if not match or int(match[2]) != n or match[3] or match[1] in cells:
+                raise ValueError('invalid_cell_reference')
+            if cell.get('t') == 'inlineStr':
+                value = ''.join(t.text or '' for t in cell.findall('.//s:t', NS))
+            else:
+                value = cell.findtext('s:v', default='', namespaces=NS)
+                if cell.get('t') == 's':
+                    value = shared[int(value)]
+            cells[match[1]] = value
+        rows[n] = cells
+    merges = MergeRanges([m.get('ref') for m in root.findall('s:mergeCells/s:mergeCell', NS)])
+    return xml, root, rows, merges
+
+
+def read_rows(raw, name):
+    """Read physical cells even when the vendor's dimension incorrectly says A1."""
+    with _archive(raw) as archive:
+        return _read(archive, sheet_path(archive, name))[2]
+
+
+def _effective(rows, merges, n, column):
+    if rows.get(n, {}).get(column, '') != '':
+        return rows[n][column]
+    owners = []
+    if isinstance(merges,MergeRanges):
+        anchors=merges.owners(n,column)
+        if len(anchors)>1:raise ValueError('overlapping_merge')
+        return rows.get(anchors[0],{}).get(column,'') if anchors else ''
+    for ref in merges:
+        m = REF.fullmatch(ref)
+        if m and m[1] == column and (m[3] or m[1]) == column and int(m[2]) <= n <= int(m[4] or m[2]):
+            owners.append(rows.get(int(m[2]), {}).get(column, ''))
+    if len(owners) > 1:
+        raise ValueError('overlapping_merge')
+    return owners[0] if owners else ''
+
+
+def _layout(headers):
+    common = {'A':'商品ID','D':'商品状态','E':'SKUID'}
+    layouts = [
+        ({'L':'官方立减默认折扣','P':'活动价','S':'官方立减报名折扣','T':'官方立减金额'}, dict(price='P',percent='S',amount='T',reference='L',last='T',numeric_percent=False)),
+        ({'N':'活动价','O':'库存','P':'包邮','Q':'让利比例','R':'补贴金额','S':'商品短标题','Y':'短视频链接 1:1'}, dict(price='N',inventory='O',percent='Q',amount='R',reference=None,last='Y',numeric_percent=True)),
+        # Official legacy super-reduce SKU/reference/no-fill download observed
+        # 2026-09-11: the optional media fields precede the discount fields.
+        ({'J':'超级立减建议金额','N':'活动价','O':'库存','P':'包邮','Q':'商品短标题','W':'短视频链接 1:1','X':'让利比例','Y':'补贴金额'}, dict(price='N',inventory='O',percent='X',amount='Y',reference=None,last='Y',numeric_percent=True)),
+    ]
+    for expected, layout in layouts:
+        if all(headers.get(c) == label for c,label in {**common,**expected}.items()):
+            return layout
+    raise ValueError('official_template_columns_changed')
+
+
+def template_rows(raw):
+    with _archive(raw) as archive:
+        _, _, rows, merges = _read(archive, sheet_path(archive, '商品SKU导入列表'))
+        layout = _layout(rows.get(2, {}))
+        return [dict(row=n, item=_effective(rows, merges, n, 'A'), sku=cells.get('E'), state=_effective(rows, merges, n, 'D'), rate=_effective(rows, merges, n, layout['reference']) if layout['reference'] else '') for n, cells in sorted(rows.items()) if n >= 4 and cells.get('E')]
+
+
+def validate_signup_manifest(raw, expected_rows=None, *, require_complete_items=True):
+    """Validate the physical SKU manifest before an activity upload.
+
+    The platform parses each physical row, not Excel's merged-cell meaning.
+    Therefore 商品ID must be present on *every* SKU row.  When an ERP/export
+    manifest is supplied, each product must also contain exactly its current
+    SKU set and every activity price must be a positive two-decimal value.
+    This returns a displayable report instead of silently normalising bad data.
+    """
+    with _archive(raw) as archive:
+        path = sheet_path(archive, '商品SKU导入列表')
+        _, _, cells, merges = _read(archive, path)
+        layout = _layout(cells.get(2, {}))
+        if cells.get(2, {}).get('Q') == '库存':
+            layout = dict(layout, inventory='Q')
+        if cells.get(2, {}).get('R') == '发货时间':
+            layout = dict(layout, shipping='R')
+        physical = []
+        for n, row in sorted(cells.items()):
+            if n < 4 or not row.get('E', '').strip():
+                continue
+            physical.append({
+                'row': n, 'item': row.get('A', '').strip(), 'sku': row.get('E', '').strip(),
+                'activity_price': row.get(layout['price'], '').strip(),
+                'inventory': row.get(layout.get('inventory', ''), '').strip() if layout.get('inventory') else '',
+            })
+    errors = []
+    seen = set()
+    for row in physical:
+        if not re.fullmatch(r'\d{8,20}', row['item']):
+            errors.append({'row': row['row'], 'code': 'item_id_missing_or_invalid', 'item': row['item'], 'sku': row['sku']})
+        if not re.fullmatch(r'\d{8,20}', row['sku']):
+            errors.append({'row': row['row'], 'code': 'sku_id_missing_or_invalid', 'item': row['item'], 'sku': row['sku']})
+        pair = (row['item'], row['sku'])
+        if pair in seen:
+            errors.append({'row': row['row'], 'code': 'duplicate_item_sku', 'item': row['item'], 'sku': row['sku']})
+        seen.add(pair)
+        try:
+            if money(row['activity_price']) <= 0:
+                raise ValueError
+        except (ValueError, InvalidOperation):
+            errors.append({'row': row['row'], 'code': 'activity_price_missing_or_invalid', 'item': row['item'], 'sku': row['sku']})
+        inv = row['inventory']
+        if inv and inv != '全部库存':
+            try:
+                if int(inv) <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                errors.append({'row': row['row'], 'code': 'inventory_missing_or_invalid', 'item': row['item'], 'sku': row['sku'], 'inventory': inv})
+    if expected_rows is not None:
+        expected = {}
+        for item, sku, *rest in expected_rows:
+            expected.setdefault(str(item), {})[str(sku)] = (rest[0] if rest else None)
+        actual = {}
+        for row in physical:
+            actual.setdefault(row['item'], {})[row['sku']] = row
+        if require_complete_items:
+            for item, skus in expected.items():
+                missing = sorted(set(skus) - set(actual.get(item, {})))
+                extra = sorted(set(actual.get(item, {})) - set(skus))
+                if missing:
+                    errors.append({'code': 'missing_sku_for_item', 'item': item, 'skus': missing})
+                if extra:
+                    errors.append({'code': 'sku_not_belong_to_item', 'item': item, 'skus': extra})
+            for item in sorted(set(actual) - set(expected)):
+                errors.append({'code': 'unexpected_item_id', 'item': item})
+        for item, skus in expected.items():
+            for sku, expected_price in skus.items():
+                row = actual.get(item, {}).get(sku)
+                if row is not None and expected_price not in (None, ''):
+                    try:
+                        if money(row['activity_price']) != money(expected_price):
+                            errors.append({'row': row['row'], 'code': 'activity_price_mismatch', 'item': item, 'sku': sku,
+                                           'expected': str(expected_price), 'actual': row['activity_price']})
+                    except ValueError:
+                        pass
+    return {'ok': not errors, 'rows': len(physical), 'items': len({r['item'] for r in physical}),
+            'errors': errors, 'physical_rows': physical}
+
+
+def _set_cell(row_xml, column, row_number, value):
+    matches = [m for m in CELL.finditer(row_xml) if m[1] == column]
+    if len(matches) > 1:
+        raise ValueError('duplicate_target_cell')
+    if matches:
+        old = matches[0]
+        start = old[0].split('>', 1)[0].rstrip('/')
+        start = re.sub(r'\s+t="[^"]*"', '', start)
+        new = start + ('/>' if value is None else ' t="n"><v>' + value + '</v></c>')
+        return row_xml[:old.start()] + new + row_xml[old.end():]
+    raise ValueError('official_target_cell_missing:' + column + str(row_number))
+
+
+def discount_rate(value):
+    """Explicit fraction (0.10) or percent text (10%); never guess integer 10."""
+    try:
+        text = str(value).strip()
+        rate = Decimal(text[:-1]) / 100 if text.endswith('%') else Decimal(text)
+        if not rate.is_finite() or not Decimal('0') < rate < Decimal('1'):
+            raise ValueError('invalid_explicit_official_rate')
+        if rate * 100 != (rate * 100).quantize(Decimal('.01')):
+            raise ValueError('unsupported_official_rate_precision')
+        return rate
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError('invalid_explicit_official_rate') from exc
+
+
+def _percent_text(rate):
+    return format((rate * 100).normalize(), 'f') + '%'
+
+
+def _set_percent_text(row_xml, row_number, rate_text):
+    matches = [m for m in CELL.finditer(row_xml) if m[1] == 'S']
+    if len(matches) != 1:
+        raise ValueError('official_percentage_cell_missing')
+    old = matches[0]
+    start = re.sub(r'\s+t="[^"]*"', '', old[0].split('>', 1)[0].rstrip('/'))
+    value = start + ' t="inlineStr"><is><t>' + rate_text + '</t></is></c>'
+    return row_xml[:old.start()] + value + row_xml[old.end():]
+
+
+def _set_text_cell(row_xml, column, row_number, value):
+    """Write an identifier as inline text while preserving the cell style."""
+    matches = [m for m in CELL.finditer(row_xml) if m[1] == column]
+    if len(matches) != 1:
+        raise ValueError('official_text_cell_missing:' + column + str(row_number))
+    old = matches[0]
+    start = re.sub(r'\s+t="[^"]*"', '', old[0].split('>', 1)[0].rstrip('/'))
+    replacement = start + ' t="inlineStr"><is><t>' + escape(str(value)) + '</t></is></c>'
+    return row_xml[:old.start()] + replacement + row_xml[old.end():]
+
+
+def fill_single_discount_rows(raw, selected):
+    """Fill a copy of the reusable 5-column official single-discount master.
+
+    Rows: item, sku, deduct (>0); price calculation and exact window belong to
+    the same-price-version caller. No historical filters, defaults or API calls.
+    Every non-data ZIP part and the original header remain byte-identical.
+    """
+    if not selected:
+        raise ValueError('empty_discount_scope_do_not_upload_empty_file')
+    seen = set()
+    for row in selected:
+        pair = str(row['item']), str(row['sku'])
+        if not all(re.fullmatch(r'\d{8,20}', x) for x in pair) or pair in seen:
+            raise ValueError('invalid_or_duplicate_discount_pair')
+        if money(row['deduct']) <= 0:
+            raise ValueError('nonpositive_discount')
+        seen.add(pair)
+    with _archive(raw) as source:
+        wb = ET.fromstring(source.read('xl/workbook.xml'))
+        candidates = []
+        for sheet in wb.findall('s:sheets/s:sheet', NS):
+            path = sheet_path(source, sheet.get('name'))
+            xml, root, cells, merges = _read(source, path)
+            header = cells.get(1, {})
+            if header.get('A', '').lower().startswith('商品id') and header.get('B', '').startswith('SKU_ID') and header.get('C', '').startswith('优惠值'):
+                candidates.append((path, xml, root, cells, merges))
+        if len(candidates) != 1:
+            raise ValueError('current_discount_template_columns_not_unique')
+        path, xml, root, cells, merges = candidates[0]
+        if merges or any(root.findall('.//s:' + tag, NS) for tag in ['f','tableParts','drawing','legacyDrawing','hyperlinks','dataValidations','conditionalFormatting','autoFilter','extLst']):
+            raise ValueError('unsupported_discount_row_bound_feature')
+        original = {int(m[1]): m[0] for m in ROW.finditer(xml)}
+        if not {1,2}.issubset(original) or set(original) != set(cells):
+            raise ValueError('discount_template_example_row_missing')
+        data = [original[1]]
+        for n, row in enumerate(selected, 2):
+            row_xml = original[2]
+            for col, value in [('A',str(row['item'])), ('B',str(row['sku']))]:
+                matches = [m for m in CELL.finditer(row_xml) if m[1] == col]
+                if len(matches) != 1:
+                    raise ValueError('discount_identity_cell_missing')
+                old = matches[0]
+                start = re.sub(r'\s+t="[^"]*"','',old[0].split('>',1)[0].rstrip('/'))
+                replacement = start + ' t="inlineStr"><is><t>' + escape(value) + '</t></is></c>'
+                row_xml = row_xml[:old.start()] + replacement + row_xml[old.end():]
+            row_xml = _set_cell(row_xml,'C',2,format(money(row['deduct']),'.2f'))
+            for col in ('D','E'):
+                if any(m[1] == col for m in CELL.finditer(row_xml)):
+                    row_xml = _set_cell(row_xml,col,2,None)
+            row_xml = re.sub(r'\br="([A-Z]*)2"', lambda m: 'r="'+m[1]+str(n)+'"',row_xml)
+            data.append(row_xml)
+        if xml.count('<sheetData>') != 1:
+            raise ValueError('unsupported_discount_sheet_data')
+        changed = re.sub(r'<sheetData>.*?</sheetData>','<sheetData>'+''.join(data)+'</sheetData>',xml,count=1,flags=re.S)
+        changed = re.sub(r'<dimension\b[^>]*/>',f'<dimension ref="A1:E{len(selected)+1}"/>',changed,count=1)
+        ET.fromstring(changed)
+        result = BytesIO()
+        with ZipFile(result,'w') as output:
+            for part in source.infolist():
+                output.writestr(copy(part),changed.encode() if part.filename == path else source.read(part.filename))
+        with _archive(result.getvalue()) as output:
+            _, _, output_rows, _ = _read(output,path)
+            for n,row in enumerate(selected,2):
+                if (output_rows[n]['A'],output_rows[n]['B'],money(output_rows[n]['C'])) != (str(row['item']),str(row['sku']),money(row['deduct'])):
+                    raise ValueError('discount_output_readback_failed')
+            if source.namelist() != output.namelist() or any(source.read(name) != output.read(name) for name in source.namelist() if name != path):
+                raise ValueError('discount_non_data_package_part_changed')
+        return result.getvalue()
+
+
+def fill_selected_rows(raw, selected, *, official_rate):
+    """Exact item/sku/activity_price and required current-event official rate.
+
+    Does not discover campaign rules or infer them from a previous event.
+    """
+    rate = discount_rate(official_rate)
+    rate_text = _percent_text(rate)
+    if not selected:
+        raise ValueError('empty_selected_scope')
+    chosen = {}
+    for row in selected:
+        pair = str(row['item']), str(row['sku'])
+        if not all(re.fullmatch(r'\d{8,20}', x) for x in pair) or pair in chosen:
+            raise ValueError('invalid_or_duplicate_selected_pair')
+        price = money(row['activity_price'])
+        if price <= 0:
+            raise ValueError('nonpositive_signup_price')
+        chosen[pair] = format(price, '.2f')
+    with _archive(raw) as source:
+        if 'docProps/custom.xml' not in source.namelist():
+            raise ValueError('official_template_marker_missing')
+        properties = ET.fromstring(source.read('docProps/custom.xml'))
+        if not any(p.get('name') == 'property1' and ''.join(p.itertext()).strip() for p in properties):
+            raise ValueError('official_template_marker_missing')
+        path = sheet_path(source, '商品SKU导入列表')
+        xml, root, cells, merges = _read(source, path)
+        layout = _layout(cells.get(2, {}))
+        optional = {}
+        if cells.get(2, {}).get('Q') == '库存':
+            optional['inventory'] = 'Q'
+        if cells.get(2, {}).get('R') == '发货时间':
+            optional['shipping'] = 'R'
+        if optional:
+            layout = dict(layout, **optional)
+        price_col, percent_col, amount_col = layout['price'], layout['percent'], layout['amount']
+        if layout['numeric_percent']:
+            if rate * 100 != (rate * 100).quantize(Decimal('.1')):
+                raise ValueError('super_reduce_percentage_at_most_one_decimal')
+            rate_text = format((rate * 100).normalize(), 'f')
+        # Row-bound features need their own supported remapping, never silent loss.
+        unsupported = ['f', 'tableParts', 'drawing', 'legacyDrawing', 'hyperlinks', 'dataValidations', 'conditionalFormatting', 'autoFilter', 'extLst']
+        if any(root.findall('.//s:' + tag, NS) for tag in unsupported):
+            raise ValueError('unsupported_row_bound_template_feature')
+        identities = template_rows(raw)
+        pairs = [(r['item'], r['sku']) for r in identities]
+        if len(pairs) != len(set(pairs)):
+            raise ValueError('duplicate_template_sku')
+        if not set(chosen).issubset(set(pairs)):
+            raise ValueError('selected_sku_missing_in_current_template')
+        kept = [r for r in identities if (r['item'], r['sku']) in chosen]
+        if any(r['state'] in ('已发布设定','活动中','进行中','已生效') for r in kept):
+            raise ValueError('successful_template_scope_must_not_replay')
+        # Official UI permits a rate at least its stated minimum. Blank reference
+        # data is not a default: caller must still supply the current-event rate.
+        if any(r['rate'] != '' and discount_rate(r['rate']) > rate for r in kept):
+            raise ValueError('official_rate_below_template_minimum')
+        original_rows = {int(m[1]): m[0] for m in ROW.finditer(xml)}
+        if set(original_rows) != set(cells) or not {1, 2, 3}.issubset(cells):
+            raise ValueError('unsupported_official_row_serialization')
+        mapping = {r['row']: n for n, r in enumerate(kept, 4)}
+        rewritten = {old: original_rows[old] for old in mapping}
+        new_merges = []
+        s_anchors = set(mapping)
+        def filled_rate(value):
+            return discount_rate(str(value) + '%') if layout['numeric_percent'] else discount_rate(value)
+        inventory_col = layout.get('inventory')
+        shipping_col = layout.get('shipping')
+        if any((_effective(cells, merges, r['row'], percent_col) != '' and filled_rate(_effective(cells, merges, r['row'], percent_col)) != rate) or _effective(cells, merges, r['row'], amount_col) != '' for r in kept):
+            raise ValueError('unexpected_prefilled_official_discount')
+        for ref in merges:
+            m = REF.fullmatch(ref)
+            if not m:
+                raise ValueError('invalid_merge_reference')
+            col, begin, end_col, end = m[1], int(m[2]), m[3] or m[1], int(m[4] or m[2])
+            if end <= 3:
+                new_merges.append(ref)
+                continue
+            if begin <= 3 or col != end_col or col in ('E', price_col, amount_col):
+                raise ValueError('unsupported_data_merge')
+            retained = [old for old in mapping if begin <= old <= end]
+            if not retained:
+                continue
+            # Sparse official sheets omit continuation cells completely. Copy
+            # their own merge anchor (including style), never another product.
+            anchor = next((c[0] for c in CELL.finditer(original_rows[begin]) if c[1] == col), None)
+            for old in retained:
+                if not any(c[1] == col for c in CELL.finditer(rewritten[old])):
+                    if anchor is None:
+                        raise ValueError('merged_anchor_source_cell_missing')
+                    copied = re.sub(r'\br="[A-Z]+\d+"', f'r="{col}{old}"', anchor, count=1)
+                    def column_order(name):
+                        value = 0
+                        for ch in name:
+                            value = value * 26 + ord(ch) - ord('A') + 1
+                        return value
+                    following = next((c for c in CELL.finditer(rewritten[old])
+                                      if column_order(c[1]) > column_order(col)), None)
+                    offset = following.start() if following else rewritten[old].rfind('</row>')
+                    rewritten[old] = rewritten[old][:offset] + copied + rewritten[old][offset:]
+            # Inventory is written on every physical SKU row; discard a
+            # template-wide merged inventory anchor rather than preserving a
+            # merge that makes the platform see only the first row.
+            if col in (inventory_col, shipping_col):
+                continue
+            # A merge must not combine different selected products.
+            if len({_effective(cells, merges, old, 'A') for old in retained}) != 1:
+                raise ValueError('cross_item_data_merge')
+            first = retained[0]
+            if first != begin:
+                # Carry the original anchor's cell/style/value into the new anchor.
+                anchor = next((c[0] for c in CELL.finditer(original_rows[begin]) if c[1] == col), None)
+                if anchor:
+                    anchor = re.sub(r'\br="[A-Z]+\d+"', f'r="{col}{first}"', anchor, count=1)
+                    target = next((c for c in CELL.finditer(rewritten[first]) if c[1] == col), None)
+                    if target is None:
+                        raise ValueError('merged_anchor_target_cell_missing')
+                    rewritten[first] = rewritten[first][:target.start()] + anchor + rewritten[first][target.end():]
+            if len(retained) > 1:
+                new_merges.append(f'{col}{mapping[first]}:{col}{mapping[retained[-1]]}')
+            if col == percent_col:
+                s_anchors.difference_update(retained[1:])
+        data = [original_rows[n] for n in (1, 2, 3)]
+        for row in kept:
+            old, new = row['row'], mapping[row['row']]
+            # SKU-dimension import requires 商品ID and SKUID on every physical row.
+            # Some current-page templates leave A blank after the first row; fill
+            # both identifiers explicitly so the platform does not reject those rows.
+            row_xml = _set_text_cell(rewritten[old], 'A', old, row['item'])
+            row_xml = _set_text_cell(row_xml, 'E', old, row['sku'])
+            row_xml = _set_cell(row_xml, price_col, old, chosen[(row['item'], row['sku'])])
+            if inventory_col:
+                # The platform requires inventory on every physical SKU row;
+                # a merged first-row value is not accepted as coverage.
+                inventory = _effective(cells, merges, old, inventory_col) or '全部库存'
+                row_xml = _set_text_cell(row_xml, inventory_col, old, inventory)
+            if shipping_col:
+                shipping = _effective(cells, merges, old, shipping_col)
+                # Blank is an official per-row value, not permission to copy
+                # another product's shipping promise. Some goods forbid it.
+                if shipping or any(c[1] == shipping_col for c in CELL.finditer(row_xml)):
+                    row_xml = _set_text_cell(row_xml, shipping_col, old, shipping)
+            if old in s_anchors and _effective(cells, merges, old, percent_col) == '':
+                row_xml = _set_cell(row_xml,percent_col,old,rate_text) if layout['numeric_percent'] else _set_percent_text(row_xml, old, rate_text)
+            row_xml = re.sub(r'\br="([A-Z]*)' + str(old) + r'"', lambda m: 'r="' + m[1] + str(new) + '"', row_xml)
+            data.append(row_xml)
+        if len(re.findall(r'<sheetData>', xml)) != 1:
+            raise ValueError('unsupported_sheet_data_serialization')
+        changed = re.sub(r'<sheetData>.*?</sheetData>', '<sheetData>' + ''.join(data) + '</sheetData>', xml, count=1, flags=re.S)
+        merge_xml = '<mergeCells count="' + str(len(new_merges)) + '">' + ''.join('<mergeCell ref="' + r + '"/>' for r in new_merges) + '</mergeCells>'
+        if len(re.findall(r'<mergeCells\b', changed)) != 1:
+            raise ValueError('unsupported_merge_serialization')
+        changed = re.sub(r'<mergeCells\b[^>]*>.*?</mergeCells>', merge_xml, changed, count=1, flags=re.S)
+        changed = re.sub(r'<dimension\b[^>]*/>', f'<dimension ref="A1:{layout["last"]}{len(kept)+3}"/>', changed, count=1)
+        ET.fromstring(changed)
+        result = BytesIO()
+        with ZipFile(result, 'w') as output:
+            for part in source.infolist():
+                output.writestr(copy(part), changed.encode('utf-8') if part.filename == path else source.read(part.filename))
+        output_bytes = result.getvalue()
+        # Validate the serialized workbook, not the merged source template.
+        # This catches regressions where a later writer leaves continuation
+        # rows blank even though Excel displays the merged value.
+        manifest = validate_signup_manifest(
+            output_bytes, [(row['item'], row['sku'], chosen[(row['item'], row['sku'])]) for row in kept])
+        if not manifest['ok']:
+            raise ValueError('output_manifest_invalid:' + ';'.join(e['code'] for e in manifest['errors']))
+        if {(r['item'], r['sku']) for r in template_rows(output_bytes)} != set(chosen):
+            raise ValueError('output_identity_readback_failed')
+        values = read_rows(output_bytes, '商品SKU导入列表')
+        for n, row in enumerate(kept, 4):
+            if money(values[n][price_col]) != money(chosen[(row['item'], row['sku'])]):
+                raise ValueError('output_price_readback_failed')
+        with _archive(output_bytes) as output:
+            _, _, output_cells, output_merges = _read(output, path)
+            for row in kept:
+                old, new = row['row'], mapping[row['row']]
+                for col in (chr(c) for c in range(ord('A'),ord(layout['last'])+1) if chr(c) != price_col):
+                    expected = _effective(cells, merges, old, col)
+                    if col == 'A':
+                        expected = str(row['item'])
+                    elif col == 'E':
+                        expected = str(row['sku'])
+                    elif col == inventory_col:
+                        expected = _effective(cells, merges, old, col) or '全部库存'
+                    elif col == shipping_col:
+                        expected = _effective(cells, merges, old, col)
+                    if col == percent_col and expected == '':
+                        expected = rate_text
+                    if _effective(output_cells, output_merges, new, col) != expected:
+                        raise ValueError('non_price_cell_changed:' + col + str(old))
+            if source.namelist() != output.namelist():
+                raise ValueError('package_parts_changed')
+            if any(source.read(name) != output.read(name) for name in source.namelist() if name != path):
+                raise ValueError('non_data_package_part_changed')
+        return output_bytes

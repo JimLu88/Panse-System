@@ -243,6 +243,33 @@ class AgentNotify(BaseModel):
     image_b64: Optional[str] = None  # 二维码/文件预览 PNG (base64)
 
 
+class FeedbackNotice(BaseModel):
+    notice_id: str
+    text: str
+
+
+@router.get('/feedback-notify-capabilities')
+def feedback_notify_capabilities(db: Session = Depends(get_db)):
+    from app.services.feedback_notification_service import capability
+    return capability(db)
+
+
+@router.post('/feedback-notify')
+def feedback_notify(payload: FeedbackNotice, db: Session = Depends(get_db)):
+    from app.services.feedback_notification_service import send_digest
+    try:
+        return send_digest(db, payload.notice_id, payload.text)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.get('/campaign-notify-capabilities')
+def campaign_notify_capabilities(db: Session = Depends(get_db)):
+    return {'protocol':'campaign-terminal-feishu-v1',
+            'ready':_agent_notice_channel(db)=='feishu', 'destination':'feishu_alert',
+            'wechat_fallback':False}
+
+
 @router.post("/notify")
 def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     """Web-Agent 卡点回调。
@@ -260,6 +287,16 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     result: dict = {"feishu": None, "wechat": None}
     notice_text = _sanitize_auth_notice(payload.text)
     channel = _agent_notice_channel(db)
+
+    if payload.kind == 'campaign_terminal':
+        # Campaign result notices must never fall back to WeChat or the order
+        # group. The local durable outbox owns deduplication/uncertain sends.
+        if channel != 'feishu':
+            return {'ok': False, 'reason': 'feishu_alert_route_required', 'delivered': False}
+        ok, msg = notify_service.notify(db, notice_text,
+            level='info', title='畔色 ERP | 活动报名结果',
+            wechat_allowed=False, enqueue_on_failure=False)
+        return {'ok': bool(ok), 'delivered': bool(ok), 'channel': 'feishu', 'detail': msg}
 
     # 成功事件只清除“已提醒”标记，不外发；下次真的再次失效时才允许重新提醒。
     if payload.kind == "scan_ok":

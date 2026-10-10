@@ -382,7 +382,7 @@ function SalesSummaryTab() {
   );
 }
 
-function SalesBreakdownTab() {
+export function SalesBreakdownTab() {
   const [period, setPeriod] = useState<Period>('30d');
   const [brand, setBrand] = useState('');
   const { data, isLoading } = useQuery({
@@ -396,28 +396,31 @@ function SalesBreakdownTab() {
         <Select size="small" value={brand} onChange={setBrand} options={BRAND_OPTS} style={{ width: 130 }} />
       </Space>
       <Card size="small" title={`分 SKU 销售 (${data?.period_start} ~ ${data?.period_end})`}>
+        <Alert type="info" showIcon style={{ marginBottom: 12 }} message="多商品订单逐子单统计购买件数；整单金额、成本和利润只计一次。没有分摊依据的金额单列，子单显示待分摊，不代表零售价或零利润。" />
         <Table size="small" loading={isLoading}
-               rowKey={(r) => `${r.product_code}_${r.sku_code}`}
+               rowKey={(r) => `${r.product_code}_${r.sku_code}_${!!r.money_pending}`}
                dataSource={data?.rows ?? []}
                pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
                scroll={{ x: 1200 }}
                columns={[
-                 { title: '产品', dataIndex: 'product_code', width: 100 },
+                 { title: '产品', dataIndex: 'product_code', width: 100,
+                   render: (v: string) => v === '__MULTI_UNALLOCATED__' ? '整单金额汇总' : v },
                  { title: '名称', dataIndex: 'product_name', width: 180 },
                  { title: 'SKU', dataIndex: 'sku_code', width: 100 },
                  { title: 'SKU 名', dataIndex: 'sku' },
-                 { title: '件数', dataIndex: 'qty', width: 70 },
+                 { title: '购买件数', dataIndex: 'qty', width: 100,
+                   render: (v: number, r) => r.unknown_quantity_count ? `${v}（另有数量待核实）` : v },
                  { title: '销售额', dataIndex: 'revenue', width: 110,
-                   render: (v: number) => `¥${Number(v ?? 0).toFixed(2)}` },
+                   render: (v: number, r) => r.money_pending ? '待分摊' : `¥${Number(v ?? 0).toFixed(2)}` },
                  { title: '成本', dataIndex: 'cost', width: 110,
-                   render: (v: number) => `¥${Number(v ?? 0).toFixed(2)}` },
+                   render: (v: number, r) => r.money_pending ? '待分摊' : `¥${Number(v ?? 0).toFixed(2)}` },
                  { title: '利润', dataIndex: 'net_profit', width: 110,
-                   render: (v: number) =>
+                   render: (v: number, r) => r.money_pending ? '待分摊' :
                      <Tag color={v >= 0 ? 'green' : 'red'}>¥{Number(v ?? 0).toFixed(2)}</Tag> },
                  { title: '毛利率', dataIndex: 'gross_profit_rate', width: 90,
-                   render: (v: number) => `${((v ?? 0) * 100).toFixed(1)}%` },
+                   render: (v: number, r) => r.money_pending ? '待分摊' : `${((v ?? 0) * 100).toFixed(1)}%` },
                  { title: '利润率', dataIndex: 'net_profit_rate', width: 90,
-                   render: (v: number) =>
+                   render: (v: number, r) => r.money_pending ? '待分摊' :
                      <Tag color={v > 0.3 ? 'green' : v > 0.1 ? 'orange' : 'red'}>
                        {((v ?? 0) * 100).toFixed(1)}%
                      </Tag> },

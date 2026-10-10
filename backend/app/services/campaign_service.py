@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 import hashlib
 import json
 import re
@@ -1867,12 +1867,41 @@ def _build_discount_xlsx(rows: list[dict]) -> bytes:
     return out.getvalue()
 
 
+def _assert_signup_manifest_rows(rows: list[dict]) -> None:
+    """Hard-stop malformed SKU manifests before any workbook is produced.
+
+    The platform reads each physical row.  Keep this check next to both
+    activity builders so a future exporter cannot regress to merged/blank
+    continuation 商品ID rows or silently carry an invalid SKU/price.
+    """
+    seen_items: set[str] = set()
+    seen_skus: set[str] = set()
+    for index, row in enumerate(rows, start=4):
+        item = str(row.get("taobao_item_id") or "").strip()
+        sku = str(row.get("taobao_sku_id") or "").strip()
+        if not item.isdigit() or len(item) < 8:
+            raise ValueError(f"活动报名第{index}行商品ID为空或非法")
+        if not sku.isdigit() or len(sku) < 8:
+            raise ValueError(f"活动报名第{index}行SKU ID为空或非法")
+        if sku in seen_skus:
+            raise ValueError(f"活动报名SKU重复: {sku}")
+        price = row.get("price")
+        try:
+            if price is None or Decimal(str(price)) <= 0:
+                raise ValueError
+        except (TypeError, ValueError, InvalidOperation):
+            raise ValueError(f"活动报名第{index}行活动价为空或非法")
+        seen_items.add(item)
+        seen_skus.add(sku)
+
+
 def _build_signup_xlsx(
         rows: list[dict], shipping_days_by_item: dict[str, int] | None = None) -> bytes:
     """大促报名上传表: 官方模板 promo_signup_sku.xlsx (保留说明sheet+前3行表头, 数据从第4行)。"""
     import io
     from pathlib import Path
     import openpyxl
+    _assert_signup_manifest_rows(rows)
     tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
     wb = openpyxl.load_workbook(tpl)
     ws = wb["商品SKU导入列表"]
@@ -1910,6 +1939,7 @@ def _build_super_signup_xlsx(rows: list[dict]) -> bytes:
     from pathlib import Path
     import openpyxl
 
+    _assert_signup_manifest_rows(rows)
     tpl = (Path(__file__).resolve().parent.parent / "assets" / "taobao_templates"
            / "super_reduce_import.xlsx")
     wb = openpyxl.load_workbook(tpl)

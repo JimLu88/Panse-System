@@ -1,0 +1,18 @@
+name: Business relationship source review
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  source-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify reviewed relationship sources without executing business code
+        working-directory: backend
+        run: python -m app.cli.business_relationships --check

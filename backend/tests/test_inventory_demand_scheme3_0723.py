@@ -294,7 +294,16 @@ def test_abc_uses_cleaned_quantity_not_raw_3200(db_session):
     assert abc["P26010040404"] == "A"
 
 
-def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
+def test_inventory_orders_and_monthly_share_final_restock_number(db_session, monkeypatch):
+    # The fixture is a July scenario, not a test of the machine's current date.
+    # Previously it started failing merely because its samples aged out of 30d.
+    class ScenarioDate(date):
+        @classmethod
+        def today(cls):
+            return AS_OF
+    for module in (demand, monthly, restock, product_inventory_service, sales_analytics):
+        monkeypatch.setattr(module, 'date', ScenarioDate)
+    monkeypatch.setitem(globals(), 'date', ScenarioDate)
     db = db_session
     for i in range(12):
         _order(

@@ -57,8 +57,10 @@ fi
 echo "  镜像版本标记一致 ✓ ($head_short)"
 
 echo "[2/7] 回收: 悬空镜像 + 构建缓存压到 ≤6GB (防 vhdx 疯长吃满 C 盘)"
-docker image prune -f >/dev/null 2>&1 || true
-docker builder prune -f --keep-storage=6GB >/dev/null 2>&1 || true
+if [[ "${PANSE_SKIP_GLOBAL_PRUNE:-0}" != "1" ]]; then
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --keep-storage=6GB >/dev/null 2>&1 || true
+fi
 
 rollback="panse-system-web:rollback-$(date +%Y%m%d-%H%M%S)"
 echo "[3/7] 给 NAS 当前 Web 镜像打回滚标签: $rollback"

@@ -68,6 +68,42 @@ def order_text(o) -> str:
     ) if t)
 
 
+def shipping_month(o) -> str:
+    """Literal month, never coerced to a day or an automatic release date."""
+    value = str(getattr(o, "customer_shipping_month", None) or "")
+    return value if re.fullmatch(r"20\d{2}-(0[1-9]|1[0-2])", value) else ""
+
+
+def platform_shipping_hold(o) -> bool:
+    text = str(getattr(o, "platform_remark_tags", None) or "")
+    for term in ("延迟等通知", "延期", "延迟发货", "等通知", "待通知", "暂不发货"):
+        for match in re.finditer(re.escape(term), text):
+            if not any(w in text[max(0, match.start()-4):match.start()] for w in ("取消", "无需", "不用", "不再")):
+                return True
+    return False
+
+
+def month_preserves_production(o) -> bool:
+    """An independently confirmed existing factory identity, NOT the month itself."""
+    return bool(shipping_month(o) and getattr(o, "customer_shipping_preserve_production", False)
+        and getattr(o, "factory_no", None) and not getattr(o, "is_remote_ship", False)
+        and not any(k in order_text(o) for k in ("暂停生产", "停止生产", "暂不制作", "暂不生产", "先不做")))
+
+
+def shipping_delay_label(o) -> str:
+    month = shipping_month(o)
+    if month:
+        year, number = month.split("-")
+        return f"用户确认：延期至{year}年{int(number)}月发货（具体日待确认）"
+    if platform_shipping_hold(o):
+        return "平台标签提示延期，发货前等确认"
+    return ""
+
+
+def has_shipping_delay(o) -> bool:
+    return bool(shipping_month(o) or platform_shipping_hold(o) or getattr(o, "is_customer_delayed", False))
+
+
 def is_activated_text(text: Optional[str]) -> bool:
     """文本是否含【无否定前缀】的激活词。"""
     if not text:
@@ -94,6 +130,9 @@ def is_customer_delay_activated(o) -> bool:
     “可以制作”“预计发货日”“制作好后通风”等都不能替代客户已通知开工的
     明确信号，避免尚未要求发货的订单因日期临近被算成非常紧急。
     """
+    # Month confirmation only postpones shipping, not production or factory identity.
+    if shipping_month(o):
+        return month_preserves_production(o)
     text = order_text(o)
     i = text.find("开始制作")
     while i != -1:
@@ -114,6 +153,8 @@ def waits_for_shipping_notice(o) -> bool:
     该判断只控制发货安排，不参与是否开工/是否分配工厂号。显式的“无需通知
     直接发货”可以解除旧备注，普通“开始制作”只解除生产挂起，不能解除发货门。
     """
+    if shipping_month(o) or platform_shipping_hold(o):
+        return True
     text = "".join(order_text(o).split())
     if any(k in text for k in WAIT_SHIPPING_NOTICE_NEGATIVE_KW):
         return False
@@ -123,6 +164,8 @@ def waits_for_shipping_notice(o) -> bool:
 def is_remote(o) -> bool:
     """是否远期挂起单 = (手动远期 或 备注远期词) 且【未被激活】。激活优先级最高。
     远期挂起单: 不生成/不推工厂下单图、不占工厂单号 —— 等激活后再以新号推 (用户 2026-07-08)。"""
+    if month_preserves_production(o):
+        return False
     if is_activated(o):
         return False
     if bool(getattr(o, "is_remote_ship", False)):
@@ -186,6 +229,8 @@ def is_factory_remote(o, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> bool
     """工厂看板口径的『远期挂起』(比 is_remote 多了【日期式延期】, 如"8月1日发货"):
     未激活 且 (手动远期 / (无人工截止时)备注预定发货日距今 > 工期 / 关键词远期)。
     与 api/orders.py factory_production 的 st=='remote' 级联完全一致 (用户 2026-07-09 统一)。"""
+    if month_preserves_production(o):
+        return False
     if is_activated(o):
         return False
     if getattr(o, "is_remote_ship", False):
@@ -229,7 +274,10 @@ def factory_schedule(o, *, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> di
     text = order_text(o)
     resume_date = parse_resume_date(text, base, today)
 
-    if bool(getattr(o, "is_customer_delayed", False)) and not is_customer_delay_activated(o):
+    if shipping_month(o) or platform_shipping_hold(o):
+        # Shipping-only hold: do not present an old daily deadline or stop production.
+        effective, days_left, urgency = None, None, "normal"
+    elif bool(getattr(o, "is_customer_delayed", False)) and not is_customer_delay_activated(o):
         effective, days_left, urgency = None, None, "remote"
     elif bool(getattr(o, "is_customer_delayed", False)):
         effective = getattr(o, "customer_delay_deadline", None)

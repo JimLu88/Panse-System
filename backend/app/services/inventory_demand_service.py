@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.services import product_coder, sku_utils
+from app.services.order_purchase_facts import demand_projections, purchase_line_groups
 
 WINDOWS = (7, 15, 30, 60, 90)
 SHORT_WEIGHTS = {7: 0.50, 15: 0.30, 30: 0.20}
@@ -71,6 +72,8 @@ class DemandObservation:
     effective_qty: int
     net_sales_amount: float
     anomaly: Optional[str] = None
+    money_pending: bool = False
+    sub_order_no: Optional[str] = None
 
 
 def _as_float(v, default: float) -> float:
@@ -159,7 +162,7 @@ def _confirmed_bulk(cfg: Optional[dict]) -> set[str]:
 def classify_order(
     o: Order, *, placeholder_codes: set[str], cfg: Optional[dict] = None,
 ) -> DemandObservation:
-    raw_qty = max(1, int(o.qty or 1))
+    raw_qty = 0 if getattr(o, "_quantity_unknown", False) else max(1, int(o.qty or 1))
     product_name = str(o.product_name or "")
     sku = str(o.sku or "")
     sku_code = str(o.sku_code or "")
@@ -182,7 +185,7 @@ def classify_order(
         )
         kind = "custom" if custom else "standard"
 
-    anomaly = None
+    anomaly = "quantity_unknown" if getattr(o, "_quantity_unknown", False) else None
     effective_qty = raw_qty
     confirmed = str(o.order_no or "") in _confirmed_bulk(cfg)
     if raw_qty > 3 and not confirmed:
@@ -211,6 +214,8 @@ def classify_order(
         effective_qty=effective_qty,
         net_sales_amount=net_sales_amount,
         anomaly=anomaly,
+        money_pending=getattr(o, "_money_pending", False),
+        sub_order_no=getattr(o, "_purchase_sub_order_no", None),
     )
 
 
@@ -226,14 +231,17 @@ def load_observations(
         Order.is_refill == False,  # noqa: E712
         Order.status.in_(_SETTLED_STATUSES),
     )
-    if product_codes:
-        stmt = stmt.where(Order.product_code.in_(set(product_codes)))
+    wanted = set(product_codes) if product_codes else None
     placeholders = _placeholder_codes(db)
     out = []
-    for o in db.execute(stmt).scalars().all():
-        if not _is_settled(o) or not o.product_code:
+    orders = db.execute(stmt).scalars().all()
+    groups = purchase_line_groups(db, orders)
+    for o in orders:
+        if not _is_settled(o):
             continue
-        out.append(classify_order(o, placeholder_codes=placeholders, cfg=cfg))
+        for item in demand_projections(db, o, imported=groups[o.order_no]):
+            if item.product_code and (wanted is None or item.product_code in wanted):
+                out.append(classify_order(item, placeholder_codes=placeholders, cfg=cfg))
     return out
 
 
@@ -296,13 +304,15 @@ def build_profile(
         "window_units": {str(k): round(v, 2) for k, v in units.items()},
         "actual_window_units": {str(k): v for k, v in actual_units.items()},
         "actual_window_sales": {str(k): v for k, v in actual_sales.items()},
+        "sales_amount_incomplete": any(o.money_pending for o in selected),
+        "unallocated_sales_line_count": sum(o.money_pending for o in selected),
         "actual_daily_30d": round(actual_units[30] / 30, 4),
         "sale_days": {str(k): v for k, v in sale_days.items()},
         "cny_daily": round(cny_daily, 4),
         "cny_units": cny_units,
         "cny_days": cny_days,
         "anomalies": [
-            {"order_no": o.order_no, "raw_qty": o.raw_qty, "reason": o.anomaly}
+            {"order_no": o.order_no, "sub_order_no": o.sub_order_no, "raw_qty": o.raw_qty, "reason": o.anomaly}
             for o in observations if o.anomaly
         ],
     }
@@ -373,19 +383,27 @@ def current_unshipped_standard_qty(
 ) -> float:
     variants = product_coder.brand_variants(product_code) or {product_code}
     stmt = select(Order).where(
-        Order.product_code.in_(variants),
-        Order.ship_date.is_(None),
         Order.is_refill == False,  # noqa: E712
         Order.status.in_(_SETTLED_STATUSES),
     )
     placeholders = _placeholder_codes(db)
     total = 0
-    for o in db.execute(stmt).scalars().all():
+    orders = db.execute(stmt).scalars().all()
+    groups = purchase_line_groups(db, orders)
+    for o in orders:
         if not _is_settled(o):
             continue
-        row = classify_order(o, placeholder_codes=placeholders, cfg=cfg)
-        if row.kind == "standard" and (not sku_contains or sku_contains in row.sku):
-            total += row.effective_qty
+        for item in demand_projections(db, o, imported=groups[o.order_no]):
+            if item.product_code not in variants:
+                continue
+            if getattr(item, "_is_child_projection", False):
+                if getattr(item, "_line_status", None) != "paid":
+                    continue  # Unknown child shipment never inherits parent state.
+            elif item.ship_date is not None:
+                continue
+            row = classify_order(item, placeholder_codes=placeholders, cfg=cfg)
+            if row.kind == "standard" and (not sku_contains or sku_contains in row.sku):
+                total += row.effective_qty
     return float(total)
 
 

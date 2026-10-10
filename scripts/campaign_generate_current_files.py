@@ -1,0 +1,407 @@
+"""01 single local generation from one price snapshot and current official templates.
+
+No network/browser/ERP writes. Unknown prices/mappings are reported once,
+not guessed or silently excluded. Does not authorize upload or a new discount.
+"""
+import argparse
+from datetime import datetime
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+import hashlib
+import json
+from pathlib import Path
+
+from campaign_official_template import discount_rate, fill_selected_rows, fill_single_discount_rows, money, template_rows
+from campaign_price_snapshot import digest
+from campaign_reserve_policy import fixed_basis, inherit_basis
+from campaign_discount_template import FIXED_TEMPLATE, load_fixed_discount_template
+
+SUCCESS = {'活动中','进行中','已生效','已发布设定'}
+
+
+def official_cut(daily, rate):
+    # Match campaign_service._discount_row_for_sale: existing platform evidence
+    # uses whole-yuan ceiling at ordinary prices, exact cents below 100 yuan.
+    exact = daily * rate
+    if daily < Decimal('100'):
+        return exact.quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+    return exact.to_integral_value(rounding=ROUND_CEILING)
+
+
+def load(path):
+    return json.loads(path.read_text(encoding='utf-8-sig'))
+
+
+def sha(raw):
+    return hashlib.sha256(raw).hexdigest()
+
+
+def load_bases(paths):
+    # Shared receipt adapter: no two-source allowlist or fixed coverage count.
+    # First-pass generation still accepts no basis. Historical daily is not fixed.
+    from campaign_price_basis import receipt_records
+    bases = {}
+    for path in paths:
+        raw = path.read_bytes()
+        for record in receipt_records(json.loads(raw.decode('utf-8-sig')), path):
+            key = record['item'], record['sku']
+            basis = dict(record['basis'], source_sha256=sha(raw))
+            if key in bases and (
+                Decimal(bases[key]['original']) != Decimal(basis['original'])
+                or bases[key].get('erp_code') != basis.get('erp_code')
+            ):
+                raise ValueError('conflicting_fixed_custom_basis:' + '/'.join(key))
+            bases[key] = basis
+    return bases
+
+
+def build_rows(snapshot, identities, rate, target, bases, signup_items=None, discount_items=None, *, platform_caps=None, official_limits=None):
+    from campaign_price_snapshot import exclusion_ids
+    excluded_links=exclusion_ids(snapshot)
+    erp = snapshot['all_erp_rows']
+    if digest(erp) != snapshot['resolved_price_version_sha256']:
+        raise ValueError('price_snapshot_changed')
+    from campaign_failure_remediation import mapped_erp_rows
+    erp=mapped_erp_rows(snapshot)
+    from campaign_sku_fact_store import FactResolver
+    export_rows = None
+    export_ref = snapshot.get('generation_product_export')
+    if export_ref:
+        from campaign_generation_export import read_export, bind_rows
+        _, export_rows = read_export(export_ref)
+        erp = bind_rows(erp, export_rows)
+    facts = FactResolver(dict(snapshot, all_erp_rows=erp),
+                         generation_facts=export_rows, generation_reference=export_ref)
+    index = {}
+    for row in erp:
+        item_ids = set(str(x) for x in [row.get('item'),row.get('product_item_id'),*(row.get('product_alt_item_ids') or [])] if x)
+        for item in item_ids:
+            for sku in set([str(row.get('sku') or ''), *map(str,row.get('alt') or [])]):
+                if sku:
+                    index.setdefault((item,sku), []).append(row)
+    activity, discounts, issues = [], [], []
+    successful_items = {row['item'] for row in identities if row['state'] in SUCCESS}
+    present_items = {row['item'] for row in identities}
+    for selected in (signup_items,discount_items):
+        if selected is not None and not selected.issubset(present_items):
+            raise ValueError('explicit_scope_item_not_in_current_template')
+    pairs = set()
+    for identity in identities:
+        pair = identity['item'], identity['sku']
+        if pair in pairs:
+            raise ValueError('duplicate_current_template_pair')
+        pairs.add(pair)
+        if pair[0] in excluded_links:
+            continue  # Exact whole-link marker, never a product/SKU deletion.
+        row_common = dict(item=pair[0],sku=pair[1])
+        needs_signup = pair[0] not in successful_items and (signup_items is None or pair[0] in signup_items)
+        needs_discount = discount_items is None or pair[0] in discount_items
+        if not needs_signup and not needs_discount:
+            continue
+        if export_rows is not None and pair not in facts.facts:
+            issues.append(dict(**row_common,error='sku_missing_from_current_complete_export'))
+            continue
+        matches = index.get(pair, [])
+        if not needs_signup and facts.custom_only(*pair, matches):
+            continue  # Custom mapping problems are irrelevant to ordinary-only discounts.
+        matches, fact_issue, fact_evidence = facts.resolve(*pair, matches)
+        if fact_issue:
+            issues.append(dict(**row_common, error=fact_issue, source=fact_evidence))
+            continue
+        if fact_evidence:
+            row_common['sku_fact_evidence'] = fact_evidence
+        if len(matches) != 1:
+            issues.append(dict(**row_common,error='erp_mapping_missing_or_not_unique',matches=len(matches)))
+            continue
+        row = matches[0]
+        row_common['erp_code'] = row['code']
+        if row.get('custom') not in (True,False):
+            issues.append(dict(**row_common,error='custom_classification_unknown'))
+            continue
+        # Successful activity rows are not resubmitted, but ordinary new-window
+        # discounts must still cover them. Custom SKUs do not get single discounts.
+        if row['custom'] and not needs_signup:
+            continue
+        try:
+            daily = money(row['daily'])
+            if daily <= 0:
+                raise ValueError('daily_price_missing_or_nonpositive')
+            limit = None
+            if official_limits is not None:
+                limit = official_limits.get(pair)
+                if not limit or not limit.get('price_cap') or not limit.get('final_cap'):
+                    raise ValueError('current_official_price_limits_missing')
+                price_cap, final_cap = money(limit['price_cap']), money(limit['final_cap'])
+                if min(price_cap, final_cap) <= 0:
+                    raise ValueError('current_official_price_limits_nonpositive')
+                row_common.update(official_price_cap=str(price_cap), platform_cap=str(final_cap), cap_tolerance='2')
+            if row['custom']:
+                basis = bases.get(pair)
+                if basis is not None and basis.get('lineage') and basis['lineage'][-1]['erp_code'] != row['code']:
+                    raise ValueError('lineage_erp_code_not_current_snapshot')
+                if basis is not None and daily < Decimal(basis['floor']):
+                    raise ValueError('current_daily_below_fixed_custom_floor_requires_user_decision')
+                candidate = daily
+                if limit is not None and (daily > price_cap or daily-official_cut(daily, rate) > final_cap):
+                    if not limit.get('suggested_price'):
+                        raise ValueError('custom_official_suggested_price_missing')
+                    candidate = min(daily, price_cap, money(limit['suggested_price']))
+                    if candidate <= 0 or candidate-official_cut(candidate, rate) > final_cap:
+                        raise ValueError('custom_official_suggestion_exceeds_final_cap')
+                    if not basis or basis.get('uncertain'):
+                        raise ValueError('custom_fixed_original_missing_or_uncertain')
+                    if candidate < Decimal(basis['floor']).quantize(Decimal('.01'), rounding=ROUND_CEILING):
+                        raise ValueError('custom_candidate_below_fixed_floor_requires_rotation')
+                activity.append(dict(**row_common,activity_price=str(candidate),custom=True,custom_basis=basis,
+                    price_action='official_suggestion_with_fixed_floor' if candidate<daily else 'keep_current_erp_daily_no_lowering',
+                    erp_daily=str(daily),basis_required_before_lowering=True))
+                continue
+            if limit is not None and daily > price_cap:
+                raise ValueError('erp_daily_exceeds_official_price_cap_requires_rotation')
+            goal, big = money(row[target+'_target']), money(row['big_target'])
+            cut = official_cut(daily, rate)
+            deduct = daily-cut-goal
+            if goal <= 0 or big <= 0 or goal < big or deduct < 0 or daily-cut-deduct != goal:
+                raise ValueError('price_formula_cannot_meet_frozen_target')
+            final=goal
+            if platform_caps is not None or limit is not None:
+                from campaign_cap_price import ordinary_price
+                cap = final_cap if limit is not None else platform_caps.get(pair)
+                if cap in (None,''):
+                    raise ValueError('current_platform_cap_missing')
+                capped=ordinary_price(daily,goal,rate,cap)
+                deduct,final=Decimal(capped['deduct']),Decimal(capped['final'])
+                # Keep the original target, never ratchet it down on a later run.
+                row_common.update(platform_cap=capped['platform_cap'],cap_tolerance=capped['cap_tolerance'])
+            if needs_signup:
+                activity.append(dict(**row_common,activity_price=str(daily),custom=False,target=str(goal),big_target=str(big)))
+            if needs_discount and deduct > 0:
+                discounts.append(dict(**row_common,deduct=str(deduct),daily=str(daily),official_cut=str(cut),target=str(goal),big_target=str(big),final=str(final),custom=False))
+        except (KeyError, ValueError, TypeError) as exc:
+            detail=dict(**row_common,error=str(exc))
+            if platform_caps is not None:
+                detail.update(daily=row.get('daily'),target=row.get(target+'_target'),platform_cap=platform_caps.get(pair))
+            issues.append(detail)
+    return activity, discounts, issues
+
+
+def generate(args):
+    from campaign_entry_authority import Authority
+    authority=Authority()
+    try:
+        return _generate(args,authority)
+    finally:
+        authority.close()
+
+
+def isolate_item_issues(issues, requested_items, **groups):
+    """Partition complete products only; unscoped errors must remain fatal."""
+    bad = set()
+    for issue in issues:
+        item = issue.get('item')
+        if not isinstance(item, str) or item not in requested_items:
+            raise ValueError('unscoped_issue_cannot_be_isolated')
+        bad.add(item)
+    return bad, {name: [row for row in rows if row['item'] not in bad]
+                 for name, rows in groups.items()}
+
+
+def _generate(args,authority):
+    if args.output_dir.exists():
+        raise ValueError('output_exists_do_not_overwrite_or_replay')
+    start, end = (datetime.strptime(x,'%Y-%m-%d %H:%M:%S') for x in (args.start,args.end))
+    if end < start or (end == start and not getattr(args, 'time_request', None)):
+        raise ValueError('invalid_exact_window')
+    from campaign_entry_authority import exact_campaign, validate_price
+    campaign = exact_campaign(getattr(args, 'campaign_key', None))
+    raw = args.activity_template.read_bytes()
+    rate = discount_rate(args.official_rate)
+    signup_items = set(args.signup_items.split(',')) if args.signup_items is not None else None
+    discount_items = set(args.discount_items.split(',')) if args.discount_items is not None else None
+    # Persist explicitly supplied sources, so the next task need not remember flags.
+    for path in args.custom_basis_receipt:
+        authority.register_source(path,'fixed',sha(path.read_bytes()))
+    snapshot_scope = None
+    if (getattr(args, 'continuous_rule_sha', None) is not None
+            and signup_items is not None and discount_items is not None):
+        snapshot_scope = sorted(signup_items | discount_items)
+    if snapshot_scope:
+        from campaign_snapshot_scope import resolve_for_items
+        snapshot = resolve_for_items(authority, load(args.snapshot), snapshot_scope)
+    else:
+        snapshot = authority.resolve_snapshot(load(args.snapshot))
+    export_path = getattr(args, 'product_export_observation', None)
+    if export_path:
+        snapshot['generation_product_export'] = dict(path=str(export_path.resolve()), sha256=sha(export_path.read_bytes()))
+    time_binding = None
+    if getattr(args, 'time_request', None) or getattr(args, 'time_segment', None):
+        if not getattr(args, 'time_request', None) or not getattr(args, 'time_segment', None):
+            raise ValueError('time_request_and_segment_required_together')
+        from campaign_segmented_time import bind_request, validate_binding
+        time_binding = bind_request(args.time_request, args.time_segment)
+        validate_binding(dict(time_binding=time_binding,
+            continuous_rule_sha=getattr(args, 'continuous_rule_sha', None),
+            campaign=campaign, target=args.target, official_rate=args.official_rate,
+            price_version=snapshot['resolved_price_version_sha256'], start=args.start, end=args.end))
+    bases=authority.bases(snapshot)
+    identities=template_rows(raw)
+    limits = None
+    if getattr(args, 'official_price_limits', False):
+        from campaign_template_price_limits import read_limits
+        if getattr(args, 'custom_corrections', None):
+            raise ValueError('official_limits_and_manual_corrections_not_combined')
+        limits = read_limits(raw)
+    from campaign_catalog_repair import excluded_pairs as catalog_excluded_pairs
+    catalog_excluded=catalog_excluded_pairs(snapshot,identities)
+    identities=[r for r in identities if (r['item'],r['sku']) not in catalog_excluded]
+    exclusions=getattr(args,'sku_exclusion_receipts',[]) or []
+    if exclusions:
+        from campaign_failure_remediation import excluded_pairs
+        excluded=excluded_pairs(exclusions)
+        identities=[r for r in identities if (r['item'],r['sku']) not in excluded]
+    blocked_signup=authority.blocked(campaign,'signup',args.start,args.end)
+    blocked_discount=authority.blocked(campaign,'discount',args.start,args.end,historical_only=True)
+    present={r['item'] for r in identities}
+    from campaign_price_snapshot import exclusion_ids
+    excluded_links=exclusion_ids(snapshot)
+    signup_items=(present if signup_items is None else signup_items)-blocked_signup.keys()
+    discount_items=present if discount_items is None else discount_items
+    signup_items=signup_items-excluded_links
+    discount_items=discount_items-excluded_links
+    missing=(signup_items|discount_items)-present
+    if missing and getattr(args,'continuous_rule_sha',None):
+        activity, discounts, issues=build_rows(snapshot,identities,rate,args.target,bases,signup_items&present,discount_items&present,official_limits=limits)
+        issues.extend(dict(item=i,sku='',error='item_missing_in_official_template') for i in sorted(missing))
+    else:
+        activity, discounts, issues = build_rows(snapshot,identities,rate,args.target,bases,signup_items,discount_items,official_limits=limits)
+    corrections=load(args.custom_corrections) if getattr(args,'custom_corrections',None) else {'rows':[]}
+    by_pair={(r['item'],r['sku']):r for r in activity}
+    seen=set()
+    for correction in corrections['rows']:
+        pair=correction['item'],correction['sku']
+        if pair in seen:raise ValueError('duplicate_custom_correction')
+        seen.add(pair)
+        row=by_pair.get(pair)
+        if row is None:raise ValueError('custom_correction_outside_current_unsuccessful_scope')
+        daily=row['activity_price']
+        candidate=dict(row,activity_price=correction['activity_price'])
+        # Authorizations and failure evidence are exact immutable local receipts,
+        # never a broad flag inferred from an AI recommendation or ceiling.
+        auth=load(Path(correction['authorization_path']))
+        failure=load(Path(correction['failure_path']))
+        authorized=sha(Path(correction['authorization_path']).read_bytes())==correction['authorization_sha256'] and auth.get('campaign')==campaign and any(
+            (x.get('item'),x.get('sku'),str(x.get('activity_price')))==(*pair,str(candidate['activity_price'])) for x in auth.get('authorized_custom_prices',[]))
+        failed=sha(Path(correction['failure_path']).read_bytes())==correction['failure_sha256'] and failure.get('campaign')==campaign and failure.get('terminal') is True and bool(failure.get('batch_id')) and any(
+            (x.get('item'),x.get('sku'),x.get('status'))==(*pair,'failed') for x in failure.get('rows',[]))
+        try:
+            validate_price(candidate,daily,bases.get(pair),lowering_authorized=authorized,failed_exact=failed)
+            row.update(activity_price=candidate['activity_price'],price_action='authorized_failed_custom_lowering',lowering_evidence=correction)
+        except ValueError as exc:issues.append(dict(item=pair[0],sku=pair[1],error=str(exc)))
+    from campaign_discount_reuse import reconcile
+    from campaign_scoped_tolerance import policy_for
+    continuous_rule_sha = getattr(args, 'continuous_rule_sha', None)
+    tolerance = policy_for(campaign,args.start,args.end,rate,args.target,continuous_rule_sha=continuous_rule_sha)
+    planned_discounts=discounts
+    discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target,continuous_rule_sha=continuous_rule_sha)
+    issues.extend(reuse_issues)
+    requested_signup, requested_discount = set(signup_items), set(discount_items)
+    isolated = set()
+    partial = bool(getattr(args, 'isolate_item_issues', False))
+    if partial:
+        isolated, kept = isolate_item_issues(issues, signup_items | discount_items,
+            activity=activity, discounts=discounts, planned=planned_discounts, reused=reused)
+        activity, discounts = kept['activity'], kept['discounts']
+        planned_discounts, reused = kept['planned'], kept['reused']
+        signup_items, discount_items = signup_items-isolated, discount_items-isolated
+    emit = not issues or (partial and bool(activity or discounts))
+    result = dict(status='local_input_issues' if issues else 'local_files_ready_not_uploaded',platform_write=False,database_write=False,automatic_retry=False,price_version=snapshot['resolved_price_version_sha256'],official_rate=str(rate),target=args.target,window={'start':args.start,'end':args.end,'timezone':'Asia/Shanghai'},activity_rows=activity,discount_rows=discounts,discount_reuse=reused,issues=issues,activity_template_sha256=sha(raw),files=[],note='Registered local evidence only, not a platform preflight or fresh readback. Actual reused amounts must meet frozen targets; no inherited tolerance. No upload files on issues. Business database untouched; local authority persisted.')
+    if partial:
+        result.update(status='partial_local_files_ready_not_uploaded' if issues and emit else result['status'],
+            item_isolation=dict(requested_signup_items=sorted(requested_signup),
+                requested_discount_items=sorted(requested_discount), isolated_items=sorted(isolated),
+                delivered_signup_items=sorted({r['item'] for r in activity}),
+                delivered_discount_items=sorted({r['item'] for r in discounts}),
+                activity_skus=len(activity), discount_skus=len(discounts),
+                template_items=len(present), template_skus=len(identities)),
+            note='Only products with exact issues are isolated in both files. Issues remain unresolved; files and local bundle are not platform success. Global source/identity failures still stop generation.')
+    result['explicit_signup_items'] = sorted(signup_items) if signup_items is not None else None
+    result['explicit_discount_items'] = sorted(discount_items) if discount_items is not None else None
+    result['campaign']=campaign
+    result['final_price_tolerance']=tolerance
+    if time_binding is not None:
+        result['time_binding']=time_binding
+    if tolerance and not partial:
+        result['note']='Current pinned campaign-only user tolerance applied to actual reused discounts; not a daily-price change or automatic minus-two adjustment. No upload files on other issues; no platform preflight.'
+    result['protected_scope']={'signup':blocked_signup,'discount':blocked_discount}
+    result['excluded_link_scope']=snapshot.get('registered_item_exclusions',[])
+    outputs = []
+    if emit:
+        if activity:
+            outputs.append(('活动报名.xlsx',fill_selected_rows(raw,activity,official_rate=args.official_rate)))
+        if discounts:
+            discount_path = getattr(args, 'discount_template', None) or FIXED_TEMPLATE
+            discount_raw = load_fixed_discount_template(discount_path)
+            result['discount_template_sha256'] = sha(discount_raw)
+            result['discount_template_source'] = str(discount_path)
+            result['discount_template_policy'] = 'fixed_user_master_no_redownload_no_filled_batch_reuse'
+            outputs.append(('单品立减.xlsx',fill_single_discount_rows(discount_raw,discounts)))
+    args.output_dir.mkdir(parents=True,exist_ok=False)
+    for name, content in outputs:
+        path = args.output_dir/name
+        with path.open('xb') as stream:
+            stream.write(content)
+        result['files'].append(dict(path=str(path.resolve()),sha256=sha(content)))
+    if emit:
+        body=dict(campaign=campaign,start=args.start,end=args.end,rule_sha256=authority.rule_sha,final_price_tolerance=tolerance,
+                  snapshot_path=str(args.snapshot.resolve()),snapshot_sha256=sha(args.snapshot.read_bytes()),
+                  price_version=snapshot['resolved_price_version_sha256'],entry_source_sha256=snapshot['entry_source_sha256'],
+                  template_path=str(args.activity_template.resolve()),template_sha256=sha(raw),
+                  official_rate=args.official_rate,target=args.target,signup_items=sorted(signup_items),discount_items=sorted(discount_items),
+                  signup_rows=activity,discount_rows=discounts,planned_discount_rows=planned_discounts,discount_reuse=reused,corrections=corrections,files=result['files'])
+        if continuous_rule_sha is not None:
+            body['continuous_rule_sha']=continuous_rule_sha
+        if snapshot_scope:
+            body['snapshot_item_scope']=snapshot_scope
+        if partial:
+            body['item_isolation']=result['item_isolation']
+            body['isolated_issues']=issues
+            body['corrections']={'rows':[r for r in corrections['rows'] if r['item'] not in isolated]}
+        if limits is not None:
+            body['official_price_limits'] = True
+        if export_path:
+            body['generation_product_export'] = snapshot['generation_product_export']
+        if exclusions:body['sku_exclusion_receipts']=exclusions
+        if time_binding is not None:
+            body['time_binding']=time_binding
+        result['entry_bundle_id']=authority.save_bundle(body)
+        result['submission_entry']='campaign_submission_gate.run_once'
+    with (args.output_dir/'receipt.json').open('x',encoding='utf-8') as stream:
+        json.dump(result,stream,ensure_ascii=False,indent=2)
+    return result
+
+
+if __name__ == '__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--snapshot',type=Path,required=True)
+    parser.add_argument('--campaign-key',required=True,help='Exact campaignId/unitedActivityId/signRecordId, not title or template filename')
+    parser.add_argument('--custom-corrections',type=Path,help='Only current failed exact custom SKUs with pinned authorization/failure receipts; no ordinary price overrides')
+    parser.add_argument('--continuous-rule-sha',help='Explicit approved continuous policy for new bundles only; omitted preserves historical rules')
+    parser.add_argument('--time-request',type=Path,help='Approved segmented-time input; no platform reads, source pinned into bundle')
+    parser.add_argument('--time-segment',help='Exact segment_id from campaign_segmented_time; --start/--end are this price window, not platform validity')
+    parser.add_argument('--activity-template',type=Path,required=True)
+    parser.add_argument('--discount-template',type=Path,default=FIXED_TEMPLATE,help='Optional byte-identical local copy of the fixed single-discount master; never download per campaign')
+    parser.add_argument('--official-rate',required=True)
+    parser.add_argument('--target',choices=['medium','big'],required=True)
+    parser.add_argument('--start',required=True)
+    parser.add_argument('--end',required=True)
+    parser.add_argument('--custom-basis-receipt',type=Path,action='append',default=[])
+    parser.add_argument('--signup-items',help='Explicit comma-separated whole-item scope decided by 01; omit for all incomplete template items')
+    parser.add_argument('--discount-items',help='Independent explicit comma-separated new-window discount item scope; omit for all template items, including already enrolled')
+    parser.add_argument('--output-dir',type=Path,required=True)
+    parser.add_argument('--isolate-item-issues',action='store_true',help='Deliver complete safe products together; retain exact product-level issues in receipt. Never suppress global evidence failures.')
+    parser.add_argument('--official-price-limits',action='store_true',help='Validate current official H/I/K caps, ordinary cumulative 2 yuan and fixed custom floors; never use G/P as ERP prices.')
+    parser.add_argument('--product-export-observation',type=Path,help='Complete recorded multi-page product_export job; bind exact current codes without replacing shared single-file fact index.')
+    args=parser.parse_args()
+    result=generate(args)
+    print(json.dumps({k:v for k,v in result.items() if k not in ('activity_rows','discount_rows','issues','note')},ensure_ascii=False))
+    print(json.dumps({'issues_count':len(result['issues']),'issues':result['issues']},ensure_ascii=False))
+    raise SystemExit((3 if result['files'] else 2) if result['issues'] else 0)

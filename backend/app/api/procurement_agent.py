@@ -6,17 +6,19 @@ ERP 已批准的 agent 模式任务并回写可审计结果，不接收任何平
 from __future__ import annotations
 
 import hmac
+import os
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.procurement import ProcurementInquiry
 from app.services import procurement_service, settings_service
+from app.services import procurement_dispatch_service as dispatch
 
 router = APIRouter(prefix="/api/procurement/agent", tags=["procurement-agent"])
 
@@ -347,3 +349,92 @@ def watch(
             db, capabilities=payload.capabilities, limit=limit
         ),
     }
+
+
+# Dispatch-v1 is a distinct contract. Old claim/sent endpoints still exclude
+# bounded batches. Enabling the server gate never enables a local live adapter.
+def require_dispatch_executor(
+    executor: Optional[str] = Header(None, alias="X-Procurement-Executor"),
+    _: str = Depends(require_agent_token),
+) -> str:
+    expected = os.environ.get("PROCUREMENT_DISPATCH_EXECUTOR_ID", "")
+    if not expected:
+        raise HTTPException(503, "新采购执行器尚未登记")
+    if not executor or not hmac.compare_digest(executor, expected):
+        raise HTTPException(403, "不是已登记的本机执行器")
+    return executor
+
+
+def require_dispatch_enabled(executor: str = Depends(require_dispatch_executor)) -> str:
+    if os.environ.get("PROCUREMENT_DISPATCH_ENABLED") != "1":
+        raise HTTPException(503, "采购新发送已停止；仅允许原回执补记和只读核对")
+    return executor
+
+
+class DispatchReserveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: int = Field(gt=0, strict=True)
+    inquiry_id: int = Field(gt=0, strict=True)
+    account_id: str = Field(min_length=1, max_length=64)
+    action_key: str = Field(pattern=r"^(initial:0|followup:[1-9][0-9]*)$")
+    content: str = Field(min_length=1, max_length=10000)
+
+
+class DispatchReceiptIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    permit: str = Field(min_length=1, max_length=128)
+    payload_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    external_message_id: str = Field(min_length=1, max_length=255)
+    observed_at: datetime
+
+
+def _dispatch_commit(db, operation, **kwargs):
+    try:
+        row = operation(db, **kwargs)
+        result = row if isinstance(row, dict) else {
+            "intent_id": row.id, "state": row.state, "payload_hash": row.payload_hash,
+        }
+        if operation is dispatch.reserve:
+            result = dispatch.intent_envelope(db, row)
+        db.commit()  # Durable BEFORE the permit or reconciliation response.
+        return result
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/dispatch/reserve", response_model=dict)
+def dispatch_reserve(payload: DispatchReserveIn, db: Session = Depends(get_db),
+                     executor: str = Depends(require_dispatch_enabled)):
+    return _dispatch_commit(db, dispatch.reserve, executor_id=executor, **payload.model_dump())
+
+
+@router.post("/dispatch/{intent_id}/permit", response_model=dict)
+def dispatch_permit(intent_id: str, db: Session = Depends(get_db),
+                    executor: str = Depends(require_dispatch_enabled)):
+    return _dispatch_commit(db, dispatch.issue_permit, intent_id=intent_id, executor_id=executor)
+
+
+@router.post("/dispatch/{intent_id}/unknown", response_model=dict)
+def dispatch_unknown(intent_id: str, db: Session = Depends(get_db),
+                     executor: str = Depends(require_dispatch_executor)):
+    return _dispatch_commit(db, dispatch.mark_unknown, intent_id=intent_id, executor_id=executor)
+
+
+@router.post("/dispatch/{intent_id}/reconcile", response_model=dict)
+def dispatch_reconcile(intent_id: str, db: Session = Depends(get_db),
+                       executor: str = Depends(require_dispatch_executor)):
+    return _dispatch_commit(db, dispatch.begin_reconcile, intent_id=intent_id, executor_id=executor)
+
+
+@router.post("/dispatch/{intent_id}/unresolved", response_model=dict)
+def dispatch_unresolved(intent_id: str, db: Session = Depends(get_db),
+                        executor: str = Depends(require_dispatch_executor)):
+    return _dispatch_commit(db, dispatch.finish_unresolved, intent_id=intent_id, executor_id=executor)
+
+
+@router.post("/dispatch/{intent_id}/receipt", response_model=dict)
+def dispatch_receipt(intent_id: str, payload: DispatchReceiptIn, db: Session = Depends(get_db),
+                     executor: str = Depends(require_dispatch_executor)):
+    return _dispatch_commit(db, dispatch.confirm_sent, intent_id=intent_id, executor_id=executor,
+                            **payload.model_dump())

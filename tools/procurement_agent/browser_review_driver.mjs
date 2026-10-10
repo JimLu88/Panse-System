@@ -6,7 +6,6 @@
  * approved ERP message, sends it manually, and confirms the result in a separate
  * review tab. Login/captcha/risk-control remain human-only.
  */
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -223,20 +222,15 @@ async function send(payload) {
       new Promise((resolve) => setTimeout(() => resolve('timeout'), REVIEW_TIMEOUT_MS)),
     ]);
     if (outcome !== 'sent') {
-      return manual(outcome === 'timeout' ? '人工发送确认超时；本次按未发送处理' : '采购人员选择未发送并转人工');
+      return manual(outcome === 'timeout' ? '人工发送确认超时；发送结果未知，请核对，禁止自动重发' : '采购人员选择转人工；仍须核对平台实际结果');
     }
-    const digest = crypto.createHash('sha256')
-      .update(`${action.inquiry_id}:${action.action_key}:${action.suggested_message}`)
-      .digest('hex')
-      .slice(0, 16);
+    // Human confirmation is not a platform message ID or a platform readback.
+    // Preserve the handoff without inventing a successful delivery receipt.
     return {
-      outcome: 'sent',
-      external_message_id: `human-review-${Date.now()}-${digest}`,
-      external_thread_id: action.external_thread_id || null,
-      sent_content: action.suggested_message,
+      outcome: 'manual',
+      reason: '人工已表示发送，但未取得平台消息回读；请核对，禁止自动重发',
       meta: {
         confirmation: 'human_confirmed_after_platform_send',
-        platform_url: platformPage.url(),
       },
     };
   } finally {
@@ -258,6 +252,8 @@ async function main() {
 try {
   writeResult(await main());
 } catch (error) {
-  console.error(error?.stack || String(error));
-  writeResult(manual(`浏览器驱动异常：${error?.message || String(error)}`));
+  // Browser errors may contain signed URLs or page content. Do not forward
+  // their raw text to stderr/ERP as a manual-handoff reason.
+  console.error('浏览器驱动异常；原始页面诊断未外传');
+  writeResult(manual('浏览器驱动异常；发送状态须核对，禁止自动重发'));
 }

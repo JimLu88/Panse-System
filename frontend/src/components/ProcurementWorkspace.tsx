@@ -35,6 +35,7 @@ import {
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  activateProcurementBatch,
   applyProcurementWinner,
   createProcurementTask,
   decideProcurementInquiry,
@@ -82,6 +83,7 @@ const statusMeta: Record<string, { label: string; color: string }> = {
   needs_review: { label: '需人工处理', color: 'orange' },
   completed: { label: '已完成', color: 'green' },
   cancelled: { label: '已取消', color: 'default' },
+  expired: { label: '已到期', color: 'default' },
   waiting_winner: { label: '等待优胜话术', color: 'purple' },
   waiting_reply: { label: '等待回复', color: 'processing' },
   followup_ready: { label: '待追问', color: 'cyan' },
@@ -116,7 +118,7 @@ const initialTaskValues: ProcurementTaskInput & {
   channels: ['taobao', '1688'],
   planned_merchant_count: 10,
   max_followup_rounds: 3,
-  ab_test_enabled: true,
+  ab_test_enabled: false,
   ab_test_sample_size: 6,
   channel_daily_limits: { taobao: 10, '1688': 5, pinduoduo: 5, xiaohongshu: 3 },
   followup_intervals_hours: { taobao: 12, '1688': 12, pinduoduo: 12, xiaohongshu: 24 },
@@ -140,12 +142,13 @@ export default function ProcurementWorkspace() {
   const [replyForm] = Form.useForm();
 
   const plannedCount = Form.useWatch('planned_merchant_count', createForm) || 10;
-  const abEnabled = Form.useWatch('ab_test_enabled', createForm) ?? true;
+  const abEnabled = Form.useWatch('ab_test_enabled', createForm) ?? false;
   const selectedChannels = (Form.useWatch('channels', createForm) || []) as ProcurementChannel[];
 
   const { data: tasks = [], isLoading } = useQuery({
     queryKey: ['procurement-tasks'],
     queryFn: listProcurementTasks,
+    refetchInterval: 60_000,
   });
   const { data: agentRuntime } = useQuery({
     queryKey: ['procurement-agent-status'],
@@ -205,6 +208,15 @@ export default function ProcurementWorkspace() {
       await refreshTask(task);
     },
     onError: (error: any) => message.error(`建立失败：${errorText(error)}`),
+  });
+  const activateMut = useMutation({
+    mutationFn: () => activateProcurementBatch(taskId!),
+    onSuccess: async (task) => {
+      message.success('48 小时计时已启动；不代表自动收发已启用');
+      await refreshTask(task);
+      await qc.invalidateQueries({ queryKey: ['procurement-due-actions', taskId] });
+    },
+    onError: (error: any) => message.error(`启动失败：${errorText(error)}`),
   });
   const scriptMut = useMutation({
     mutationFn: () => generateProcurementScripts(taskId!),
@@ -344,6 +356,9 @@ export default function ProcurementWorkspace() {
     () => tasks.find((task) => task.id === taskId) || selectedTask,
     [tasks, taskId, selectedTask],
   );
+  const planFrozen = Boolean(currentTask?.batch_policy_version && (
+    currentTask.started_at || ['cancelled', 'expired', 'completed'].includes(currentTask.status)
+  ));
 
   const openMessageEditor = (row: ProcurementInquiry) => {
     const due = dueActions.find((action) => action.inquiry_id === row.id);
@@ -624,7 +639,7 @@ export default function ProcurementWorkspace() {
           <span>
             <b>人工辅助：</b>ERP 生成并复制话术，你在淘宝/1688/拼多多/小红书发送后回填结果；
             <b style={{ marginLeft: 12 }}>代理队列：</b>ERP 输出限速、待发送和待追问队列，供独立桌面执行器领取。
-            执行器默认只预览，只有采购电脑本机明确开启后才可发送。
+            执行器默认只预览。新建 48 小时批次的自动收发尚未开放，即使本机开启代理也不会领取。
           </span>
         }
         style={{ marginBottom: 16 }}
@@ -791,19 +806,27 @@ export default function ProcurementWorkspace() {
           </Form.Item>
           <Row gutter={24}>
             <Col span={8}>
-              <Form.Item name="planned_merchant_count" label={`计划询问商家：${plannedCount} 家`}>
-                <Slider
+              <Form.Item name="planned_merchant_count" label="计划询问商家数量" rules={[{ required: true, type: 'integer', min: 1, max: 50 }]}>
+                <InputNumber
                   min={1}
-                  max={30}
-                  marks={{ 1: '1', 10: '10', 20: '20', 30: '30' }}
+                  max={50}
+                  precision={0}
+                  addonAfter="家（1–50）"
                   onChange={(value) => {
                     const sample = createForm.getFieldValue('ab_test_sample_size') || 2;
-                    if (sample > value) {
+                    if (value != null && sample > value) {
                       createForm.setFieldValue('ab_test_sample_size', Math.max(2, value));
                     }
+                    if (value === 1) createForm.setFieldValue('ab_test_enabled', false);
                   }}
                 />
               </Form.Item>
+              <Space size={4} wrap>
+                {[10, 20, 30, 50].map((count) => (
+                  <Button key={count} size="small" onClick={() => createForm.setFieldValue('planned_merchant_count', count)}>{count} 家</Button>
+                ))}
+              </Space>
+              <Paragraph type="secondary">这是本批联系上限，不是保证回复数；所有平台统一 48 小时。</Paragraph>
             </Col>
             <Col span={8}>
               <Form.Item name="max_followup_rounds" label="最多自动追问轮数">
@@ -812,7 +835,7 @@ export default function ProcurementWorkspace() {
             </Col>
             <Col span={8}>
               <Form.Item name="ab_test_enabled" label="话术 A/B 测试" valuePropName="checked">
-                <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                <Switch checkedChildren="开启" unCheckedChildren="关闭" disabled={plannedCount < 2} />
               </Form.Item>
               {abEnabled && (
                 <Form.Item name="ab_test_sample_size" label="首批测试商家数">
@@ -825,7 +848,8 @@ export default function ProcurementWorkspace() {
               )}
             </Col>
           </Row>
-          <Card size="small" title="账号节奏保护（每天每渠道上限）">
+          <Alert type="info" showIcon message="保存需求不开始计时。准备资料和队列后，另行启动 48 小时批次；当前新批次的自动收发仍未开放。" style={{ marginBottom: 12 }} />
+          <Card size="small" title="当前任务渠道上限（不是账号全局额度）">
             <Row gutter={16}>
               {selectedChannels.map((channel) => (
                 <Col span={8} key={channel}>
@@ -842,7 +866,7 @@ export default function ProcurementWorkspace() {
               <Alert
                 type="warning"
                 showIcon
-                message="小红书按长期跟进处理：先私信、持续检查后台回复，收到回复后才进入下一轮。"
+                message="小红书也统一 48 小时截止；回复可能较慢，到期无回复会明确标注，迟到资料另存补充，不延长本批。"
               />
             )}
           </Card>
@@ -875,11 +899,32 @@ export default function ProcurementWorkspace() {
               </Descriptions.Item>
             </Descriptions>
 
+            {currentTask.batch_policy_version && (
+              <Card size="small" title="48 小时批次">
+                <Alert type="warning" showIcon message="当前仅支持固定计时和截止证据快照；自动收发、全局配额与前五推荐尚未验收。新批次不会交给旧代理执行。" />
+                <Paragraph style={{ marginTop: 12 }}>
+                  {currentTask.deadline_at
+                    ? `截止：${new Date(currentTask.deadline_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（北京时间，不因暂停或重启顺延）`
+                    : '尚未启动，不计时。请先确认规格、数量、需求说明及话术，并生成商家队列。'}
+                </Paragraph>
+                {!currentTask.started_at && currentTask.status === 'ready' && (
+                  <Popconfirm title="启动后冻结当前需求，统一计时 48 小时；不包含下单和付款。" onConfirm={() => activateMut.mutate()}>
+                    <Button type="primary" loading={activateMut.isPending}>启动 48 小时计时</Button>
+                  </Popconfirm>
+                )}
+                {currentTask.deadline_report && (
+                  <Alert type="info" showIcon message="截止证据快照已生成（不是最终推荐）"
+                    description={`已确认发送 ${currentTask.deadline_report.confirmed_sent_merchants} 家，已回复 ${currentTask.deadline_report.replied_merchants} 家，未确认发送 ${currentTask.deadline_report.not_confirmed_sent_merchants} 家。未确认不等于未发送，不可据此补发。`} />
+                )}
+              </Card>
+            )}
+
             <Card
               size="small"
               title="候选供应商搜索词"
               extra={(
                 <Button
+                  disabled={planFrozen}
                   loading={searchQueriesMut.isPending}
                   onClick={() => searchQueriesMut.mutate()}
                 >
@@ -894,6 +939,7 @@ export default function ProcurementWorkspace() {
                 style={{ marginBottom: 10 }}
               />
               <TextArea
+                disabled={planFrozen}
                 rows={5}
                 value={searchQueriesText}
                 onChange={(event) => setSearchQueriesText(event.target.value)}
@@ -906,12 +952,12 @@ export default function ProcurementWorkspace() {
               title={<Space><ExperimentOutlined />话术建议与 A/B 测试</Space>}
               extra={
                 <Space>
-                  <Button loading={scriptMut.isPending} onClick={() => scriptMut.mutate()}>
+                  <Button disabled={planFrozen} loading={scriptMut.isPending} onClick={() => scriptMut.mutate()}>
                     AI 重新建议
                   </Button>
                   <Button
                     type="primary"
-                    disabled={!scriptsReadyForReview}
+                    disabled={planFrozen || !scriptsReadyForReview}
                     loading={saveScriptsMut.isPending}
                     onClick={() => saveScriptsMut.mutate()}
                   >
@@ -941,11 +987,11 @@ export default function ProcurementWorkspace() {
               <Row gutter={16}>
                 <Col span={12}>
                   <Text strong>A 组 · 直接报价型</Text>
-                  <TextArea value={scriptA} onChange={(event) => setScriptA(event.target.value)} rows={6} />
+                  <TextArea disabled={planFrozen} value={scriptA} onChange={(event) => setScriptA(event.target.value)} rows={6} />
                 </Col>
                 <Col span={12}>
                   <Text strong>B 组 · 合作澄清型</Text>
-                  <TextArea value={scriptB} onChange={(event) => setScriptB(event.target.value)} rows={6} />
+                  <TextArea disabled={planFrozen} value={scriptB} onChange={(event) => setScriptB(event.target.value)} rows={6} />
                 </Col>
               </Row>
               {currentTask.ab_test_enabled && experiment && (
@@ -1004,7 +1050,7 @@ export default function ProcurementWorkspace() {
                     <Tooltip title={currentTask.scripts_reviewed_at ? '' : '先检查并确认上方 A/B 话术'}>
                       <Button
                         type="primary"
-                        disabled={!currentTask.scripts_reviewed_at}
+                        disabled={planFrozen || !currentTask.scripts_reviewed_at}
                         loading={queueMut.isPending}
                         onClick={() => queueMut.mutate()}
                       >
@@ -1018,7 +1064,9 @@ export default function ProcurementWorkspace() {
               {inquiries.length === 0 && (
                 <Alert
                   type="info"
-                  message={`将先分配 ${currentTask.ab_test_sample_size} 家做 A/B 测试，其余商家等待优胜话术。`}
+                  message={currentTask.ab_test_enabled
+                    ? `将先分配 ${currentTask.ab_test_sample_size} 家做 A/B 测试，其余商家等待优胜话术。`
+                    : `不做 A/B 测试，本批最多建立 ${currentTask.planned_merchant_count} 个询价位。建队列不代表已经联系商家。`}
                   style={{ marginBottom: 12 }}
                 />
               )}

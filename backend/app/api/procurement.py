@@ -23,6 +23,7 @@ from app.models.procurement import (
     ProcurementTask,
 )
 from app.services import procurement_service, settings_service
+from app.services import procurement_batch_service as batches
 
 router = APIRouter(prefix="/api/procurement", tags=["procurement"])
 
@@ -46,9 +47,10 @@ class TaskCreate(BaseModel):
         "taobao": 12, "1688": 12, "pinduoduo": 12, "xiaohongshu": 24,
     }
     search_queries: list[str] = []
-    planned_merchant_count: int = Field(default=10, ge=1, le=50)
+    planned_merchant_count: int = Field(default=10, ge=1, le=50, strict=True)
     max_followup_rounds: int = Field(default=3, ge=0, le=5)
-    ab_test_enabled: bool = True
+    ab_test_enabled: bool = False
+    batch_policy_version: Literal["48h-v1"] = "48h-v1"
     ab_test_sample_size: int = Field(default=6, ge=0, le=50)
     script_a: Optional[str] = None
     script_b: Optional[str] = None
@@ -80,7 +82,7 @@ class TaskPatch(BaseModel):
     channel_daily_limits: Optional[dict[str, int]] = None
     followup_intervals_hours: Optional[dict[str, int]] = None
     search_queries: Optional[list[str]] = None
-    planned_merchant_count: Optional[int] = Field(default=None, ge=1, le=50)
+    planned_merchant_count: Optional[int] = Field(default=None, ge=1, le=50, strict=True)
     max_followup_rounds: Optional[int] = Field(default=None, ge=0, le=5)
     ab_test_enabled: Optional[bool] = None
     ab_test_sample_size: Optional[int] = Field(default=None, ge=0, le=50)
@@ -125,6 +127,12 @@ class TaskOut(BaseModel):
     ai_suggestion_note: Optional[str]
     status: str
     created_by: Optional[str]
+    batch_policy_version: Optional[str] = None
+    started_at: Optional[datetime] = None
+    deadline_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    policy_snapshot: Optional[dict] = None
+    deadline_report: Optional[dict] = None
     created_at: datetime
     updated_at: datetime
     counts: dict[str, int] = {}
@@ -277,7 +285,32 @@ def _inquiry_or_404(db: Session, inquiry_id: int) -> ProcurementInquiry:
 def _task_out(db: Session, task: ProcurementTask) -> TaskOut:
     data = TaskOut.model_validate(task)
     data.counts = procurement_service.task_counts(db, task.id)
+    for key in ("started_at", "deadline_at", "closed_at"):
+        value = getattr(data, key)
+        if value:
+            setattr(data, key, batches.utc(value))
     return data
+
+
+@router.post("/tasks/{task_id}/activate", response_model=TaskOut)
+def activate_batch(task_id: int, db: Session = Depends(get_db),
+                   user: User = Depends(require_role("admin", "operator"))):
+    task = _task_or_404(db, task_id)
+    try:
+        batches.activate(db, task, activated_by=user.username)
+        db.commit()
+        return _task_out(db, task)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get("/tasks/{task_id}/dispatch-status", response_model=dict)
+def dispatch_status(task_id: int, db: Session = Depends(get_db),
+                    _: User = Depends(require_role("admin", "operator"))):
+    _task_or_404(db, task_id)
+    from app.services.procurement_dispatch_service import task_dispatch_status
+    return task_dispatch_status(db, task_id)
 
 
 @router.get("/tasks", response_model=list[TaskOut])
@@ -355,7 +388,30 @@ def patch_task(
     _: User = Depends(require_role("admin", "operator")),
 ):
     task = _task_or_404(db, task_id)
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
     changes = payload.model_dump(exclude_unset=True)
+    if batches.bounded(task):
+        if changes == {"status": "cancelled"}:
+            if task.started_at:
+                batches.close_batch(db, task, cancel=True)
+            else:
+                task.status = "cancelled"
+            db.commit()
+            return _task_out(db, task)
+        if "status" in changes:
+            raise HTTPException(409, "新批次状态由启动和截止流程管理，不能直接改写")
+        try:
+            batches.require_draft(task)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+    if any(changes.get(key) is None for key in changes if key in {
+        "title", "category", "item_name", "quantity", "unit", "channels", "planned_merchant_count",
+        "max_followup_rounds", "ab_test_enabled", "ab_test_sample_size", "execution_mode", "taobao_client_mode",
+    }):
+        raise HTTPException(422, "必填计划字段不能设为空")
+    if "channels" in changes and not changes["channels"]:
+        raise HTTPException(422, "至少选择一个采购渠道")
     plan_fields = {
         "channels", "planned_merchant_count", "ab_test_enabled", "ab_test_sample_size",
     }
@@ -382,7 +438,10 @@ def patch_task(
         task.scripts_reviewed_by = None
     sample = task.ab_test_sample_size if task.ab_test_enabled else 0
     if task.ab_test_enabled and not 2 <= sample <= task.planned_merchant_count:
+        db.rollback()
         raise HTTPException(400, "A/B 测试商家数必须在 2 到计划询问数之间")
+    if not task.ab_test_enabled:
+        task.ab_test_sample_size = 0
     db.commit()
     db.refresh(task)
     return _task_out(db, task)
@@ -395,7 +454,13 @@ def regenerate_scripts(
     _: User = Depends(require_role("admin", "operator")),
 ):
     task = _task_or_404(db, task_id)
-    result = procurement_service.generate_scripts(db, task)
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
+    try:
+        result = procurement_service.generate_scripts(db, task)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
     db.commit()
     return result
 
@@ -408,6 +473,8 @@ def review_scripts(
     user: User = Depends(require_role("admin", "operator")),
 ):
     task = _task_or_404(db, task_id)
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
     try:
         procurement_service.review_scripts(
             db,
@@ -432,6 +499,8 @@ def prepare_queue(
     _: User = Depends(require_role("admin", "operator")),
 ):
     task = _task_or_404(db, task_id)
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
     try:
         rows = procurement_service.prepare_inquiries(
             db, task, [merchant.model_dump() for merchant in payload.merchants]
@@ -476,7 +545,11 @@ def patch_inquiry(
 ):
     inquiry = _inquiry_or_404(db, inquiry_id)
     task = _task_or_404(db, inquiry.task_id)
+    if batches.bounded(task):
+        task = batches.lock_task(db, task)
     changes = payload.model_dump(exclude_unset=True)
+    if batches.bounded(task) and task.started_at:
+        raise HTTPException(409, "已启动批次的商家身份与状态不能直接覆盖，避免替换已联系或未决商家")
     if changes.get("channel") and changes["channel"] not in (task.channels or []):
         raise HTTPException(400, "该渠道不在任务已选渠道中")
     for key, value in changes.items():

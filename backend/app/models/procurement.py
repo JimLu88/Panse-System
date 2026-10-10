@@ -75,7 +75,7 @@ class ProcurementTask(Base, TimestampMixin):
     planned_merchant_count: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     max_followup_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
 
-    ab_test_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    ab_test_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     ab_test_sample_size: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     script_a: Mapped[Optional[str]] = mapped_column(Text)
     script_b: Mapped[Optional[str]] = mapped_column(Text)
@@ -94,6 +94,14 @@ class ProcurementTask(Base, TimestampMixin):
     )
     # draft / ready / running / needs_review / completed / cancelled
     created_by: Mapped[Optional[str]] = mapped_column(String(64))
+
+    # NULL is a legacy task: migration must not start or reinterpret old work.
+    batch_policy_version: Mapped[Optional[str]] = mapped_column(String(24))
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    deadline_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    policy_snapshot: Mapped[Optional[dict]] = mapped_column(JSON)
+    deadline_report: Mapped[Optional[dict]] = mapped_column(JSON)
 
     __table_args__ = (
         Index("ix_procurement_tasks_status_created", "status", "created_at"),

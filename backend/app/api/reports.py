@@ -291,8 +291,14 @@ def export_sales_breakdown(
         "产品编码", "产品名", "SKU 编码", "SKU 名", "件数",
         "销售额", "成本", "毛利", "净利",
         "毛利率 %", "净利率 %",
+        "金额口径", "数量待核实行数",
     ])
     for r in rows:
+        if r.get("money_pending"):
+            writer.writerow([r.get("product_code") or "", r.get("product_name") or "",
+                             r.get("sku_code") or "", r.get("sku") or "", r.get("qty") or 0,
+                             *([""] * 6), "整单金额另列，子单待分摊", r.get("unknown_quantity_count", 0)])
+            continue
         revenue = float(r.get("revenue") or 0)
         cost = float(r.get("cost") or 0)
         net = float(r.get("net_profit") or 0)
@@ -304,6 +310,7 @@ def export_sales_breakdown(
             f"{revenue - cost:.2f}", f"{net:.2f}",
             f"{float(r.get('gross_profit_rate') or 0) * 100:.1f}",
             f"{float(r.get('net_profit_rate') or 0) * 100:.1f}",
+            "整单金额仅计一次", r.get("unknown_quantity_count", 0),
         ])
     csv_data = buf.getvalue()
     fname = f"sales_{start.isoformat()}_{end.isoformat()}.csv"

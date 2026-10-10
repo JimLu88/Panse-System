@@ -307,6 +307,13 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
               按根目录唯一规则和平台规则库 R0~R17 逐条过：历史标价线、券后线、证据新鲜度、整品 SKU 完整性、下架 SKU、
               已报名冲突、动销门等（全部为 2026-07-17 实战实锤规则）。有阻塞项就先修再推，别硬推。
             </span>} />
+          <Alert type="warning" showIcon
+            message="报名文件硬校验（已固化，生成不通过就不会产出可上传文件）"
+            description={<span style={{ fontSize: 13 }}>
+              每个物理 SKU 行都必须重复填写商品 ID；SKU 必须属于当前商品且整商品一次带齐；商品 ID、SKU ID、ERP 商家编码、
+              商品名称、活动价和库存逐项映射，活动价不得为空或非正数；官方失败反馈保留原文和行号显示。
+              这组校验专门拦截“只填首行商品 ID、漏 SKU、旧 SKU、跨商品 SKU、库存/价格缺失”等平台解析错误。
+            </span>} />
           <Button type="primary" icon={<ExperimentOutlined />} loading={preLoading} onClick={doPrecheck}>
             {pre ? '重新预检' : '运行预检'}</Button>
 

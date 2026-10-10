@@ -259,9 +259,11 @@ def test_dispatch_custom_order_uses_projected_cost_and_effective_production_qty(
 
     row = dispatch.build_rows(db_session)[0]
     assert row["定制标识"] == "定制单"
-    assert row["订购数量"] == 1
-    assert row["木作成本价"] == 1400.0
-    assert "已扣除非木作成本" in row["木作成本说明"]
+    # Ordinary SKU facts still say four physical items. A remark must never
+    # silently collapse four purchased items into one production task.
+    assert row["订购数量"] == 4
+    assert row["原购买数量"] == 4
+    assert row["确认成品数量"] == 4
     assert row["木作成本说明"].startswith("定制成本需人工核验｜")
 
 
@@ -278,9 +280,11 @@ def test_dispatch_custom_fallback_keeps_base_wood_cost(db_session, monkeypatch):
     db_session.commit()
 
     row = dispatch.build_rows(db_session)[0]
-    assert row["订购数量"] == 1
-    assert row["木作成本价"] == 1200.0
-    assert "基础木作成本兜底" in row["木作成本说明"]
+    assert row["订购数量"] is None
+    assert row["原购买数量"] == 11
+    assert row["确认成品数量"] is None
+    assert row["下单分组"] == '事实待核实'
+    assert '请勿生产' in row["数量确认状态"]
 
 
 def test_dispatch_compare_ignores_timestamp_and_normalizes_number_strings():
@@ -499,10 +503,15 @@ def test_dispatch_attachment_timeout_keeps_old_image_and_returns_ok(
         ),
     )
     updates = []
+    def apply_updates(db, app, table, rows):
+        updates.extend(rows)
+        for row in rows:
+            remote_fields.update(row["fields"])
+        return []
     monkeypatch.setattr(
         dispatch.feishu_client,
         "batch_update_records",
-        lambda db, app, table, rows: updates.extend(rows) or [],
+        apply_updates,
     )
     monkeypatch.setattr(
         dispatch.feishu_client,
@@ -521,7 +530,8 @@ def test_dispatch_attachment_timeout_keeps_old_image_and_returns_ok(
     assert result["errors"] == []
     assert result["deferred_image_uploads"][0]["order_no"] == order.order_no
     assert updates
-    assert updates[0]["fields"]["工厂下单图"] == [{"file_token": "old-token"}]
+    assert "工厂下单图" not in updates[0]["fields"]
+    assert remote_fields["工厂下单图"][0]["file_token"] == "old-token"
     # 上传未成功时不能写入签名绑定；下轮仍会继续尝试。
     assert dispatch._load_image_bindings(db_session).get(order.order_no) is None
 
@@ -540,7 +550,7 @@ def test_dispatch_auto_setting_can_skip_without_touching_feishu(db_session, monk
     assert dispatch.get_sync_settings(db_session)["direction"] == "out"
 
 
-def test_dispatch_sync_removes_refunds_and_does_not_block_on_missing_cost(
+def test_dispatch_sync_retires_refunds_in_place_and_does_not_block_on_missing_cost(
     db_session, monkeypatch
 ):
     active = _order(
@@ -581,29 +591,34 @@ def test_dispatch_sync_removes_refunds_and_does_not_block_on_missing_cost(
             for view_id, (name, kind) in dispatch.EXPECTED_VIEWS.items()
         ],
     )
-    monkeypatch.setattr(
-        dispatch.feishu_client,
-        "list_records",
-        lambda *a, **k: [{
+    remote_records = [{
             "record_id": "refund-record",
             "fields": {
                 "工厂下单号": "畔色323单",
                 "订单号": refunded.order_no,
                 "订单状态": "生产中",
             },
-        }],
-    )
+        }]
+    monkeypatch.setattr(dispatch.feishu_client, "list_records", lambda *a, **k: remote_records)
     created = []
     deleted = []
+    def create(db, app, table, rows):
+        created.extend(rows)
+        remote_records.extend({"record_id": "active-record", "fields": row} for row in rows)
+        return ["active-record"]
+    def update(db, app, table, rows):
+        for row in rows:
+            next(r for r in remote_records if r["record_id"] == row["record_id"])["fields"].update(row["fields"])
+        return []
     monkeypatch.setattr(
         dispatch.feishu_client,
         "batch_create_records",
-        lambda db, app, table, rows: created.extend(rows) or ["active-record"],
+        create,
     )
     monkeypatch.setattr(
         dispatch.feishu_client,
         "batch_update_records",
-        lambda *a, **k: [],
+        update,
     )
     monkeypatch.setattr(
         dispatch.feishu_client,
@@ -619,8 +634,10 @@ def test_dispatch_sync_removes_refunds_and_does_not_block_on_missing_cost(
     assert result["warnings"] and result["errors"] == []
     assert result["created"] == 1
     assert created[0]["订单号"] == active.order_no
-    assert deleted == ["refund-record"]
-    assert result["deleted_ineligible"] == 1
+    assert deleted == []
+    assert result["deleted_ineligible"] == 0
+    assert result["retired_in_place"] == 1
+    assert remote_records[0]["fields"]["订单状态"] == "已作废"
 
 
 def test_periodic_feishu_sync_propagates_factory_dispatch_failure(

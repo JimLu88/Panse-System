@@ -262,6 +262,9 @@ def preview_export_mapping_refresh(
         if promo is None:
             warnings.append(f"{item_id}/{sku_id}退役标记{marker}无现存ERP映射，已忽略")
             continue
+        # Do not retire unrelated blank-code rows from the same product export.
+        if requested_sku_codes and owner not in requested_sku_codes:
+            continue
         if str(promo.taobao_item_id or "").strip() != item_id:
             errors.append(
                 f"退役 skuId {sku_id} 当前属于其它商品: {promo.taobao_item_id}/{owner}"

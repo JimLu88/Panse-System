@@ -125,6 +125,7 @@ class Order(Base, TimestampMixin):
     # remark 保留为 ERP 人工备注, 重导永不碰。
     buyer_message: Mapped[Optional[str]] = mapped_column(Text)   # 买家留言 (平台)
     seller_memo: Mapped[Optional[str]] = mapped_column(Text)     # 商家备注/卖家备注 (平台)
+    platform_field_state: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # 发货仓库 — 默认江西仓库; 样块 / 补单订单统一杭州 (导入时由 default_warehouse_for 自动判定)
     warehouse: Mapped[Optional[str]] = mapped_column(String(32))
@@ -155,6 +156,14 @@ class Order(Base, TimestampMixin):
     # 客户延期: 与「远期单」分开。仍可继续生产, 只把交期责任顺延到客户确认的新日期。
     is_customer_delayed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     customer_delay_deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # Platform facts and explicit human shipping-only constraints have separate owners.
+    platform_remark_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    platform_remark_tags_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    platform_remark_tags_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    customer_shipping_month: Mapped[Optional[str]] = mapped_column(String(7), nullable=True)
+    customer_shipping_month_source: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    customer_shipping_month_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    customer_shipping_preserve_production: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     # 淘宝远期单报备确认：仅在订单由备注关键词从普通单转为远期挂起时置为待确认。
     # 飞书卡片确认后永久销账；未确认则每日订单拉取完成后最多提醒一次。
     taobao_remote_report_required: Mapped[bool] = mapped_column(

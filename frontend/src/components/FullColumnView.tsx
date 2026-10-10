@@ -20,6 +20,7 @@ import {
 } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/base';
+import ProductTaobaoLinks from './ProductTaobaoLinks';
 
 const { Text } = Typography;
 
@@ -130,7 +131,8 @@ export default function FullColumnView({
         onCell: () => ({
           style: { maxWidth: w, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const },
         }),
-        render: (v: any) => renderCell(v, c.type),
+        render: (v: any, row: Record<string, any>) => c.type === 'taobao_links'
+          ? <ProductTaobaoLinks row={row} /> : renderCell(v, c.type),
       };
     });
   }, [showAll, allColumns, effectiveCore]);

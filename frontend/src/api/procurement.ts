@@ -36,6 +36,20 @@ export interface ProcurementTask {
   ai_suggestion_note: string | null;
   status: string;
   created_by: string | null;
+  batch_policy_version?: '48h-v1' | null;
+  started_at?: string | null;
+  deadline_at?: string | null;
+  closed_at?: string | null;
+  policy_snapshot?: Record<string, unknown> | null;
+  deadline_report?: {
+    kind: string;
+    as_of: string;
+    generated_at: string;
+    confirmed_sent_merchants: number;
+    replied_merchants: number;
+    not_confirmed_sent_merchants: number;
+    recommendations_ready: boolean;
+  } | null;
   created_at: string;
   updated_at: string;
   counts: {
@@ -147,6 +161,10 @@ export const listProcurementTasks = () =>
 
 export const createProcurementTask = (body: ProcurementTaskInput) =>
   api.post<ProcurementTask>('/api/procurement/tasks', body, { timeout: 150000 })
+    .then((r) => r.data);
+
+export const activateProcurementBatch = (taskId: number) =>
+  api.post<ProcurementTask>(`/api/procurement/tasks/${taskId}/activate`)
     .then((r) => r.data);
 
 export const patchProcurementTask = (

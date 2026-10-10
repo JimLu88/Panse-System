@@ -275,6 +275,10 @@ export default function App() {
         { key: 'data-export', label: <Link to="/data-export">Excel 导出</Link> },
         { key: 'import-archive', label: <Link to="/import-archive">资料存档库</Link> },
         { key: 'audit-trail', label: <Link to="/audit-trail">修改历史</Link> },
+        // 复用现有运维工具路由及权限，不新增子账号授权。
+        ...(canAccessPerm(user, resolvePagePerm('/ops-tools', ''))
+          ? [{ key: 'ops-tools', label: <Link to="/ops-tools">关系流程</Link> }]
+          : []),
         // 全列数据浏览已裁撤 (各页自带"全部列"视图, 重复) — 路由保留, 直链仍可用
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
         // 评价程序 = 独立程序 (群晖 NAS 常驻; 公网反代 https://jimlu1029.synology.me:17902 → NAS:7902, 外网也可访问); 外链新窗口打开, 无内部路由。
