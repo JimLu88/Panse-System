@@ -19,6 +19,8 @@ class EdgeClient:
         if not token:
             raise ValueError('configured_web_agent_token_required')
         self.session = session or requests.Session()
+        if session is None:
+            self.session.trust_env = False  # Dedicated loopback host, never an external proxy.
         self.headers = {'Authorization': 'Bearer '+token}
         self.url = 'http://127.0.0.1:8502/session/action'
 
