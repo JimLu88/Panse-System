@@ -1,0 +1,11 @@
+{
+  "requestedProductCodes": ["PPS24210070901","PPS24250080801","PPS25250100405","PPS26380040225"],
+  "requestedSkuCodes": ["PPS2421007090114","PPS2425008080129","PPS2525010040511","PPS2638004022511","PPS2638004022512"],
+  "acceptedProductSkuMappings": [
+    {"productCode":"PPS24210070901","skuCode":"PPS2421007090114"},
+    {"productCode":"PPS24250080801","skuCode":"PPS2425008080129"},
+    {"productCode":"PPS25250100405","skuCode":"PPS2525010040511"},
+    {"productCode":"PPS26380040225","skuCode":"PPS2638004022511"}
+  ],
+  "narrowAdditionalReadScope": {"productCode":"PPS26380040225","skuCode":"PPS2638004022512","heightAccepted":false}
+}
