@@ -122,3 +122,90 @@ def test_transport_with_prior_keeps_owner_02_segment_fix(tmp_path,old_end,histor
         assert bool(proof['historical_segment_failures'])==historical
         assert [tuple(r) for r in authority.db.execute('SELECT * FROM attempts')]==before
     finally:authority.db.close()
+
+
+def legacy_bundle(args,auth):
+    result=_generate(args,auth)
+    body=auth.get_bundle(result['entry_bundle_id'])
+    body.pop('submission_checklist');body.pop('checklist_scope_source')
+    return auth.save_bundle(body)
+
+
+def legacy_checkpoint(args,auth):
+    from campaign_artifact_recovery import input_context
+    bundle=legacy_bundle(args,auth)
+    receipt=args.output_dir/'receipt.json'
+    result=json.loads(receipt.read_text(encoding='utf-8'))
+    result['entry_bundle_id']=bundle
+    receipt.write_text(json.dumps(result),encoding='utf-8')
+    context=input_context(args);context.pop('checklist_scope_source')
+    path=args.output_dir.parent/(args.output_dir.name+'-input-context.json')
+    path.write_text(json.dumps(context),encoding='utf-8')
+    return bundle,path
+
+
+def test_original_controller_context_additive_migration_is_idempotent(tmp_path):
+    args,auth=prepare(tmp_path)
+    try:
+        bundle,context=legacy_checkpoint(args,auth)
+        original=context.read_bytes()
+        files={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
+        attempts=[tuple(r) for r in auth.db.execute('SELECT * FROM attempts')]
+        for _ in range(2):
+            result=ensure_generated(args,auth,generator=lambda *a:pytest.fail('regeneration'))
+            assert result['entry_bundle_id']==bundle
+            assert context.read_bytes()==original
+            assert files=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+            assert attempts==[tuple(r) for r in auth.db.execute('SELECT * FROM attempts')]
+        assert verify_claim(auth,claim)['submission_checklist']
+        args.end='2026-10-17 23:59:59'
+        with pytest.raises(ValueError,match='artifact_context_changed'):ensure_generated(args,auth)
+    finally:auth.close()
+
+
+def test_original_controller_migration_cannot_adopt_dispatched_effect(tmp_path):
+    args,auth=prepare(tmp_path)
+    try:
+        bundle,context=legacy_checkpoint(args,auth)
+        original=context.read_bytes()
+        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
+        auth.db.execute("UPDATE claim_transports SET state='dispatched' WHERE claim_id=?",(claim,))
+        auth.db.commit()
+        with pytest.raises(ValueError,match='original_readonly_recovery'):ensure_generated(args,auth)
+        assert context.read_bytes()==original
+        from campaign_checklist_adoption import receipt_path
+        assert not receipt_path(auth,bundle).exists()
+    finally:auth.close()
+
+
+def test_legacy_adoption_preserves_original_files_bundle_and_claim(tmp_path):
+    from campaign_checklist_adoption import adopt_existing
+    args,auth=prepare(tmp_path)
+    try:
+        bundle=legacy_bundle(args,auth);original=auth.get_bundle(bundle)
+        before={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+        with pytest.raises(ValueError,match='adoption_required'):validated_body(auth,bundle,'signup')
+        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
+        receipt=adopt_existing(auth,bundle,args.checklist_scope_source)
+        assert adopt_existing(auth,bundle,args.checklist_scope_source)==receipt
+        assert auth.get_bundle(bundle)==original
+        assert before=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+        assert verify_claim(auth,claim)['submission_checklist']==receipt['submission_checklist']
+        consume_claim(auth,claim,'b'*64)
+        with pytest.raises(ValueError,match='original_readonly_recovery'):
+            adopt_existing(auth,bundle,args.checklist_scope_source)
+        assert verify_claim(auth,claim,dispatched_job='b'*64)['verified_claim']
+    finally:auth.close()
+
+
+def test_adoption_source_change_cannot_release_old_check(tmp_path):
+    from campaign_checklist_adoption import adopt_existing
+    args,auth=prepare(tmp_path)
+    try:
+        bundle=legacy_bundle(args,auth)
+        adopt_existing(auth,bundle,args.checklist_scope_source)
+        args.checklist_scope_source.write_text('{}')
+        with pytest.raises(ValueError,match='source_missing_or_changed'):validated_body(auth,bundle,'signup')
+        assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
+    finally:auth.close()
