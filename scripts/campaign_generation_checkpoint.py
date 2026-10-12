@@ -22,7 +22,7 @@ def can_rebuild(folder, *, allow_owned=False):
     if (row is None or row[:3]!=('generate','interrupted_read',fingerprint(saved['payload']))
             or (row[3] is not None and not allow_owned)):
         return False
-    if diagnostic == ('official_text_cell_missing',):
+    if diagnostic in (('official_text_cell_missing',), ('custom_correction_outside_current_unsuccessful_scope',)):
         # Template serialization failed in memory, before output-dir creation.
         # Preserve original action and verify its recorded immutable inputs.
         if (folder/'claim.json').exists() or (folder/'result.json').exists():
@@ -32,7 +32,10 @@ def can_rebuild(folder, *, allow_owned=False):
             return False
         from campaign_entry_authority import file_sha
         context = load(context_path)
-        for name in ('snapshot', 'template', 'time_request'):
+        names=('snapshot', 'template', 'time_request')
+        if diagnostic==('custom_correction_outside_current_unsuccessful_scope',):
+            names+=('custom_corrections',)
+        for name in names:
             ref = context.get(name) or {}
             if not ref.get('path') or not ref.get('sha256'):
                 return False

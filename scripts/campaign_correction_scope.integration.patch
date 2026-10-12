@@ -1,0 +1,8 @@
+--- a/scripts/campaign_generate_current_files.py
++++ b/scripts/campaign_generate_current_files.py
+@@ -283,2 +283,3 @@
+-        row=by_pair.get(pair)
+-        if row is None:raise ValueError('custom_correction_outside_current_unsuccessful_scope')
++        from campaign_correction_scope import correction_row
++        row=correction_row(pair,by_pair,blocked_signup)
++        if row is None:continue
