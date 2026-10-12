@@ -1,0 +1,11 @@
+--- a/scripts/campaign_continuous_repairs.py
++++ b/scripts/campaign_continuous_repairs.py
+@@ -244,7 +244,7 @@ def execute_repairs(transport,action_id,payload,folder):
+     report_path,scoped_report=read(transport.root,payload)
+     report=mapping_report(scoped_report,payload)
+     if any(e.get('parse_issue') in {'unexplained_stacked_price_difference','fixed_original_evidence_missing','exact_existing_discount_readback_missing','unparsed_or_incomplete_official_failure','unnecessary_shipping_time_generated'}
+-           for e in report['errors']):
++           for e in report['errors'] if e.get('item') in payload['items']):
+         from campaign_price_report_recovery import reclassify
+         report=reclassify(transport,report,dict(payload,batch=payload['failed_batch']),folder)
+         report_path=Path(persist(folder/'reclassified-price-report.json',report))
