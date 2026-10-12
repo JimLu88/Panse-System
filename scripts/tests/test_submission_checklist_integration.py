@@ -100,3 +100,25 @@ def test_missing_producer_evidence_does_not_create_claim_or_upload_file(tmp_path
         assert not args.output_dir.exists()
         assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
     finally:auth.close()
+
+
+@pytest.mark.parametrize('old_end,historical',[
+    ('2026-09-30 23:59:59',True),('2026-10-14 00:00:00',False)])
+def test_transport_with_prior_keeps_owner_02_segment_fix(tmp_path,old_end,historical):
+    from test_campaign_segment_failure_scope import fixture
+    from campaign_continuous_transport import CampaignTransport
+    authority,payload,_=fixture(tmp_path,old_end=old_end)
+    authority.blocked=lambda *args:{'2':'success','3':'unknown'}
+    payload['identity'].update(start='2026-10-13 00:00:00',end='2026-10-16 23:59:59')
+    transport=object.__new__(CampaignTransport)
+    transport.authority=authority;transport.request={}
+    before=[tuple(r) for r in authority.db.execute('SELECT * FROM attempts')]
+    try:
+        result=transport.with_prior({'complete':True},payload,tmp_path/'scope-action')
+        expected={'2':'success','3':'unknown'}
+        if not historical:expected['1']='failed'
+        assert result['prior_outcomes']==expected
+        proof=json.loads(Path(result['prior_outcomes_evidence']).read_text())
+        assert bool(proof['historical_segment_failures'])==historical
+        assert [tuple(r) for r in authority.db.execute('SELECT * FROM attempts')]==before
+    finally:authority.db.close()
