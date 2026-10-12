@@ -1,0 +1,15 @@
+--- a/scripts/campaign_continuous_transport.py
++++ b/scripts/campaign_continuous_transport.py
+@@
+-        # Preserve explicit old failures as exceptions until their original
+-        # report is available; never reinterpret a missing record as fresh work.
+-        for row in self.authority.db.execute('SELECT item,status FROM attempts WHERE campaign=? AND phase=?',(campaign,'signup')):
+-            if row['item'] not in prior and row['status']=='failed':prior[row['item']]='failed'
+-        proof=persist(folder/'prior-outcomes.json',{'campaign':campaign,'items':prior})
++        # A disjoint earlier daily segment's failure is historical evidence,
++        # not the new segment's verdict. Success/unknown remain protected.
++        from campaign_segment_failure_scope import partition_failures
++        failed,historical=partition_failures(self.authority,payload,prior)
++        prior.update(failed)
++        proof=persist(folder/'prior-outcomes.json',{'campaign':campaign,'items':prior,
++            'historical_segment_failures':historical})

@@ -3,6 +3,21 @@ from campaign_entry_authority import load
 from campaign_feedback_normalization import normalize_errors
 
 
+def retain_failed_scope(errors, report, submitted_rows):
+    """A formerly unparsed product error may now identify an exact submitted SKU.
+
+    Do not silently drop that newly parsed constraint, and never extend it to
+    a peer product, another batch, or a SKU absent from the original upload.
+    """
+    wanted = {(e['item'], e['sku']) for e in report['errors']}
+    product_level = {i for i, s in wanted if not s}
+    submitted = {(str(r['item']), str(r['sku'])) for r in submitted_rows}
+    return [e for e in errors if (e['item'], e['sku']) in wanted or (
+        e['item'] in product_level and (e['item'], e['sku']) in submitted
+        and e.get('terminal') == 'failed' and e.get('batch') == report['batch']
+        and bool(e.get('official_evidence')))]
+
+
 def reclassify(transport,report,payload,folder):
     if report.get('prior_terminal_sha256'):
         from campaign_prior_failure_import import adopt_report
@@ -21,7 +36,11 @@ def reclassify(transport,report,payload,folder):
         return value
     from campaign_failure_remediation import report_from_download
     terminal=load(transport.root/'terminals'/('signup-'+str(report['batch'])+'.json'))
-    if not terminal.get('errors'):terminal=report_from_download(transport,terminal,payload,folder)
+    if (not terminal.get('errors') or any(e.get('parse_issue') == 'unparsed_or_incomplete_official_failure'
+                                        for e in terminal.get('errors', []))):
+        # Reinterpret the same hash-bound saved report after a parser repair.
+        # report_from_download is saved-job status only, never a new download.
+        terminal=report_from_download(transport,terminal,payload,folder)
     body=transport.authority.get_bundle(report['bundle_id']);snapshot=load(body['snapshot_path'])
     from campaign_template_failure_supplement import supplement_bound_terminal
     terminal=supplement_bound_terminal(terminal,body)
@@ -39,7 +58,4 @@ def reclassify(transport,report,payload,folder):
         rate=body['official_rate'],target_mode=body['target'])
     from campaign_shipping_cell_recovery import annotate
     errors=annotate(errors,body)
-    wanted={(e['item'],e['sku']) for e in report['errors']}
-    product_level={i for i,s in wanted if not s}
-    return dict(report,errors=[e for e in errors if (e['item'],e['sku']) in wanted
-        or (e.get('product_level_requirement') is True and e['item'] in product_level)])
+    return dict(report, errors=retain_failed_scope(errors, report, body['signup_rows']))
