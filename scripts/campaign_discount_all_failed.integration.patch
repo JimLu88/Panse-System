@@ -1,0 +1,12 @@
+--- a/scripts/campaign_discount_receipt.py
++++ b/scripts/campaign_discount_receipt.py
+@@ -29,6 +29,9 @@
+     if ({k:v for k,v in saved.items() if k not in transport_fields}
+             != {k:v for k,v in result.items() if k not in transport_fields}):
+         raise ValueError('discount_observation_changed')
++    if result.get('state')=='official_import_terminal' and result.get('success')==0:
++        from campaign_discount_all_failed import reconcile
++        return reconcile(authority,job,body,first,files,expected,path,output_dir)
+     partial=result.get('state')=='verified_partial_offer_terminal'
+     if (result.get('state') not in ('verified_offer_terminal','verified_partial_offer_terminal')
+             or type(result.get('failed')) is not int or result['failed']<0
