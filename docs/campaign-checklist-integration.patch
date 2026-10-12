@@ -192,6 +192,576 @@
          official_rate=old['official_rate'],target=old['target'],start=old['start'],end=old['end'],custom_basis_receipt=[],
          signup_items=ITEM,discount_items=ITEM,continuous_rule_sha=RULE_SHA,output_dir=root/'files',custom_corrections=None,
          sku_exclusion_receipts=old.get('sku_exclusion_receipts',[]),time_request=Path(time_path),time_segment=segments[0]['segment_id'])
+--- /dev/null
++++ b/scripts/campaign_submission_checklist_contract.py
+@@ -0,0 +1,142 @@
++"""Build a submission checklist from existing pinned ERP/export evidence only.
++
++No network access, new export, claim mutation or fallback prices. The normal
++entry verifier still replays the original price/baseline and template checks.
++"""
++from collections import defaultdict
++from decimal import Decimal
++from pathlib import Path
++
++from campaign_entry_authority import file_sha, load
++from campaign_price_snapshot import digest
++
++VERSION = 'submission-checklist-20261012-v2'
++
++
++def read_scope(reference):
++    if not reference or file_sha(reference['path']) != reference['sha256']:
++        raise ValueError('checklist_scope_source_missing_or_changed')
++    scope = load(reference['path'])
++    return validate_scope(scope)
++
++
++def validate_scope(scope):
++    source = scope['page_evidence']
++    if file_sha(source['path']) != source['sha256']:
++        raise ValueError('checklist_original_export_receipt_changed')
++    evidence = load(source['path'])
++    data = evidence['result'] if source.get('operation') == 'campaign_atomic' else evidence
++    from campaign_product_scope import complete_scope
++    actual = complete_scope(
++        [(Path(f['path']).read_bytes(), f['sha256']) for f in data['files']],
++        observed_item_ids=data['observed_item_ids'], observed_page_count=data['page_count'],
++        observed_total=data['observed_total'], page_evidence=source)
++    if actual != scope:
++        raise ValueError('checklist_scope_not_original_export')
++    return scope
++
++
++def materialize(body, snapshot, bases):
++    """Return contract plus product-scoped issues; global source errors raise."""
++    scope = read_scope(body.get('checklist_scope_source'))
++    if digest(snapshot['all_erp_rows']) != body['price_version']:
++        raise ValueError('checklist_price_version_changed')
++    facts = {(e['facts']['item'], e['facts']['sku']): e['facts'] for e in scope['sku_facts']}
++    from campaign_failure_remediation import mapped_erp_rows, excluded_pairs, verified_code_aliases
++    from campaign_catalog_repair import excluded_pairs as catalog_excluded
++    from campaign_official_template import template_rows
++    excluded = excluded_pairs(body.get('sku_exclusion_receipts', [])) if body.get('sku_exclusion_receipts') else set()
++    # Reuse the established official failed-product replacement evidence. A
++    # refreshed product must not be compared to its superseded original SKUs.
++    for ref in body.get('sku_exclusion_receipts', []):
++        doc=load(ref['path'])  # Hash and original batch already checked above.
++        fresh=validate_scope(doc['scope'])
++        affected={r['item'] for r in doc['excluded']}
++        facts={p:f for p,f in facts.items() if p[0] not in affected}
++        facts.update({(e['facts']['item'],e['facts']['sku']):e['facts']
++                      for e in fresh['sku_facts'] if e['facts']['item'] in affected})
++    excluded |= catalog_excluded(snapshot, template_rows(Path(body['template_path']).read_bytes()))
++    erp = defaultdict(list)
++    aliases = verified_code_aliases(snapshot)
++    for r in mapped_erp_rows(snapshot):
++        erp[r['code']].append(r)
++    selected = {r['item'] for r in body['signup_rows']}
++    expected = {p for p in facts if p[0] in selected and p not in excluded}
++    actual = {(r['item'],r['sku']) for r in body['signup_rows']}
++    issues = [dict(item=i,sku=s,error='checklist_current_sku_scope_mismatch') for i,s in sorted(expected ^ actual)]
++    finals = {(r['item'],r['sku']):r['final'] for r in body['planned_discount_rows']}
++    finals.update({(r['item'],r['sku']):r['final'] for r in body.get('discount_reuse',[]) if not r.get('custom')})
++    from campaign_generate_current_files import official_cut
++    from campaign_official_template import discount_rate
++    rate = discount_rate(body['official_rate'])
++    rows, row_evidence = [], []
++    for r in body['signup_rows']:
++        pair = r['item'],r['sku']
++        f = facts.get(pair)
++        matches = erp[r['erp_code']]
++        try:
++            if f is None: raise ValueError('checklist_sku_missing_from_export')
++            if len(matches) != 1: raise ValueError('checklist_erp_code_not_unique')
++            original = matches[0]
++            if (f['sku_code'] and f['sku_code'] != r['erp_code'] and
++                    (*pair,r['erp_code'],f['sku_code']) not in aliases):
++                raise ValueError('checklist_export_erp_code_mismatch')
++            if pair[0] not in {str(original.get('item')),str(original.get('product_item_id')),
++                               *map(str,original.get('product_alt_item_ids') or [])}:
++                raise ValueError('checklist_erp_product_mismatch')
++            if not f['attributes'].strip(): raise ValueError('checklist_sku_spec_missing')
++            stock = Decimal(str(f['stock']))
++            if not stock.is_finite() or stock < 0 or stock != stock.to_integral_value():
++                raise ValueError('checklist_stock_invalid')
++            if stock == 0: raise ValueError('checklist_zero_stock_rule_unknown')
++            out = dict(item=pair[0],sku=pair[1],erp_code=r['erp_code'],
++                product_name=f['attributes'],stock=str(stock),activity_price=r['activity_price'],
++                custom=r['custom'],route='keep')
++            if r['custom']:
++                basis = bases.get(pair)
++                if not basis or basis.get('uncertain'): raise ValueError('checklist_fixed_original_missing_or_uncertain')
++                base = Decimal(str(basis['original']))
++                if base <= 0 or Decimal(r['activity_price']) < base * Decimal('.20'):
++                    raise ValueError('checklist_custom_floor_breached')
++                out.update(original_price=str(base), target_price=str(base))
++            else:
++                daily = Decimal(str(original['daily']))
++                target = Decimal(str(original[body['target']+'_target']))
++                final = Decimal(finals.get(pair, str(daily-official_cut(daily,rate))))
++                if Decimal(r['activity_price']) != daily: raise ValueError('checklist_signup_not_daily')
++                if Decimal(r['target']) != target: raise ValueError('checklist_fixed_target_changed')
++                if abs(final-target) > 2: raise ValueError('checklist_final_outside_fixed_target')
++                out.update(daily_price=str(daily),target_price=str(target),final_price=str(final))
++            rows.append(out)
++            row_evidence.append(dict(item=pair[0],sku=pair[1],attributes=f['attributes'],
++                baseline=bases.get(pair) if r['custom'] else None))
++        except (ValueError, KeyError, ArithmeticError) as exc:
++            issues.append(dict(item=pair[0],sku=pair[1],error=str(exc)))
++    current = defaultdict(list)
++    for i,s in sorted(expected):current[i].append(s)
++    campaign = body['campaign'].split('/')
++    identity = dict(zip(('campaign_id','phase_id','sign_record_id'),campaign))
++    identity.update(start=body['start'],end=body['end'])
++    export = load(scope['page_evidence']['path'])
++    shop = ((export.get('identity') or {}).get('shop_name') if scope['page_evidence'].get('operation') == 'campaign_atomic'
++            else export.get('shop_name'))
++    if not shop:raise ValueError('checklist_export_shop_missing')
++    identity['shop_name']=shop
++    checklist = dict(identity=identity,
++        template=dict(sheet='商品SKU导入列表',sku_dimension=True,includes_reference=True,smart_price=False),
++        template_source=dict(path=body['template_path'],sha256=body['template_sha256']),
++        current_sku_scope=dict(current),old_sku_scope={},protected_scope={},
++        rows=rows,failed_feedback=[],
++        source_evidence=dict(scope=body['checklist_scope_source'],snapshot=dict(path=body['snapshot_path'],sha256=body['snapshot_sha256']),
++            price_version=body['price_version'],rows=row_evidence,
++            official_exclusions=body.get('sku_exclusion_receipts',[]),
++            price_correction_sources=body.get('corrections',{'rows':[]})),rule_version=VERSION)
++    return checklist, issues
++
++
++def verify_contract(body, snapshot, bases):
++    contract, issues = materialize(body,snapshot,bases)
++    if issues:raise ValueError('submission_checklist_inputs_invalid:'+issues[0]['error'])
++    if body.get('submission_checklist') != contract:
++        raise ValueError('submission_checklist_source_binding_changed')
++    return contract
+--- /dev/null
++++ b/scripts/campaign_checklist_adoption.py
+@@ -0,0 +1,80 @@
++"""Attach verified local checklist evidence to an immutable legacy bundle.
++
++No bundle rewrite, file regeneration, claim release, submission or source refresh.
++Historical dispatched effects keep their original receipt-only recovery path.
++"""
++import json
++from pathlib import Path
++from campaign_entry_authority import file_sha, load
++from campaign_price_snapshot import digest
++
++
++def receipt_path(authority, bundle):
++    import re
++    if not re.fullmatch('[0-9a-f]{64}',bundle):raise ValueError('invalid_bundle_identity')
++    return authority.path.parent/'checklist-adoptions'/(bundle+'.json')
++
++
++def augment(authority,bundle,body,snapshot,bases,*,candidate_scope=None):
++    from campaign_submission_checklist_contract import materialize, verify_contract
++    if body.get('submission_checklist'):
++        verify_contract(body,snapshot,bases)
++        return body
++    if candidate_scope is None:
++        path=receipt_path(authority,bundle)
++        if not path.is_file():raise ValueError('legacy_bundle_checklist_adoption_required')
++        receipt=load(path)
++        if receipt.get('bundle_id')!=bundle or receipt.get('original_body_sha256')!=digest(body):
++            raise ValueError('legacy_checklist_original_bundle_changed')
++        candidate_scope=receipt['scope_source']
++    else:receipt=None
++    value=dict(body,checklist_scope_source=candidate_scope)
++    contract,issues=materialize(value,snapshot,bases)
++    if issues:raise ValueError('legacy_checklist_inputs_invalid:'+issues[0]['error'])
++    if receipt is not None and receipt.get('submission_checklist')!=contract:
++        raise ValueError('legacy_checklist_source_binding_changed')
++    return dict(value,submission_checklist=contract)
++
++
++def adopt_existing(authority,bundle,scope_path):
++    """One bounded local migration. Caller must own an idle request checkpoint."""
++    from campaign_submission_gate import validated_body
++    scope_path=Path(scope_path)
++    scope=dict(path=str(scope_path.resolve()),sha256=file_sha(scope_path))
++    authority.db.execute('BEGIN IMMEDIATE')
++    try:
++        original=authority.get_bundle(bundle)
++        attempts=list(authority.db.execute('SELECT id,status FROM attempts WHERE bundle_id=? AND phase=?',(bundle,'signup')))
++        for attempt in attempts:
++            claim=attempt['id'].rsplit(':',1)[0]
++            binding=authority.db.execute('SELECT state FROM claim_transports WHERE claim_id=?',(claim,)).fetchone()
++            if attempt['status']!='unknown' or not binding or binding[0]!='claimed_not_dispatched':
++                raise ValueError('legacy_effect_requires_original_readonly_recovery')
++        body,_=validated_body(authority,bundle,'signup',_candidate_scope=scope)
++        receipt=dict(schema='campaign_checklist_adoption_v1',bundle_id=bundle,
++            original_body_sha256=digest(original),scope_source=scope,
++            submission_checklist=body['submission_checklist'],platform_write=False,
++            regenerated_files=False,claims_changed=False)
++        path=receipt_path(authority,bundle)
++        if path.exists():
++            if load(path)!=receipt:raise ValueError('legacy_checklist_adoption_changed')
++        else:
++            path.parent.mkdir(parents=True,exist_ok=True)
++            with path.open('x',encoding='utf-8') as out:json.dump(receipt,out,ensure_ascii=False,indent=2)
++        authority.db.execute('COMMIT')
++        return dict(receipt,receipt_path=str(path))
++    except BaseException:
++        authority.db.execute('ROLLBACK');raise
++
++
++def main():
++    import argparse
++    from campaign_entry_authority import Authority
++    p=argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--bundle',required=True);p.add_argument('--scope',type=Path,required=True)
++    args=p.parse_args();authority=Authority()
++    try:print(json.dumps(adopt_existing(authority,args.bundle,args.scope),ensure_ascii=False))
++    finally:authority.close()
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/scripts/tests/test_submission_checklist_contract.py
+@@ -0,0 +1,89 @@
++import copy
++import json
++import sys
++from pathlib import Path
++import pytest
++
++sys.path.insert(0,str(Path(__file__).parents[1]))
++import campaign_submission_checklist_contract as c
++from campaign_price_snapshot import digest
++from campaign_entry_authority import file_sha
++
++
++def setup_case(tmp_path, monkeypatch, custom=False):
++    import campaign_official_template as official
++    monkeypatch.setattr(official,'template_rows',lambda raw:[])
++    path=tmp_path/'template.xlsx';path.write_bytes(b'template-test-double')
++    proof=tmp_path/'export.json';proof.write_text(json.dumps({'shop_name':'测试店'}),encoding='utf-8')
++    scope={'sku_facts':[{'facts':dict(item='100',sku='900',sku_code='PPS1',stock='1',attributes='榉木;整装')}],
++           'page_evidence':{'path':str(proof),'sha256':file_sha(proof)}}
++    monkeypatch.setattr(c,'read_scope',lambda ref:copy.deepcopy(scope))
++    snapshot={'all_erp_rows':[dict(code='PPS1',item='100',sku='900',daily='100',medium_target='80',custom=custom)]}
++    row=dict(item='100',sku='900',erp_code='PPS1',activity_price='100',custom=custom)
++    if not custom:row['target']='80'
++    body=dict(campaign='1/2/3',start='2026-10-13 00:00:00',end='2026-10-16 23:59:59',
++        signup_rows=[row],planned_discount_rows=[dict(item='100',sku='900',final='80')],
++        discount_reuse=[],official_rate='0.10',target='medium',template_path=str(path),template_sha256=file_sha(path),
++        snapshot_path='snapshot.json',snapshot_sha256='snapshot-hash',price_version=digest(snapshot['all_erp_rows']),
++        checklist_scope_source={'path':'scope.json','sha256':'scope-hash'})
++    return body,snapshot,scope
++
++
++def test_generation_and_verification_same_evidence(tmp_path,monkeypatch):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch)
++    contract,issues=c.materialize(body,snapshot,{})
++    assert not issues and contract['rows'][0]['final_price']=='80'
++    body['submission_checklist']=contract
++    assert c.verify_contract(body,snapshot,{})==contract
++    body['submission_checklist']['rows'][0]['daily_price']='99'
++    with pytest.raises(ValueError,match='source_binding_changed'):c.verify_contract(body,snapshot,{})
++
++
++@pytest.mark.parametrize('price,expected',[('20',False),('19.99',True),('90',False)])
++def test_custom_first_baseline_floor(tmp_path,monkeypatch,price,expected):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch,custom=True)
++    body['signup_rows'][0]['activity_price']=price
++    contract,issues=c.materialize(body,snapshot,{('100','900'):{'original':'100'}})
++    assert bool(issues)==expected
++    if not issues:assert contract['rows'][0]['original_price']=='100'
++
++
++@pytest.mark.parametrize('final,expected',[('78',False),('82',False),('77.99',True),('82.01',True)])
++def test_ordinary_fixed_target_not_previous_final(tmp_path,monkeypatch,final,expected):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch)
++    body['planned_discount_rows'][0]['final']=final
++    _,issues=c.materialize(body,snapshot,{})
++    assert bool(issues)==expected
++
++
++def test_missing_baseline_is_scoped_not_rotation(tmp_path,monkeypatch):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch,custom=True)
++    _,issues=c.materialize(body,snapshot,{})
++    assert issues==[dict(item='100',sku='900',error='checklist_fixed_original_missing_or_uncertain')]
++
++
++def test_export_extra_sku_not_silently_omitted(tmp_path,monkeypatch):
++    body,snapshot,scope=setup_case(tmp_path,monkeypatch)
++    scope['sku_facts'].append({'facts':dict(item='100',sku='901',sku_code='PPS2',stock='1',attributes='窄柜')})
++    _,issues=c.materialize(body,snapshot,{})
++    assert issues==[dict(item='100',sku='901',error='checklist_current_sku_scope_mismatch')]
++
++
++def test_reused_discount_final_has_priority(tmp_path,monkeypatch):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch)
++    body['discount_reuse']=[dict(item='100',sku='900',final='77')]
++    _,issues=c.materialize(body,snapshot,{})
++    assert issues[0]['error']=='checklist_final_outside_fixed_target'
++
++
++def test_price_snapshot_change_rejected(tmp_path,monkeypatch):
++    body,snapshot,_=setup_case(tmp_path,monkeypatch)
++    snapshot['all_erp_rows'][0]['daily']='99'
++    with pytest.raises(ValueError,match='price_version_changed'):c.materialize(body,snapshot,{})
++
++
++def test_scope_original_receipt_hash_is_checked(tmp_path):
++    proof=tmp_path/'proof.json';proof.write_text('{}')
++    scope=tmp_path/'scope.json';scope.write_text(json.dumps({'page_evidence':{'path':str(proof),'sha256':'changed'}}))
++    with pytest.raises(ValueError,match='original_export_receipt_changed'):
++        c.read_scope({'path':str(scope),'sha256':file_sha(scope)})
+--- /dev/null
++++ b/scripts/tests/test_submission_checklist_integration.py
+@@ -0,0 +1,223 @@
++"""Synthetic full generator/claim/resume tests; no live Authority or browser."""
++import json
++import sys
++from pathlib import Path
++from types import SimpleNamespace
++import pytest
++
++sys.path.insert(0,str(Path(__file__).parents[1]))
++from campaign_entry_authority import Authority, file_sha
++from campaign_price_snapshot import build_snapshot
++from campaign_product_scope import complete_scope
++from campaign_generate_current_files import _generate
++from campaign_submission_gate import validated_body, verify_claim, consume_claim
++from campaign_artifact_recovery import ensure_generated
++from test_campaign_current_rate import rate_fixture
++
++
++@pytest.fixture(autouse=True)
++def isolated_evidence_roots(tmp_path,monkeypatch):
++    import campaign_three_discount_overlay
++    monkeypatch.setattr(campaign_three_discount_overlay,'ROOT',tmp_path/'empty-overlays')
++    monkeypatch.setenv('PANSE_SKU_FACT_ROOT',str(tmp_path/'empty-facts'))
++
++
++def prepare(tmp_path):
++    import openpyxl
++    def write(name,value):
++        p=tmp_path/name;p.write_text(json.dumps(value,ensure_ascii=False),encoding='utf-8');return p
++    item='917179577721'
++    rows=[dict(item=item,sku=str(6241018727157+n),code='NORMAL'+str(n),daily='100',
++               medium_target='88',big_target='88',custom=False,alt=[]) for n in range(4)]
++    wb=openpyxl.Workbook();ws=wb.active;ws.title='发布模板'
++    ws.append(['商品Id','skuId','商家编码','价格(元)','库存(件)','销售属性'])
++    for r in rows:ws.append([item,r['sku'],r['code'],'100','2','榉木;整装'])
++    export=tmp_path/'export.xlsx';wb.save(export)
++    data=dict(shop_name='测试店',observed_item_ids=[item],observed_total=1,page_count=1,
++              files=[dict(path=str(export),sha256=file_sha(export))])
++    proof=write('export.json',data)
++    scope=complete_scope([(export.read_bytes(),file_sha(export))],observed_item_ids=[item],
++        observed_page_count=1,observed_total=1,page_evidence=dict(path=str(proof),sha256=file_sha(proof)))
++    scope_path=write('scope.json',scope)
++    template=tmp_path/'template.xlsx';template.write_bytes(rate_fixture('12%'))
++    args=SimpleNamespace(snapshot=write('snapshot.json',build_snapshot(rows)),activity_template=template,
++        checklist_scope_source=scope_path,output_dir=tmp_path/'result',start='2026-10-13 00:00:00',
++        end='2026-10-16 23:59:59',campaign_key='1/2/3',official_rate='12%',target='big',
++        signup_items=None,discount_items=None,custom_basis_receipt=[],custom_corrections=None)
++    auth=Authority(tmp_path/'test-only.sqlite3',write('sources.json',{'sources':[]}))
++    return args,auth
++
++
++def test_full_generation_claim_consumption_unknown_protection_and_resume(tmp_path):
++    args,auth=prepare(tmp_path)
++    try:
++        result=ensure_generated(args,auth,generator=_generate)
++        assert not result['issues']
++        bundle=result['entry_bundle_id'];body,file=validated_body(auth,bundle,'signup')
++        assert len(body['submission_checklist']['rows'])==4
++        before={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++        assert ensure_generated(args,auth,generator=lambda *a:pytest.fail('must not regenerate'))==result
++        assert before=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
++        verified=verify_claim(auth,claim)
++        assert verified['submission_checklist']==body['submission_checklist']
++        assert len(verified['sku_rows'])==4 and verified['shop']=='测试店'
++        consumed=consume_claim(auth,claim,'a'*64)
++        assert consumed['dispatch_consumed']
++        with pytest.raises(ValueError):consume_claim(auth,claim,'b'*64)
++        with pytest.raises(ValueError,match='must_not_replay'):auth.claim(bundle,'signup',transport='dedicated_edge_v1')
++        # Read-only original dispatched receipt checks remain usable; no new gate
++        # is imposed on recovering an already performed platform effect.
++        assert verify_claim(auth,claim,dispatched_job='a'*64)['verified_claim']
++        receipt=dict(schema='campaign_entry_terminal_v1',claim_id=claim,campaign=body['campaign'],
++            phase='signup',start=body['start'],end=body['end'],file_sha256=file['sha256'],
++            batch_id='TEST-ONLY',terminal=True,items=[dict(item='917179577721',status='success')])
++        proof=tmp_path/'official-test-only.json';proof.write_text(json.dumps(receipt))
++        auth.terminal(claim,dict(receipt,evidence_path=str(proof)))
++        receipt['items'][0]['status']='failed'
++        stale=tmp_path/'old-same-name-test-only.json';stale.write_text(json.dumps(receipt))
++        with pytest.raises(ValueError,match='terminal_conflict'):
++            auth.terminal(claim,dict(receipt,evidence_path=str(stale)))
++        assert auth.blocked(body['campaign'],'signup',body['start'],body['end'])['917179577721']=='success'
++    finally:auth.close()
++
++
++def test_resume_changed_scope_never_regenerates(tmp_path):
++    args,auth=prepare(tmp_path)
++    try:
++        ensure_generated(args,auth,generator=_generate)
++        args.checklist_scope_source.write_text('{}')
++        with pytest.raises(ValueError,match='artifact_context_changed'):
++            ensure_generated(args,auth,generator=lambda *a:pytest.fail('must not regenerate'))
++        assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
++    finally:auth.close()
++
++
++def test_missing_producer_evidence_does_not_create_claim_or_upload_file(tmp_path):
++    args,auth=prepare(tmp_path);args.checklist_scope_source=None
++    try:
++        with pytest.raises(ValueError,match='scope_source_missing'):_generate(args,auth)
++        assert not args.output_dir.exists()
++        assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
++    finally:auth.close()
++
++
++@pytest.mark.parametrize('old_end,historical',[
++    ('2026-09-30 23:59:59',True),('2026-10-14 00:00:00',False)])
++def test_transport_with_prior_keeps_owner_02_segment_fix(tmp_path,old_end,historical):
++    import sqlite3
++    from campaign_continuous_transport import CampaignTransport
++    campaign='legacy/itemApply/3172207691'
++    proof=tmp_path/'terminal.json'
++    proof.write_text(json.dumps(dict(phase='signup',terminal=True,campaign=campaign,
++        claim_id='claim',batch_id='123',items=[dict(item='1',status='failed')])),encoding='utf-8')
++    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
++    db.execute('CREATE TABLE attempts(item,status,bundle_id,id,evidence,campaign,phase)')
++    db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?)',('1','failed','bundle','claim:1',
++        json.dumps(dict(path=str(proof),sha256=file_sha(proof),batch='123')),campaign,'signup'))
++    authority=SimpleNamespace(db=db,get_bundle=lambda _:dict(campaign=campaign,
++        start='2026-09-28 00:00:00',end=old_end))
++    payload=dict(identity=dict(campaign_id='legacy',phase_id='itemApply',sign_record_id='3172207691'),
++        time_binding=dict(segment=dict(kind='daily',campaign=campaign,price_window=dict(
++            start='2026-10-13 00:00:00',end='2026-10-16 23:59:59'))))
++    authority.blocked=lambda *args:{'2':'success','3':'unknown'}
++    payload['identity'].update(start='2026-10-13 00:00:00',end='2026-10-16 23:59:59')
++    transport=object.__new__(CampaignTransport)
++    transport.authority=authority;transport.request={}
++    before=[tuple(r) for r in authority.db.execute('SELECT * FROM attempts')]
++    try:
++        result=transport.with_prior({'complete':True},payload,tmp_path/'scope-action')
++        expected={'2':'success','3':'unknown'}
++        if not historical:expected['1']='failed'
++        assert result['prior_outcomes']==expected
++        proof=json.loads(Path(result['prior_outcomes_evidence']).read_text())
++        assert bool(proof['historical_segment_failures'])==historical
++        assert [tuple(r) for r in authority.db.execute('SELECT * FROM attempts')]==before
++    finally:authority.db.close()
++
++
++def legacy_bundle(args,auth):
++    result=_generate(args,auth)
++    body=auth.get_bundle(result['entry_bundle_id'])
++    body.pop('submission_checklist');body.pop('checklist_scope_source')
++    return auth.save_bundle(body)
++
++
++def legacy_checkpoint(args,auth):
++    from campaign_artifact_recovery import input_context
++    bundle=legacy_bundle(args,auth)
++    receipt=args.output_dir/'receipt.json'
++    result=json.loads(receipt.read_text(encoding='utf-8'))
++    result['entry_bundle_id']=bundle
++    receipt.write_text(json.dumps(result),encoding='utf-8')
++    context=input_context(args);context.pop('checklist_scope_source')
++    path=args.output_dir.parent/(args.output_dir.name+'-input-context.json')
++    path.write_text(json.dumps(context),encoding='utf-8')
++    return bundle,path
++
++
++def test_original_controller_context_additive_migration_is_idempotent(tmp_path):
++    args,auth=prepare(tmp_path)
++    try:
++        bundle,context=legacy_checkpoint(args,auth)
++        original=context.read_bytes()
++        files={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
++        attempts=[tuple(r) for r in auth.db.execute('SELECT * FROM attempts')]
++        for _ in range(2):
++            result=ensure_generated(args,auth,generator=lambda *a:pytest.fail('regeneration'))
++            assert result['entry_bundle_id']==bundle
++            assert context.read_bytes()==original
++            assert files=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++            assert attempts==[tuple(r) for r in auth.db.execute('SELECT * FROM attempts')]
++        assert verify_claim(auth,claim)['submission_checklist']
++        args.end='2026-10-17 23:59:59'
++        with pytest.raises(ValueError,match='artifact_context_changed'):ensure_generated(args,auth)
++    finally:auth.close()
++
++
++def test_original_controller_migration_cannot_adopt_dispatched_effect(tmp_path):
++    args,auth=prepare(tmp_path)
++    try:
++        bundle,context=legacy_checkpoint(args,auth)
++        original=context.read_bytes()
++        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
++        auth.db.execute("UPDATE claim_transports SET state='dispatched' WHERE claim_id=?",(claim,))
++        auth.db.commit()
++        with pytest.raises(ValueError,match='original_readonly_recovery'):ensure_generated(args,auth)
++        assert context.read_bytes()==original
++        from campaign_checklist_adoption import receipt_path
++        assert not receipt_path(auth,bundle).exists()
++    finally:auth.close()
++
++
++def test_legacy_adoption_preserves_original_files_bundle_and_claim(tmp_path):
++    from campaign_checklist_adoption import adopt_existing
++    args,auth=prepare(tmp_path)
++    try:
++        bundle=legacy_bundle(args,auth);original=auth.get_bundle(bundle)
++        before={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++        with pytest.raises(ValueError,match='adoption_required'):validated_body(auth,bundle,'signup')
++        claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
++        receipt=adopt_existing(auth,bundle,args.checklist_scope_source)
++        assert adopt_existing(auth,bundle,args.checklist_scope_source)==receipt
++        assert auth.get_bundle(bundle)==original
++        assert before=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
++        assert verify_claim(auth,claim)['submission_checklist']==receipt['submission_checklist']
++        consume_claim(auth,claim,'b'*64)
++        with pytest.raises(ValueError,match='original_readonly_recovery'):
++            adopt_existing(auth,bundle,args.checklist_scope_source)
++        assert verify_claim(auth,claim,dispatched_job='b'*64)['verified_claim']
++    finally:auth.close()
++
++
++def test_adoption_source_change_cannot_release_old_check(tmp_path):
++    from campaign_checklist_adoption import adopt_existing
++    args,auth=prepare(tmp_path)
++    try:
++        bundle=legacy_bundle(args,auth)
++        adopt_existing(auth,bundle,args.checklist_scope_source)
++        args.checklist_scope_source.write_text('{}')
++        with pytest.raises(ValueError,match='source_missing_or_changed'):validated_body(auth,bundle,'signup')
++        assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
++    finally:auth.close()
+--- /dev/null
++++ b/scripts/tests/test_checklist_relationships.py
+@@ -0,0 +1,21 @@
++import sys
++from pathlib import Path
++import pytest
++
++ROOT=Path(__file__).parents[2]
++sys.path.insert(0,str(ROOT/'backend'))
++from app.services import business_relationship_service as service
++
++
++def test_all_checklist_scripts_have_review_relationships_and_real_anchors():
++    report=service.change_report(sorted(service.CHECKLIST_SCRIPTS))
++    assert not report['unmapped_changes'] and not report['validation_errors']
++    for entry in service.catalog.NODES+service.catalog.EDGES:
++        for ref in entry['sources']:
++            if ref['path'] in service.CHECKLIST_SCRIPTS:
++                assert ref['anchor'] in service._path(service.APP_ROOT,ref).read_text(encoding='utf-8')
++
++
++@pytest.mark.parametrize('path',['scripts/../../secrets.py','scripts/unregistered.py','C:/outside.py'])
++def test_relationship_source_allowlist_does_not_expand_file_access(path):
++    with pytest.raises(ValueError):service._path(service.APP_ROOT,{'path':path})
 --- a/backend/app/services/business_relationship_catalog.py
 +++ b/backend/app/services/business_relationship_catalog.py
 @@ -363,3 +363,44 @@
