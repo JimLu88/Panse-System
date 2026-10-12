@@ -1,0 +1,98 @@
+--- a/scripts/campaign_continuous_flow.py
++++ b/scripts/campaign_continuous_flow.py
+@@ -283,34 +283,40 @@
+         for item in items:
+             state['exceptions'][item] = [{'action': 'manual', 'reason': reason}]
+ 
+-    def repair_failed(errors, batch, phase):
+-        repairs, exceptions = classify_items(errors)
+-        state['exceptions'].update(exceptions)
+-        for item in list(repairs):
+-            if repair_already_attempted(state,item,repairs[item]):
+-                hold([item], 'same_correction_already_attempted_without_success')
+-                del repairs[item]
+-        if not repairs:
+-            return []
+-        repaired = call('repair', {'decisions': repairs, 'items': sorted(repairs),
+-                                   'failed_batch': batch, 'failed_phase': phase})
+-        fixed_rows = _terminal_scope(repaired, sorted(repairs))
+-        next_items = []
+-        for row in fixed_rows:
+-            item = row['item']
+-            if row['outcome'] == 'success' and row.get('changed') is True:
+-                next_items.append(item)
+-                state['exceptions'].pop(item, None)
+-                prior={(d['sku'],d['repair']['kind']):d for d in state['corrections'].get(item,[])}
+-                prior.update({(d['sku'],d['repair']['kind']):d for d in repairs[item]})
+-                state['corrections'][item] = list(prior.values())
+-                state['repairs_seen'].setdefault(item, []).append(repair_signature(repairs[item]))
+-            else:
+-                hold([item], 'repair_failed_or_no_verified_change')
+-        return next_items
+-
+-    def failed_report(batch, items, phase):
+-        report = call('report', {'batch': batch, 'items': items, 'failed_phase': phase})
++    report_refs = {}
++
++    def repair_failed(errors, batch, phase):
++        repairs, exceptions = classify_items(errors)
++        state['exceptions'].update(exceptions)
++        for item in list(repairs):
++            if repair_already_attempted(state,item,repairs[item]):
++                hold([item], 'same_correction_already_attempted_without_success')
++                del repairs[item]
++        if not repairs:
++            return []
++        binding = report_refs.get((batch, phase))
++        repaired = call('repair', {'decisions': repairs, 'items': sorted(repairs),
++                                   'failed_batch': batch, 'failed_phase': phase,
++                                   **({'report_ref': binding} if binding else {})})
++        fixed_rows = _terminal_scope(repaired, sorted(repairs))
++        next_items = []
++        for row in fixed_rows:
++            item = row['item']
++            if row['outcome'] == 'success' and row.get('changed') is True:
++                next_items.append(item)
++                state['exceptions'].pop(item, None)
++                prior={(d['sku'],d['repair']['kind']):d for d in state['corrections'].get(item,[])}
++                prior.update({(d['sku'],d['repair']['kind']):d for d in repairs[item]})
++                state['corrections'][item] = list(prior.values())
++                state['repairs_seen'].setdefault(item, []).append(repair_signature(repairs[item]))
++            else:
++                hold([item], 'repair_failed_or_no_verified_change')
++        return next_items
++
++    def failed_report(batch, items, phase):
++        report = call('report', {'batch': batch, 'items': items, 'failed_phase': phase})
++        if report.get('report_ref'):
++            report_refs[(batch, phase)] = report['report_ref']
+         errors = report.get('errors') or []
+         if (set(str(e.get('item')) for e in errors) != set(items)
+                 or any(e.get('batch') != batch for e in errors)):
+--- a/scripts/campaign_continuous_transport.py
++++ b/scripts/campaign_continuous_transport.py
+@@ -374,8 +374,8 @@
+             errors=[dict(e,kind='unknown',parse_issue='mapping_export_unavailable:'+str(exc))
+                     if e.get('kind')=='mapping' else e for e in errors]
+         report=dict(errors=errors,batch=payload['batch'],bundle_id=result['bundle_id'],source_terminal=result['evidence'])
+-        persist(self.root/'reports'/(str(payload['batch'])+'.json'),report)
+-        return report
++        from campaign_scoped_failure_report import save
++        return dict(report, report_ref=save(self.root,folder,report))
+ 
+     def step_repair(self,action_id,payload,folder):
+         from campaign_continuous_repairs import execute_repairs
+--- a/scripts/campaign_continuous_repairs.py
++++ b/scripts/campaign_continuous_repairs.py
+@@ -240,8 +240,9 @@
+ def execute_repairs(transport,action_id,payload,folder):
+     from campaign_continuous_transport import persist
+     a=transport.authority;table(a)
+-    report_path=transport.root/'reports'/(str(payload['failed_batch'])+'.json')
+-    report=mapping_report(load(report_path),payload)
++    from campaign_scoped_failure_report import read
++    report_path,scoped_report=read(transport.root,payload)
++    report=mapping_report(scoped_report,payload)
+     if any(e.get('parse_issue') in {'unexplained_stacked_price_difference','fixed_original_evidence_missing','exact_existing_discount_readback_missing','unparsed_or_incomplete_official_failure','unnecessary_shipping_time_generated'}
+            for e in report['errors']):
+         from campaign_price_report_recovery import reclassify
