@@ -105,9 +105,21 @@ def test_missing_producer_evidence_does_not_create_claim_or_upload_file(tmp_path
 @pytest.mark.parametrize('old_end,historical',[
     ('2026-09-30 23:59:59',True),('2026-10-14 00:00:00',False)])
 def test_transport_with_prior_keeps_owner_02_segment_fix(tmp_path,old_end,historical):
-    from test_campaign_segment_failure_scope import fixture
+    import sqlite3
     from campaign_continuous_transport import CampaignTransport
-    authority,payload,_=fixture(tmp_path,old_end=old_end)
+    campaign='legacy/itemApply/3172207691'
+    proof=tmp_path/'terminal.json'
+    proof.write_text(json.dumps(dict(phase='signup',terminal=True,campaign=campaign,
+        claim_id='claim',batch_id='123',items=[dict(item='1',status='failed')])),encoding='utf-8')
+    db=sqlite3.connect(':memory:');db.row_factory=sqlite3.Row
+    db.execute('CREATE TABLE attempts(item,status,bundle_id,id,evidence,campaign,phase)')
+    db.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?,?)',('1','failed','bundle','claim:1',
+        json.dumps(dict(path=str(proof),sha256=file_sha(proof),batch='123')),campaign,'signup'))
+    authority=SimpleNamespace(db=db,get_bundle=lambda _:dict(campaign=campaign,
+        start='2026-09-28 00:00:00',end=old_end))
+    payload=dict(identity=dict(campaign_id='legacy',phase_id='itemApply',sign_record_id='3172207691'),
+        time_binding=dict(segment=dict(kind='daily',campaign=campaign,price_window=dict(
+            start='2026-10-13 00:00:00',end='2026-10-16 23:59:59'))))
     authority.blocked=lambda *args:{'2':'success','3':'unknown'}
     payload['identity'].update(start='2026-10-13 00:00:00',end='2026-10-16 23:59:59')
     transport=object.__new__(CampaignTransport)
