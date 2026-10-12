@@ -33,3 +33,12 @@ def test_refresh_revalidates_old_alias_against_current_physical_facts(tmp_path,c
         assert receipt['mapped_pairs']==[('1','2')]
         assert hasattr(authority,'registered')
     assert snapshot==before
+def test_controller_metadata_does_not_replace_official_scope():
+    from campaign_catalog_alias_refresh import verified_scope_matches
+    verified=dict(complete=True,sku_facts=[{'sku':'123'}],page_evidence={'sha256':'proof'},observed_item_count=1)
+    assert verified_scope_matches(dict(verified,status='terminal',prior_outcomes={},erp_sellable=['x']),verified)
+    assert not verified_scope_matches(dict(verified,sku_facts=[]),verified)
+    assert not verified_scope_matches(dict(verified,complete=False),verified)
+    assert not verified_scope_matches(dict(verified,page_evidence={}),verified)
+    assert not verified_scope_matches(dict(verified,unexpected='ignored'),verified)
+

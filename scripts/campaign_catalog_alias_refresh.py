@@ -103,7 +103,7 @@ def main():
                                  result=dict(result,evidence_path=proof['path'])),
         expected_request_id=proof['snapshot_request_id'],expected_shop=result['shop_name'],
         roots=[Path(proof['path']).parent])
-    if verified != scope:
+    if not verified_scope_matches(scope,verified):
         raise ValueError('catalog_refresh_scope_changed')
     a=Authority()
     try:
@@ -112,6 +112,13 @@ def main():
         print(json.dumps(dict(receipt=receipt,price_version_unchanged=resolved['resolved_price_version_sha256']==snapshot['resolved_price_version_sha256'],
                               platform_write=False),ensure_ascii=False))
     finally:a.close()
+
+
+def verified_scope_matches(scope,verified):
+    """Controller receipt metadata is not part of the official export facts."""
+    metadata={'status','prior_outcomes','evidence','action_id','request_sha','mapping_issues',
+              'price_version','prior_outcomes_evidence','erp_sellable'}
+    return (set(scope)-set(verified)<=metadata and all(scope.get(k)==v for k,v in verified.items()))
 
 
 if __name__=='__main__':main()
