@@ -1,0 +1,121 @@
+--- a/scripts/campaign_generate_current_files.py
++++ b/scripts/campaign_generate_current_files.py
+@@ -304,6 +304,21 @@
+     planned_discounts=discounts
+     discounts,reused,reuse_issues=reconcile(activity,discounts,authority.discount_offers(),args.start,args.end,rate,campaign=campaign,target=args.target,continuous_rule_sha=continuous_rule_sha)
+     issues.extend(reuse_issues)
++    # Local evidence only: use the same complete export already owned by this
++    # request. Per-product missing facts join existing item isolation.
++    checklist_context = None
++    if activity:
++        from campaign_submission_checklist_contract import materialize
++        scope_path = getattr(args, 'checklist_scope_source', None)
++        checklist_context = dict(campaign=campaign,start=args.start,end=args.end,
++            snapshot_path=str(args.snapshot.resolve()),snapshot_sha256=sha(args.snapshot.read_bytes()),
++            price_version=snapshot['resolved_price_version_sha256'],
++            template_path=str(args.activity_template.resolve()),template_sha256=sha(raw),
++            official_rate=args.official_rate,target=args.target,signup_rows=activity,
++            planned_discount_rows=planned_discounts,discount_reuse=reused,sku_exclusion_receipts=exclusions,
++            checklist_scope_source=({'path':str(scope_path.resolve()),'sha256':sha(scope_path.read_bytes())} if scope_path else None))
++        _, checklist_issues = materialize(checklist_context,snapshot,bases)
++        issues.extend(checklist_issues)
+     requested_signup, requested_discount = set(signup_items), set(discount_items)
+     isolated = set()
+     partial = bool(getattr(args, 'isolate_item_issues', False))
+@@ -373,6 +388,14 @@
+         if exclusions:body['sku_exclusion_receipts']=exclusions
+         if time_binding is not None:
+             body['time_binding']=time_binding
++        if activity:
++            body['checklist_scope_source']=checklist_context['checklist_scope_source']
++            contract, checklist_issues=materialize(body,snapshot,bases)
++            if checklist_issues:raise ValueError('submission_checklist_isolation_incomplete')
++            body['submission_checklist']=contract
++            result['submission_checklist']={'state':'validated_local','rule_version':contract['rule_version'],
++                'evidence_sha256':sha(json.dumps(contract,sort_keys=True,ensure_ascii=False).encode()),
++                'platform_success':False}
+         result['entry_bundle_id']=authority.save_bundle(body)
+         result['submission_entry']='campaign_submission_gate.run_once'
+     with (args.output_dir/'receipt.json').open('x',encoding='utf-8') as stream:
+@@ -383,6 +406,7 @@
+ if __name__ == '__main__':
+     parser=argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--snapshot',type=Path,required=True)
++    parser.add_argument('--checklist-scope-source',type=Path,help='Existing verified full product-scope.json; never starts another export')
+     parser.add_argument('--campaign-key',required=True,help='Exact campaignId/unitedActivityId/signRecordId, not title or template filename')
+     parser.add_argument('--custom-corrections',type=Path,help='Only current failed exact custom SKUs with pinned authorization/failure receipts; no ordinary price overrides')
+     parser.add_argument('--continuous-rule-sha',help='Explicit approved continuous policy for new bundles only; omitted preserves historical rules')
+--- a/scripts/campaign_submission_gate.py
++++ b/scripts/campaign_submission_gate.py
+@@ -50,6 +50,9 @@
+     if snapshot['resolved_price_version_sha256']!=body['price_version'] or not source_version_matches(authority,body,snapshot['entry_source_sha256']):
+         raise ValueError('mapping_or_price_authority_changed_regenerate_local_files')
+     bases=authority.bases(snapshot)
++    if phase == 'signup' and revalidate_reuse:
++        from campaign_submission_checklist_contract import verify_contract
++        verify_contract(body,snapshot,bases)
+     if body.get('generation_product_export'):
+         snapshot['generation_product_export'] = body['generation_product_export']
+     raw=Path(body['template_path']).read_bytes()
+@@ -160,6 +163,11 @@
+         raise ValueError('claim_item_scope_incomplete')
+     details=({'sku_rows':[{k:r[k] for k in ('item','sku','deduct')} for r in body['discount_rows']]}
+              if first['phase']=='discount' else {})
++    if first['phase']=='signup' and dispatched_job is None:
++        details=dict(sku_rows=[{k:r[k] for k in ('item','sku')} for r in body['signup_rows']],
++                     submission_checklist=body['submission_checklist'],
++                     shop=body['submission_checklist']['identity']['shop_name'],
++                     request={'rate':str(discount_rate(body['official_rate']))})
+     return dict(verified_claim=True, claim_id=claim_id, file=file, items=items, **details,
+                 campaign=body['campaign'], phase=first['phase'], **timing,
+                 bundle_id=first['bundle_id'], platform_write=False, automatic_retry=False)
+--- a/scripts/campaign_continuous_transport.py
++++ b/scripts/campaign_continuous_transport.py
+@@ -259,6 +259,7 @@
+         corrections=folder/'custom-corrections.json'
+         if custom:persist(corrections,{'rows':list(custom.values())})
+         args=SimpleNamespace(snapshot=snapshot_path,activity_template=activity_template,
++            checklist_scope_source=self.root/'product-scope.json',
+             campaign_key='/'.join(str(p[k]) for k in ('campaign_id','phase_id','sign_record_id')),
+             official_rate=str(p['official_rate']),target=segment['target'] if segment else self.request['target'],
+             start=window['start'],end=window['end'],custom_basis_receipt=[],signup_items=','.join(payload['items']),
+@@ -300,6 +301,18 @@
+                 raise ValueError('phase_scope_does_not_match_actual_file')
+             cid=self.authority.claim(bundle,phase,transport='dedicated_edge_v1')
+             persist(ref,{'claim_id':cid})
++        if phase=='signup' and not (folder/'signup-job.json').exists():
++            # Reattach only to the existing checkpoint. No new claim, export,
++            # source refresh or submission is created by this local report.
++            from campaign_submission_gate import verify_claim
++            checked=verify_claim(self.authority,cid)
++            persist(folder/'submission-checklist.json',dict(
++                identity=self.identity(payload),request_sha=fingerprint(self.request),
++                action_id=folder.name,bundle_id=bundle,claim_id=cid,
++                rule_version=checked['submission_checklist']['rule_version'],
++                evidence_sha=fingerprint(checked['submission_checklist']),
++                file=checked['file'],scope=checked['sku_rows'],
++                next_action='existing_signup_job_once',platform_success=False))
+         job=self.job(phase,{'identity':self.identity(payload),'claim_id':cid},folder)
+         result=(reconcile_signup if phase=='signup' else reconcile_discount)(self.authority,job,output_dir=folder)
+         persist(self.root/'terminals'/(phase+'-'+str(result['batch'])+'.json'),dict(result,bundle_id=bundle))
+--- a/scripts/campaign_artifact_recovery.py
++++ b/scripts/campaign_artifact_recovery.py
+@@ -30,7 +30,7 @@
+     def items(value):
+         return sorted(set(value.split(','))) if value is not None else None
+ 
+-    return dict(schema='campaign_artifact_context_v1',
++    context = dict(schema='campaign_artifact_context_v1',
+         campaign=args.campaign_key, start=args.start, end=args.end,
+         official_rate=str(Decimal(str(args.official_rate).rstrip('%')) /
+                           (100 if str(args.official_rate).endswith('%') else 1)),
+@@ -43,6 +43,9 @@
+         time_request=ref(getattr(args, 'time_request', None)),
+         time_segment=getattr(args, 'time_segment', None),
+         rule_sha=getattr(args, 'continuous_rule_sha', None))
++    if getattr(args,'checklist_scope_source',None):
++        context['checklist_scope_source']=ref(args.checklist_scope_source)
++    return context
+ 
+ 
+ def _legacy_binding(args, body):
