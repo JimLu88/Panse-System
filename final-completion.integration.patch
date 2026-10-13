@@ -1,0 +1,21 @@
+--- a/scripts/campaign_final_audit.py
++++ b/scripts/campaign_final_audit.py
+@@ -193,1 +193,2 @@
+-        'recordings','recording_errors','full_recording_verified','failure_handling','execution_export_conflicts')}
++        'recordings','recording_errors','full_recording_verified','failure_handling','execution_export_conflicts',
++        'completion_audit','all_completed','completion_status','all_registration_verified')}
+@@ -262,3 +263,5 @@
+     final['all_currently_effective']=bool(final['all_signed_up'] and all(s['all_currently_effective'] for s in audit['segments']))
++    from campaign_completion_contract import assess, apply
++    final=apply(final,assess(final,root,authority))
+     from campaign_continuous_recovery import persist_run_outcome
+     persist_run_outcome(root,final)
+--- a/scripts/campaign_result_summary.py
++++ b/scripts/campaign_result_summary.py
+@@ -34,1 +34,1 @@
+-                'execution':'成功记录已确认' if item in success else '仍有待处理项' if issues else '仅有回读记录',
++                'execution':'历史或批次成功记录（非本场完成证明）' if item in success else '仍有待处理项' if issues else '仅有回读记录',
+@@ -46,1 +46,2 @@
+-        'all_signed_up':result.get('all_signed_up') is True,'rows':rows,
++        'all_signed_up':result.get('all_signed_up') is True,'all_completed':result.get('all_completed') is True,
++        'completion_audit':result.get('completion_audit'),'rows':rows,
