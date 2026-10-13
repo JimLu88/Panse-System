@@ -221,3 +221,53 @@ def test_adoption_source_change_cannot_release_old_check(tmp_path):
         with pytest.raises(ValueError,match='source_missing_or_changed'):validated_body(auth,bundle,'signup')
         assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
     finally:auth.close()
+
+
+def test_fresh_process_owner_reuses_checkpoint_and_blocks_consumed_claim(tmp_path):
+    args,auth=prepare(tmp_path)
+    result=ensure_generated(args,auth)
+    bundle=result['entry_bundle_id'];claim=auth.claim(bundle,'signup',transport='dedicated_edge_v1')
+    dbpath,manifest=auth.path,auth.manifest
+    original={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+    auth.close()
+    restored=Authority(dbpath,manifest)
+    try:
+        assert ensure_generated(args,restored,generator=lambda *a:pytest.fail('restart regenerated'))==result
+        assert verify_claim(restored,claim)['bundle_id']==bundle
+        consume_claim(restored,claim,'e'*64)
+    finally:restored.close()
+    restored=Authority(dbpath,manifest)
+    try:
+        with pytest.raises(ValueError,match='do_replay|do_not_replay|already_dispatched'):
+            verify_claim(restored,claim)
+        assert original=={p.name:p.read_bytes() for p in args.output_dir.iterdir()}
+        assert verify_claim(restored,claim,dispatched_job='e'*64)['verified_claim']
+    finally:restored.close()
+
+
+def test_single_sku_retry_cannot_drop_siblings_even_with_updated_bundle(tmp_path):
+    args,auth=prepare(tmp_path)
+    try:
+        result=ensure_generated(args,auth);body=auth.get_bundle(result['entry_bundle_id'])
+        body['signup_rows']=body['signup_rows'][:1]
+        from campaign_submission_checklist_contract import materialize
+        snapshot=auth.resolve_snapshot(json.loads(args.snapshot.read_text(encoding='utf-8')))
+        _,issues=materialize(body,snapshot,auth.bases(snapshot))
+        assert sum(i['error']=='checklist_current_sku_scope_mismatch' for i in issues)==3
+        changed=auth.save_bundle(body)
+        with pytest.raises(ValueError,match='submission_checklist_inputs_invalid'):
+            validated_body(auth,changed,'signup')
+        assert auth.db.execute('SELECT count(*) FROM attempts').fetchone()[0]==0
+    finally:auth.close()
+
+
+def test_owner02_enriched_scope_preserves_every_original_export_fact(tmp_path):
+    from campaign_submission_checklist_contract import validate_scope
+    args,auth=prepare(tmp_path)
+    try:
+        scope=json.loads(args.checklist_scope_source.read_text(encoding='utf-8'))
+        scope.update(erp_mapping={'extra':'controller metadata'},prior_outcomes={'older':'success'})
+        assert validate_scope(scope)==scope
+        scope['sku_facts'][0]['facts']['attributes']='tampered'
+        with pytest.raises(ValueError,match='scope_not_original_export'):validate_scope(scope)
+    finally:auth.close()
