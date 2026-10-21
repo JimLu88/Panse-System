@@ -718,6 +718,12 @@ def reconcile_order_line_delivery(
             line.factory_delivery_message_id = _feishu_message_id(image_result)
             db.commit()
             pushed.append(sub_order_no)
+            try:
+                from app.services import factory_forward_service
+                factory_forward_service.attach_card(db, line.id)
+            except Exception:
+                db.rollback()
+                _logger.exception('转发登记卡未完成，已发送图片保持不变 line=%s', line.id)
             # The image has already been sent: a failed explanatory message must
             # never roll its state back to failed/uncertain or cause another image.
             try:
@@ -1327,6 +1333,13 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             db.commit()
             pushed += 1
             sent_nos.append(no)
+            try:
+                from app.services import factory_forward_service
+                factory_forward_service.attach_card(db, order_id=order.id,
+                    image_message_id=_feishu_message_id(image_result))
+            except Exception:
+                db.rollback()
+                _logger.exception('旧母单转发登记卡未完成，已发送图片保持不变')
             if address_pending_for_production:
                 _pushed_address_pending.append(no)
             elif was_address_hold:

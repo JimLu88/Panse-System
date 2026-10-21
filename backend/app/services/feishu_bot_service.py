@@ -1405,6 +1405,10 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
     if mtype == "text" and message_id:
         # 群里 @机器人 时文本带 "@_user_N" / "@_all" 占位, 去掉再识别关键词/口令
         text = re.sub(r"@_user_\d+|@_all|@\S+", "", content.get("text", "") or "").strip()
+        from app.services import factory_forward_service as forwarding
+        forward_query = forwarding.handle_query(db, event, text)
+        if forward_query is not None:
+            return forward_query
         # 售后录入流程 (「售后」关键词启动的多步会话) 优先 — 进行中时拦截后续单号/备注
         as_flow = _handle_aftersales_flow(db, msg, message_id, text)
         if as_flow is not None:
@@ -1446,6 +1450,10 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
             return None
         return _process_image(db, message_id, file_key, batch_key=bkey, uploaded_by=uploader)
     if mtype == "post":
+        from app.services import factory_forward_service as forwarding
+        forward_query = forwarding.handle_query(db, event, _post_text(content))
+        if forward_query is not None:
+            return forward_query
         # 群里 @机器人 并带图 → 富文本(post), 图片内嵌。单图走单图流程; 多图整批按同一类型处理(不丢图)。
         keys = _post_image_keys(content)
         if message_id and keys:
@@ -1480,6 +1488,17 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             value = {}
     op = value.get("op")
     orig_id = value.get("message_id")
+    if op == 'factory_forward':
+        from app.services import factory_forward_service as forwarding
+        event['action']['value'] = value
+        try:
+            result = forwarding.handle_card(db, event)
+        except ValueError as exc:
+            db.rollback()
+            return {'toast': {'type': 'warning', 'content': str(exc)}}
+        import threading
+        threading.Thread(target=forwarding.run_sync, daemon=True).start()
+        return {'toast': {'type': 'success', 'content': '登记已保存，正在同步'}, 'result': result}
     if op == "confirm_remote_report" and value.get("order_no"):
         from app.services import remote_report_service
         result = remote_report_service.confirm(db, str(value["order_no"]))

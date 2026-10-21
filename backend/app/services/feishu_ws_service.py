@@ -212,6 +212,7 @@ def _on_message(data: Any) -> None:
         _log.info("WS 丢弃飞书旧事件重投(create_time=%s, 不弹卡, 直接 ack)", ct)
         return
     _ensure_worker()
+    event['_factory_forward_trusted'] = True
     _msg_queue.put(event)
     _log.info("WS 收到消息事件入队 message_id=%s", msg.get("message_id"))
 
@@ -226,6 +227,27 @@ def _on_card(data: Any):
         return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "处理中…"}})
     op, value, card_msg_id = _parse_card_event(raw.get("event") or raw)
     orig_id = value.get("message_id")
+
+    if op == 'factory_forward':
+        db = _new_session()
+        try:
+            from app.services import factory_forward_service as forwarding
+            event = raw.get('event') or raw
+            event['_factory_forward_trusted'] = True
+            event['action']['value'] = value
+            forwarding.handle_card(db, event)
+            threading.Thread(target=forwarding.run_sync, daemon=True).start()
+            toast, kind = '登记已保存，正在同步工厂表', 'success'
+        except ValueError as exc:
+            db.rollback()
+            toast, kind = str(exc), 'warning'
+        except Exception:
+            db.rollback()
+            _log.exception('转发登记失败')
+            toast, kind = '登记失败，请在ERP核对当前状态', 'error'
+        finally:
+            db.close()
+        return P2CardActionTriggerResponse({'toast': {'type': kind, 'content': toast}})
 
     if op == "confirm_remote_report" and value.get("order_no"):
         db = _new_session()

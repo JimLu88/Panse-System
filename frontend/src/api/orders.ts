@@ -88,6 +88,7 @@ export const markAllAccessoriesArrived = (orderId: number) =>
 
 // ----- 工厂制作单视图 (已付款待发货 = 在工厂制作中) -----
 export interface FactoryCard {
+  forwarding?: ForwardItem[];
   id: number;
   order_no: string;
   order_date: string | null;
@@ -123,6 +124,17 @@ export interface FactoryCard {
 export const fetchFactoryProduction = (product?: string) =>
   api.get<FactoryCard[]>('/api/orders/factory-production',
     { params: product ? { product } : undefined }).then((r) => r.data);
+
+export interface ForwardItem {
+  key: string; state: string; label: string; revision: number;
+  factory_no: number | null; sub_order_no: string | null; product_name: string | null;
+  actor: string | null; changed_at: string | null; sync_pending: boolean; sync_error: string | null;
+  history: {from: string; to: string; actor: string; at: string; revision: number}[];
+}
+export const updateForward = (key: string, state: string, revision: number) =>
+  api.post(`/api/orders/factory-forward/${encodeURIComponent(key)}`, {state, revision}).then(r => r.data);
+export const retryForwardSync = (key: string) =>
+  api.post(`/api/orders/factory-forward/${encodeURIComponent(key)}/retry-sync`).then(r => r.data);
 
 export interface FactoryDispatchSettings {
   auto_enabled: boolean;

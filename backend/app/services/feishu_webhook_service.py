@@ -58,6 +58,7 @@ def handle(db: Session, body: dict[str, Any]) -> dict:
 
     header = body.get("header") or {}
     event = body.get("event") or {}
+    event['_factory_forward_trusted'] = bool(expected and token == expected)
     event_type = header.get("event_type") or event.get("type") or body.get("type")
     _maybe_trigger_sync(db, event_type, event)
     _maybe_bot(db, event_type, event)

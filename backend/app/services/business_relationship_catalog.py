@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('factory.forward','人工微信转发登记','factory','FactoryForward.state/revision/history','services/factory_forward_service.py','def change'),
     node('marketing.feedback_read','千牛口碑只读巡检','marketing','Web-Agent feedback_patrol capture / official review rating / question-answer IDs','services/feedback_notification_service.py','def capability','外部程序 app/browser/feedback_patrol.py：中差评全部分页、所有问题下已展示回答；首次已有内容与新增分开。接口来源指纹不等于外部采集验收。'),
     node('marketing.feedback_judgment','新增问答语义判断与内容去重','marketing','source + stable id + content revision / sentiment + reason','services/feedback_notification_service.py','def send_digest','外部固定发件箱与一次批量语义判读；问题不是回答；否定句、混合反馈、不确定需区分。无新内容静默，不自动回复或投诉。'),
     node('sync.feedback_receipt','口碑飞书提醒群回执','sync','feedback_notice:<sha256> / message_id / sent or unknown','services/feedback_notification_service.py','def send_digest','先持久占位再发送；只发提醒群，不回退微信或工厂订单群。超时/崩溃未知不重发，不用HTTP成功代替message_id。'),
@@ -131,6 +132,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('factory.receipt','factory.forward','图片下方关联独立操作卡','仅已取得图片消息ID','发送未知不重发，改图重置待转发，旧卡不能覆盖新状态','services/factory_forward_service.py','def attach_card'),
+    edge('factory.forward','sync.factory','单向同步转发状态','ERP提交后异步投影','失败最多五次；不更改数量、生产状态或手工列','services/factory_forward_service.py','def sync_pending'),
+    edge('factory.forward','shipping.fulfilled','转发登记不是工厂接单或发货','人工勾选仅为转发声明','禁止用对勾推断实际微信送达或仓库履约','models/factory_forward.py',kind='protect'),
     edge('order.child','factory.cards','投影有效子单工厂编号与搜索身份','导入子单且需工厂处理、未退款/关闭/发货，排除母单汇总行','多编号显示完整列表；存在导入子单时不回退旧母单编号；不写订单或发送消息','api/orders.py','def factory_production'),
     edge('order.parent','factory.cards','搜索订单号与兼容旧单编号','原在制筛选不变，无导入子单才兼容母单编号','延期状态、数量、编辑/重推入口仍属原母单，不据显示标签推定子单已发货','api/orders.py','def factory_production',kind='protect'),
     edge('finance.installation_lines','finance.freight','保留商品明细并归一整单费用','万师傅导出包含同单多商品','全部明细保留；整单费用只记一次；不把商品序号当购买数量','services/wanshifu_order_service.py','def _coalesce_order_records'),

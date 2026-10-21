@@ -2386,6 +2386,9 @@ def _job_review_asset_remind(db: Session) -> dict:
 
 
 def _register_default_jobs() -> None:
+    from app.services.factory_forward_service import sync_pending
+    register_job('factory_forward_sync', '工厂转发登记同步（失败最多5次）',
+                 sync_pending, interval_minutes=5)
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
     # 夜间模式 (2026-06-23): 深夜任务挪到 22:3x-22:5x 批量跑完, 让 NAS 盘 23:00-06:30 连续休眠

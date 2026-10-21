@@ -27,6 +27,7 @@ import { fetchFactoryProduction, updateOrderProduction, type FactoryCard } from 
 import { listAccessories, markAllAccessoriesArrived, repushFactory, type AccessoryItem } from '../api/orders';
 import { fetchPushConfig, savePushConfig } from '../api/imports';
 import InspectionGalleryModal from './InspectionGalleryModal';
+import FactoryForwardItems from './FactoryForwardItems';
 
 // 颜色随剩余天数: 初始绿 → 蓝 → 橙 → 越近越红 → 超期深红
 function dayStyle(d: number | null): { color: string; weight: number } {
@@ -61,6 +62,7 @@ export default function FactoryProductionView() {
   const qc = useQueryClient();
   const [sortBy, setSortBy] = useState<'days' | 'factory_no' | 'order_date' | 'category'>('days');
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [forwardFilter, setForwardFilter] = useState<string>('all');
   const [editing, setEditing] = useState<FactoryCard | null>(null);
   const [editDeadline, setEditDeadline] = useState<dayjs.Dayjs | null>(null);
   const [editNote, setEditNote] = useState('');
@@ -166,8 +168,9 @@ export default function FactoryProductionView() {
       ? sorted
       : filterStatus === 'customer_delayed'
         ? sorted.filter((c) => c.is_customer_delayed)
-        : sorted.filter((c) => c.status === filterStatus)),
-    [sorted, filterStatus],
+        : sorted.filter((c) => c.status === filterStatus)).filter(c => forwardFilter === 'all' ||
+          c.forwarding?.some(f => forwardFilter === 'unforwarded' ? f.state !== 'forwarded' : f.state === forwardFilter)),
+    [sorted, filterStatus, forwardFilter],
   );
 
   const openEdit = (c: FactoryCard) => {
@@ -373,6 +376,9 @@ export default function FactoryProductionView() {
       )}
 
       <Row gutter={[12, 12]}>
+        <Col span={24} className="no-print"><Segmented value={forwardFilter} onChange={v => setForwardFilter(String(v))}
+          options={[{label: '全部转发状态', value: 'all'}, {label: '未转发（含暂缓）', value: 'unforwarded'},
+            {label: '待转发', value: 'pending'}, {label: '暂缓转发', value: 'deferred'}, {label: '已转发', value: 'forwarded'}]} /></Col>
         {visible.map((c) => {
           const ds = dayStyle(c.days_left);
           return (
@@ -447,6 +453,7 @@ export default function FactoryProductionView() {
                       ⚠ {c.production_note}
                     </div>
                   )}
+                  <FactoryForwardItems items={c.forwarding || []} />
                   <Space className="no-print" size={4} style={{ width: '100%' }} wrap>
                     <Button size="small" onClick={() => openEdit(c)}>编辑(截止/备注)</Button>
                     <Button size="small" type={c.is_remote_ship ? 'primary' : 'default'}

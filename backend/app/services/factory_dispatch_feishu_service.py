@@ -110,6 +110,9 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("数量确认状态", 1),
     ("数量确认依据", 1),
     ("生产事实状态", 1),
+    ("微信转发状态", 1),
+    ("转发登记人", 1),
+    ("转发登记时间", 1),
 )
 
 EXPECTED_FIELD_ORDER: tuple[str, ...] = tuple(name for name, _type in FIELD_SPECS)
@@ -540,6 +543,7 @@ def _custom_wood_unit_price(
 
 def build_rows(db: Session) -> list[dict[str, Any]]:
     """按工厂下单图同口径构造飞书行，不改变订单或价格数据。"""
+    from app.services.factory_forward_service import table_fields
     from app.services.order_line_delivery_service import is_master_summary_line
     auto_since = order_sheet_archive_service.AUTO_SINCE
     orders = db.execute(
@@ -685,6 +689,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "系统更新时间": now_ms,
                     "_order_id": order.id,
                     "_line_id": line.id,
+                    **table_fields(db, order.id, line.id),
                     "_catalog_fallback_fields": ["SKU规格"] if not line.sku_name else [],
                     "_sheet_path": sheet_image["path"] if sheet_image else None,
                     "_sheet_signature": sheet_image["signature"] if sheet_image else None,
@@ -792,6 +797,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "_tracking_clear": _tracking_clear(order),
             "系统更新时间": now_ms,
             "_order_id": order.id,
+            **table_fields(db, order.id),
             "_sheet_path": sheet_image["path"] if sheet_image else None,
             "_sheet_signature": sheet_image["signature"] if sheet_image else None,
             "_sheet_name": sheet_image["name"] if sheet_image else None,

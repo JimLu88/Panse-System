@@ -23,6 +23,7 @@ from app.schemas.order import (
 from app.services import (
     exception_service,
     factory_dispatch_feishu_service,
+    factory_forward_service,
     factory_sheet,
     import_storage,
     inspection_gallery_service,
@@ -35,6 +36,42 @@ from app.services import (
 )
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
+
+from app.dependencies import require_role
+from app.models.auth import User
+
+
+class ForwardChange(BaseModel):
+    state: str
+    revision: int
+
+
+@router.post('/factory-forward/{key}')
+def update_factory_forward(key: str, body: ForwardChange, background: BackgroundTasks,
+                           db: Session = Depends(get_db),
+                           user: User = Depends(require_role('admin', 'operator'))):
+    from app.services import factory_forward_service as forwarding
+    try:
+        result = forwarding.change(db, key, body.state, body.revision,
+                                   f'ERP:{user.id}:{user.display_name or user.username}')
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+    background.add_task(forwarding.run_sync)
+    return result
+
+
+@router.post('/factory-forward/{key}/retry-sync')
+def retry_forward_sync(key: str, background: BackgroundTasks, db: Session = Depends(get_db),
+                       user: User = Depends(require_role('admin', 'operator'))):
+    from app.models.factory_forward import FactoryForward
+    row = db.get(FactoryForward, key)
+    if row is None:
+        raise HTTPException(404, '尚无转发登记')
+    row.sync_attempts, row.sync_pending = 0, True
+    db.commit()
+    background.add_task(factory_forward_service.run_sync)
+    return {'ok': True}
 
 
 @router.get("", response_model=list[OrderOut])
@@ -304,6 +341,7 @@ def factory_production(
             # 工厂下单号显示 (用户 2026-07-09): 远期单→"远期单N"(内部序号, 不占工厂号); 正式单→"畔色N单"; 未排→空
             "order_label": label,
             "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
+            "forwarding": factory_forward_service.items_for_order(db, o),
         })
     return out
 
