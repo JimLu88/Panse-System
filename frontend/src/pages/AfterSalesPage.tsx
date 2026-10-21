@@ -334,7 +334,7 @@ export default function AfterSalesPage() {
             options={[
               { value: 'price_difference', label: '差价退补' },
               { value: 'review_refund', label: '晒图/好评返现' },
-              { value: 'customer_compensation', label: '客户赔付' },
+              { value: 'customer_compensation', label: '客户退款/赔付' },
               { value: 'repair_service', label: '售后维修' },
               { value: 'onsite_service', label: '上门/送装服务' },
               { value: 'return_service', label: '退回/返厂服务' },

@@ -117,17 +117,27 @@ def create_aftersales_from_flows(db: Session) -> int:
     flows = db.execute(
         select(AlipayFlow).where(
             AlipayFlow.amount < 0,
-            AlipayFlow.related_order_no.isnot(None),
         )
     ).scalars().all()
     n = 0
+    from app.services import customer_refund_remark, aftersales_payment_link_service, field_change_service
+    locked = field_change_service.human_pks(db, table='alipay_flows', field='reconciliation_type')
     for f in flows:
         if f.transaction_no in existing_flow_nos:
+            continue
+        # Personal-account remarks have one audited ledger owner, including pending cases.
+        if (f.account == aftersales_payment_link_service.PERSONAL_ACCOUNT
+                and aftersales_payment_link_service.classify_remark(f.remark)):
+            continue
+        resolved = customer_refund_remark.resolve(f)
+        if resolved.category and (str(f.id) in locked or internal_accounts.is_internal_flow(db, f)):
+            continue
+        if resolved.category and resolved.issue:
             continue
         rt = (f.reconciliation_type or "").lower()
         remark_lower = (f.remark or "").lower()
         is_aftersales = (
-            any(k in rt for k in _AFTERSALES_RECON_TYPES)
+            bool(resolved.category) or any(k in rt for k in _AFTERSALES_RECON_TYPES)
             or any(k in remark_lower for k in ("售后", "退款", "赔付", "补偿", "退货"))
         )
         if not is_aftersales:
@@ -135,7 +145,7 @@ def create_aftersales_from_flows(db: Session) -> int:
         # SQL isnot(None) 会把空字符串也选中；旧逻辑因此生成了
         # platform_order_no="" 的孤儿售后。这里只接受能在 ERP 订单库
         # 精确找到的订单；备注/姓名推理统一交给可审计关联账。
-        order_no = (f.related_order_no or "").strip()
+        order_no = resolved.order_no or (f.platform_order_no or f.related_order_no or "").strip()
         if not order_no:
             continue
         order_exists = db.execute(
@@ -143,6 +153,7 @@ def create_aftersales_from_flows(db: Session) -> int:
         ).scalar_one_or_none()
         if order_exists is None:
             continue
+        customer_refund_remark.fill_order(f)
         when = f.transaction_time.date() if f.transaction_time else date.today()
         amount = _q2(f.amount)
         db.add(AfterSales(
@@ -358,6 +369,11 @@ def create_purchases_from_unclassified(db: Session) -> int:
     for f in flows:
         if f.transaction_no in referenced:
             continue
+        from app.services import customer_refund_remark, aftersales_payment_link_service
+        if (customer_refund_remark.expense_category(f)
+                or (f.account == aftersales_payment_link_service.PERSONAL_ACCOUNT
+                    and aftersales_payment_link_service.classify_remark(f.remark))):
+            continue  # Unresolved customer payments must not become purchases.
         if _is_non_purchase(f):
             continue   # 平台代扣/服务费/理财/余额宝/退款/转账等 → 不是配件采购, 不生成记录
         when = f.transaction_time.date() if f.transaction_time else date.today()

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AlipayFlow
 from app.models.order import FactoryOrder, Order
+from app.services import customer_refund_remark
 
 _DIGITS = re.compile(r"\d{12,}")
 
@@ -149,6 +150,8 @@ def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> O
             from app.services import internal_accounts as _ia
             if _ia.is_internal_flow(db, flow):
                 return "internal_transfer"      # 货款户内部挪钱(对方是我方账户主人/内部人员) → 只对账不记账
+            if customer_refund_remark.expense_category(flow):
+                return customer_refund_remark.expense_category(flow)
             # 混合户: 支出且备注是配件材料(岩板/玻璃/榉木/轨道…) → 不当博冠货款, 留未归类供配件采购归账
             # (用户 2026-06-29: 爱群号既有博冠货款也有零星配件采购)。货款("X月货款"/博冠)无材料词 → 仍博冠货款。
             if amt < 0 and _is_parts_flow(flow):
@@ -165,6 +168,8 @@ def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> O
     # 客户售后/退款优先(早于段1): 支出挂客户订单, 而该单通常也有工厂单，若先按订单号匹配
     # 就会把「售后支付」误判成 factory_payment。
     if amt < 0:
+        if customer_refund_remark.expense_category(flow):
+            return customer_refund_remark.expense_category(flow)
         if _matches(desc, AFTERSALES_KEYS):
             return "aftersales"
         if _matches(desc, REFUND_KEYS):
@@ -215,13 +220,22 @@ def reclassify_refund_mislabels(db: Session, *, account: Optional[str] = None) -
     rows = db.execute(stmt).scalars().all()
     # 人工锁 (2026-07-12): 人改过核销类型的流水不许机器再翻 (对称于 route 的锁, 见 human_pks)
     _locked = _fcs.human_pks(db, table="alipay_flows", field="reconciliation_type")
+    from app.models.aftersales_payment import AfterSalesPaymentLink
+    managed = set(db.execute(select(AfterSalesPaymentLink.alipay_flow_id).where(
+        AfterSalesPaymentLink.status == 'confirmed')).scalars())
     detail: dict[str, dict] = {}
     for f in rows:
-        if str(f.id) in _locked:
+        if str(f.id) in _locked or f.id in managed:
+            continue
+        if f.reconciliation_type not in {'factory_payment', 'boguan_payment', 'other', 'refund', 'aftersales'}:
             continue
         desc = " ".join(filter(None, [f.counterparty, f.remark, f.transaction_type]))
-        target = None
-        if _matches(desc, AFTERSALES_KEYS):
+        target = customer_refund_remark.expense_category(f)
+        if target:
+            from app.services import internal_accounts
+            if internal_accounts.is_internal_flow(db, f):
+                continue
+        elif _matches(desc, AFTERSALES_KEYS):
             target = "aftersales"
         elif _matches(desc, REFUND_KEYS):
             target = "refund"

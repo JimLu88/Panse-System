@@ -21,6 +21,7 @@ from app.models.aftersales_payment import AfterSalesPaymentLink
 from app.models.finance import AlipayFlow, WanshifuOrder
 from app.models.marketing import AfterSales
 from app.models.order import Order
+from app.services import customer_refund_remark
 
 
 PERSONAL_ACCOUNT = "主力号"
@@ -32,7 +33,7 @@ ACCOUNTING_TARGETS = frozenset({"aftersales", "order_install"})
 CATEGORY_LABELS = {
     "price_difference": "差价退补",
     "review_refund": "晒图/好评返现",
-    "customer_compensation": "客户赔付",
+    "customer_compensation": "客户退款/赔付",
     "repair_service": "售后维修",
     "onsite_service": "上门/送装服务",
     "return_service": "退回/返厂服务",
@@ -97,9 +98,11 @@ def classify_remark(value: Optional[str]) -> Optional[str]:
         return None
     if any(k in text for k in ("客户图评返", "客户图返", "图评返", "好评返")):
         return "review_refund"
-    if "差价" in text:
+    if any(k in text for k in ("差价", "价保", "价格保护")):
         return "price_difference"
-    if any(k in text for k in ("赔付", "补偿")):
+    if any(k in text for k in ("退款", "退钱", "退回货款", "退还货款")):
+        return "customer_compensation"
+    if any(k in text for k in ("赔付", "补偿", "赔偿")):
         return "customer_compensation"
     if "维修" in text:
         return "repair_service"
@@ -120,7 +123,8 @@ def _suggested_accounting_target(category: str, text: str) -> str:
 
 
 def _explicit_order_nos(text: str) -> list[str]:
-    return list(dict.fromkeys(re.findall(r"(?<!\d)(\d{19})(?!\d)", text)))
+    import unicodedata
+    return list(dict.fromkeys(customer_refund_remark.ORDER_NUMBER.findall(unicodedata.normalize('NFKC', text))))
 
 
 def _fallback_name(text: str) -> Optional[str]:
@@ -158,6 +162,7 @@ def _candidate_for_flow(db: Session, flow: AlipayFlow) -> Optional[Candidate]:
     if category is None or (flow.amount or 0) >= 0:
         return None
     text = _dedupe_repeated_text(flow.remark)
+    resolution = customer_refund_remark.resolve(flow)
     explicit = _explicit_order_nos(text)
     flow_day = flow.transaction_time.date() if flow.transaction_time else None
     all_orders = db.execute(select(Order)).scalars().all()
@@ -180,7 +185,7 @@ def _candidate_for_flow(db: Session, flow: AlipayFlow) -> Optional[Candidate]:
 
     # 某些支付宝结构化导入已经给出 related_order_no。它仍必须在 ERP
     # 订单表精确存在，不能因为一个非空字符串就制造孤儿售后。
-    related_order_no = (flow.related_order_no or "").strip()
+    related_order_no = (resolution.order_no or flow.platform_order_no or flow.related_order_no or "").strip()
     if chosen is None and not explicit and related_order_no:
         chosen = next((o for o in all_orders if o.order_no == related_order_no), None)
         if chosen is not None:
@@ -228,7 +233,11 @@ def _candidate_for_flow(db: Session, flow: AlipayFlow) -> Optional[Candidate]:
         if len(active_wsf) == 1:
             wsf = active_wsf[0]
 
-    order_is_active = bool(chosen is not None and chosen.status != "cancelled")
+    # Rebuy/price-protection payments may explicitly refer to the refunded old order.
+    # Only its exact number can authorize this association, never a name guess.
+    cancelled_price_reference = bool(category == 'price_difference' and len(explicit) == 1
+                                     and chosen is not None and chosen.order_no == explicit[0])
+    order_is_active = bool(chosen is not None and (chosen.status != "cancelled" or cancelled_price_reference))
     if chosen is not None and not order_is_active:
         reason += "；订单已取消，不能自动入账"
     auto_eligible = bool(
@@ -239,9 +248,19 @@ def _candidate_for_flow(db: Session, flow: AlipayFlow) -> Optional[Candidate]:
     )
     if chosen is not None and category not in AUTO_CATEGORIES:
         reason += "；该类型可能是正常履约或与万师傅重复，必须复核"
+    if resolution.issue and resolution.issue != '未找到唯一完整订单号，待核对':
+        auto_eligible = False
+        reason += '；' + resolution.issue
+    from app.services import field_change_service, internal_accounts
+    locked = field_change_service.human_pks(db, table='alipay_flows', field='reconciliation_type')
+    if str(flow.id) in locked or internal_accounts.is_internal_flow(db, flow):
+        auto_eligible = False
+        reason += '；人工已标记或内部转账，保留待核对'
 
     evidence = {
-        "rule_version": "personal-alipay-aftersales-v1",
+        "rule_version": "personal-alipay-aftersales-v2-20261021",
+        "remark_validation_issue": resolution.issue,
+        "cancelled_price_reference": cancelled_price_reference,
         "normalized_remark": text,
         "flow_previous_status": flow.reconciliation_status,
         "flow_previous_type": flow.reconciliation_type,
@@ -360,14 +379,14 @@ def persist_scan(
     }
 
 
-def _resolve_order(db: Session, link: AfterSalesPaymentLink, order_no: Optional[str]) -> Order:
+def _resolve_order(db: Session, link: AfterSalesPaymentLink, order_no: Optional[str], *, allow_cancelled=False) -> Order:
     if order_no:
         order = db.execute(select(Order).where(Order.order_no == order_no.strip())).scalar_one_or_none()
     else:
         order = db.get(Order, link.order_id) if link.order_id else None
     if order is None:
         raise ValueError("必须先选定 ERP 中真实存在的订单")
-    if order.status == "cancelled":
+    if order.status == "cancelled" and not allow_cancelled:
         raise ValueError("不能把个人打款自动挂到已取消订单")
     return order
 
@@ -548,7 +567,17 @@ def confirm(
     if _q2(confirmed_other) + _q2(link.allocated_amount) > _q2(flow.amount):
         raise ValueError("确认的分摊合计超过原流水支出")
 
-    order = _resolve_order(db, link, order_no)
+    current_candidate = _candidate_for_flow(db, flow)
+    if auto and (not current_candidate or not current_candidate.auto_eligible
+                 or current_candidate.order_id != link.order_id
+                 or current_candidate.category != final_category
+                 or _q2(link.allocated_amount) != _q2(flow.amount)):
+        raise ValueError('流水或关联证据已变化，须重新核对')
+    explicit = _explicit_order_nos(flow.remark or '')
+    selected = db.get(Order, link.order_id) if link.order_id else None
+    cancelled_exact = (final_category == 'price_difference' and len(explicit) == 1
+                       and explicit[0] == (order_no or (selected.order_no if selected else None)))
+    order = _resolve_order(db, link, order_no, allow_cancelled=cancelled_exact)
     wsf = _resolve_wanshifu(
         db, order, wanshifu_order_no, link.wanshifu_order_id,
         clear_existing=clear_wanshifu,

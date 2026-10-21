@@ -996,6 +996,17 @@ def _commit_alipay_flows(
             is_non_order_reference, resolve_platform_order_no)
         _resolved = resolve_platform_order_no(
             projected.get("related_order_no"), projected.get("platform_order_no"))
+        from app.services.customer_refund_remark import resolve as resolve_refund_remark
+        from types import SimpleNamespace
+        refund_ref = resolve_refund_remark(SimpleNamespace(
+            amount=amount, remark=projected.get("remark"),
+            transaction_type=projected.get("transaction_type"),
+            related_order_no=projected.get("related_order_no"),
+            platform_order_no=projected.get("platform_order_no")))
+        if refund_ref.order_no:
+            _resolved = refund_ref.order_no
+        if refund_ref.issue:
+            report.warnings.append(f"第 {i + 1} 行: {refund_ref.issue}")
         if _resolved:
             projected["platform_order_no"] = _resolved
         elif projected.get("related_order_no") and not is_non_order_reference(

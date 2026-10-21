@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-10-21.1'
+VERSION = '2026-10-21.2'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -255,6 +255,12 @@ EDGES = [
 # Execution remains in the existing programs. These are review relationships,
 # not new workflow steps and not an assertion that a deployment has run them.
 NODES += [
+    node('after.remark','支付宝客户退款备注','after','keyword / unique order / actual amount','services/customer_refund_remark.py','def resolve','差价和售后关键词；订单号任意位置；冲突和金额不符保留待核对。'),
+    node('after.alipay_import','支付宝原始流水导入','after','AlipayFlow.platform_order_no','services/alipay_import.py','def import_alipay_rows','保留原始关联字段、备注与实付，只补派生订单号。'),
+    node('after.excel_import','支付宝表格导入','after','AlipayFlow.platform_order_no','services/excel_importer.py','def _commit_alipay_flows','同一备注规则，不改变原始流水金额。'),
+    node('after.classify','客户支出分类','after','reconciliation_type','services/smart_matching_service.py','def _classify','差价退款优先于货款；内部转账和人工/已确认关联保护。'),
+    node('after.ledger','个人支付宝售后关联账','after','AfterSalesPaymentLink','services/aftersales_payment_link_service.py','def persist_scan','唯一真实订单自动关联；明确旧订单号的差价补偿可关联已取消订单；不改订单退款状态。'),
+    node('after.router','售后单一写入者','after','AfterSales.alipay_flow_no','services/alipay_flow_router_service.py','def create_aftersales_from_flows','主力号识别备注交关联账，待核对项不另建售后或采购。'),
     node('sync.platform_login','飞书扫码平台选择','sync','explicit platform / durable message claim','services/platform_scan_service.py','def start_login','通用扫码只展示两个选择；选定后仅调用对应登录接口，保留全部pending和订单批次，不启动取数。'),
     node('campaign.entry','活动报名入口与官方发现','campaign','03｜畔色活动报名 / checked_snapshot','services/campaign_official_discovery.py','def checked_snapshot','日常入口为03；官方入口识别店铺、活动ID及时间。日历日期不等于精确价格窗口，不猜网址。'),
     node('campaign.schedule','活动定时与连续执行接入','campaign','run_auto_execute / continuous runtime','services/campaign_automation_service.py','def run_auto_execute','ERP调度交给本机Web Agent持久执行；不会回退旧预检链。登记程序不表示定时现已开启或验收通过。'),
@@ -284,6 +290,12 @@ NODES += [
 # preparation / execution / readback boundary. Do not retain a misleading edge.
 EDGES = [e for e in EDGES if e['id'] != 'campaign.files>campaign.receipt']
 EDGES += [
+    edge('after.alipay_import','after.remark','提取备注订单号','新流水支出','仅唯一完整订单号；保留支付渠道原始编号','services/customer_refund_remark.py','def fill_order'),
+    edge('after.excel_import','after.remark','统一表格规则','表格入库','同一关键词和金额核验','services/excel_importer.py','def _commit_alipay_flows'),
+    edge('after.remark','after.classify','差价属于客户支出','负数真实流水','不能因为匹配工厂单而分类为货款','services/smart_matching_service.py','def _classify'),
+    edge('after.remark','after.ledger','核对后关联','唯一订单、金额一致','复核多单、金额冲突和人工标记','services/aftersales_payment_link_service.py','def _candidate_for_flow'),
+    edge('after.router','after.ledger','避免重复记账','主力号售后备注','关联账是唯一写入者，其他路由不抢占','services/alipay_flow_router_service.py','def create_aftersales_from_flows',kind='protect'),
+    edge('after.ledger','after.payment','落地实际补偿','确认且未重复','按实际支出计一次，不修改原订单退款金额或状态','services/aftersales_payment_link_service.py','def confirm'),
     edge('sync.inbound','sync.platform_login','明确选择后仅登录','店铺后台扫码或支付宝扫码完整文字','按message_id持久去重；跨进程认领及扫码/编排互斥，unknown不重放','services/platform_scan_service.py','def _claim',kind='protect'),
     edge('sync.platform_login','sync.freshness','登录不代表订单完成','任何平台登录结果','不重拉订单、不清pending、不更改原batch/claim/成功未知记录，原业务入口保持','services/platform_scan_service.py','def start_login',kind='boundary'),
     edge('campaign.entry','campaign.window','官方身份与精确窗口','官方页面完整且店铺匹配','日历仅到天时不能补造秒级窗口','services/campaign_official_discovery.py','def checked_snapshot'),

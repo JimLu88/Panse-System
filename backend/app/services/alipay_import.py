@@ -410,7 +410,7 @@ def import_alipay_rows(
             seen.add(nat_key)
             continue
         seen.add(nat_key)
-        db.add(AlipayFlow(
+        flow = AlipayFlow(
             account=account,
             transaction_no=tx_no,
             transaction_time=_datetime(payload.get("transaction_time")) or date_from_flow_no(tx_no),
@@ -423,7 +423,10 @@ def import_alipay_rows(
             reconciliation_status=payload.get("reconciliation_status") or "open",
             reconciliation_type=payload.get("reconciliation_type"),
             remark=payload.get("remark"),
-        ))
+        )
+        from app.services.customer_refund_remark import fill_order
+        fill_order(flow)
+        db.add(flow)
         report.inserted += 1
     if commit:
         db.commit()

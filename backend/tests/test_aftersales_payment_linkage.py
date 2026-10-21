@@ -256,16 +256,16 @@ def test_confirm_rejects_stale_version_and_missing_order(db_session):
         svc.confirm(db_session, link.id, expected_version=99, actor="tester", order_no="ANY")
 
 
-def test_cancelled_exact_order_is_not_auto_confirmed(db_session):
+def test_cancelled_exact_price_difference_is_confirmed_for_rebuy(db_session):
     order = _order(db_session, "1234567890123456789", "取消客户", status="cancelled")
     _flow(db_session, "FLOW-CANCEL-EXACT", f"{order.order_no}客户差价")
 
     scan = svc.persist_scan(db_session, auto_confirm_safe=True)
 
     link = db_session.get(AfterSalesPaymentLink, scan["link_ids"][0])
-    assert scan["confirmed"] == 0
-    assert link.status == "proposed"
-    assert "订单已取消" in link.decision_note
+    assert scan["confirmed"] == 1
+    assert link.status == "confirmed"
+    assert order.status == "cancelled"
 
 
 def test_finance_total_uses_total_or_breakdown_without_double_count(db_session):
