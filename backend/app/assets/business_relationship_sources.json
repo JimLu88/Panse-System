@@ -35,11 +35,11 @@
     "backend/app/models/taobao_listing.py": "3408c4ee3fec07d611d623f83c005f0a305a301005b6c97fc504179c07130dd3",
     "backend/app/services/accounting_period_service.py": "ce5fafbbecc6bad20090011028f697caf34154fffddb32b47949d695996f0b0d",
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
-    "backend/app/services/agent_ingest_service.py": "9d7d79e885ba228aaa08c7b557089704a287cb6533f6e63930e3f484a2d52243",
+    "backend/app/services/agent_ingest_service.py": "21c2544f78c5dcadf62a4fae01ba3427fee92aa60817efc43aa37eae0e0f8dab",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "702e89ff66a9166e61478b4ff6bcae530283302506fd8eb4843aafb1501fa1ad",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "f73fde2fac3376a92b46ec4cfc0cf4a2a95d0bd47724b193e90928cc7e2c1653",
+    "backend/app/services/business_relationship_catalog.py": "14ed9030c72adc0f59d0be10166d83fc39934699247ff000d43c2da79003a959",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
     "backend/app/services/business_relationship_index.py": "3fe59dfb01482d53d8b648b5385936312302a421fd0e3a4edaef0ec8c748a929",
@@ -62,7 +62,7 @@
     "backend/app/services/factory_settlement_service.py": "571cec94eb4ece62c06aee7362f73f9b7794186c30b683813908279dfa73bb68",
     "backend/app/services/factory_sheet.py": "a2aac4edf4386d8a6887fe25a64a34241f82d9e4e6914cf1f62505e0f3a5b07f",
     "backend/app/services/factory_shipping_confirmation_service.py": "6efb62c061a91072a9d0ad4091a0c3ff92d4c4b7dd0b1a4e5fa93ad2887323c4",
-    "backend/app/services/feishu_bot_service.py": "d6a83f291c15760b3237257b4dd26a18eaeb1433421eeade45b54a1984abc98c",
+    "backend/app/services/feishu_bot_service.py": "b52301f9b1efeaa5705af0adecf3a471c0b4e9ffd660e4360d16d7f765af4c21",
     "backend/app/services/feishu_sync_service.py": "501968bee45b42cffb3a60a69e06bb0c4f28b52fb5b598e99f48812f170b2303",
     "backend/app/services/feishu_ws_service.py": "2db43dd94b175024c56a4566fe72a45f591b85ffb48d5ff526104829745eb24d",
     "backend/app/services/inventory_demand_service.py": "3c679d00429330629b19e5f021e4ecb596532753b7077dae0fea2665dd41bb94",
@@ -92,6 +92,7 @@
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "17db313b467b2714a5def173498152241486b2ba3f6b8289fb9726bc7d2b69de",
     "backend/app/services/web_agent_service.py": "0287c38fb94fe14791753ef1d6d9461374ba9db9f0f97c5c15393b81d21f002a",
-    "backend/app/api/orders.py": "d1544f4121067dcff69f03ec11f87b9c8b0a87e5ef670b01f745aa3d585a7382"
+    "backend/app/api/orders.py": "d1544f4121067dcff69f03ec11f87b9c8b0a87e5ef670b01f745aa3d585a7382",
+    "backend/app/services/platform_scan_service.py": "685aa94cf27b7e3d44a27ec6c1a086d8c7cf82d90213a36d885a598fa3b3914f"
   }
 }

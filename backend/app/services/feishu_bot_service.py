@@ -201,7 +201,7 @@ _HELP_CONTENT = (
     "系统会直接归到对应订单的检查图库，不再走单据识别。\n\n"
     "**📱 登录二维码**\n"
     "收到自动取数登录提醒后，在提醒群里 @我 回复 `扫码`（也支持 `发二维码`），"
-    "我会把活二维码发到提醒群并等待 10 分钟。\n\n"
+    "先选择「店铺后台扫码」或「支付宝扫码」，再在电脑弹出的窗口登录；回复「扫码状态」可查询进度。\n\n"
     "> 群里记得 **@我** 再带上图片/文件；私聊我的话直接发就行。"
 )
 
@@ -1412,19 +1412,24 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         pwd = _extract_shipping_password(text)
         if pwd:
             return _capture_shipping_password(db, message_id, pwd)
-        # 「扫码」关键词 → 启动待扫码任务 (发大二维码, 浏览器开等扫≤10分钟) (2026-06-12)
-        if text in (
-            "扫码", "扫码登录", "开始扫码", "/扫码",
-            "二维码", "发二维码", "发送二维码", "我要扫码",
-        ):
-            from app.services import agent_ingest_service
-            res = agent_ingest_service.start_pending_scans(db)
-            if res.get("started"):
-                tip = "已启动扫码 — 二维码马上发到本群, 请在 10 分钟内用对应 App 扫。"
-            else:
-                tip = res.get("reason", "当前没有待扫码的任务")
-            _safe_reply(db, message_id, _result_card("扫码", tip, "green"))
-            return {"message_id": message_id, "kind": "scan_trigger", "card_sent": True}
+        from app.services import platform_scan_service as platform_scan
+        if text == "扫码状态":
+            _safe_reply(db, message_id, _result_card("扫码状态", platform_scan.status_text(db), "blue"))
+            return {"message_id": message_id, "kind": "scan_status", "card_sent": True}
+        if text in platform_scan.SCAN_WORDS:
+            _safe_reply(db, message_id, _result_card("选择扫码平台", platform_scan.MENU, "blue"))
+            return {"message_id": message_id, "kind": "scan_picker", "card_sent": True}
+        selected_platform = platform_scan.selection(text)
+        if selected_platform:
+            res = platform_scan.start_login(db, selected_platform, request_id=message_id)
+            tip = (
+                "已受理所选平台登录，请在电脑弹出的登录窗口用对应App扫码。回复「扫码状态」可查进度。\n"
+                "本次仅登录；原待处理任务保留，不自动重拉订单。"
+                if res.get("started") else res.get("reason", "登录流程未启动")
+            )
+            _safe_reply(db, message_id, _result_card("平台扫码", tip, "green"))
+            return {"message_id": message_id, "kind": "scan_trigger", "platform": selected_platform,
+                    "started": bool(res.get("started")), "card_sent": True}
         if newly_set_push:
             _safe_reply(db, message_id, _result_card(
                 "本群已设为推送目标 ✅",

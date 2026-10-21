@@ -3,7 +3,7 @@
 Keep stable IDs. Sources are repository-relative metadata, never customer data.
 Every edge describes a checkable contract rather than inferred import lineage.
 """
-VERSION = '2026-10-10.1'
+VERSION = '2026-10-21.1'
 DOMAINS = [
     ('npd', '新品研发', '产品'), ('product', '商品与规格', '产品'),
     ('bom', '物料与BOM', '产品'), ('price', '定价与版本', '价格'),
@@ -255,6 +255,7 @@ EDGES = [
 # Execution remains in the existing programs. These are review relationships,
 # not new workflow steps and not an assertion that a deployment has run them.
 NODES += [
+    node('sync.platform_login','飞书扫码平台选择','sync','explicit platform / durable message claim','services/platform_scan_service.py','def start_login','通用扫码只展示两个选择；选定后仅调用对应登录接口，保留全部pending和订单批次，不启动取数。'),
     node('campaign.entry','活动报名入口与官方发现','campaign','03｜畔色活动报名 / checked_snapshot','services/campaign_official_discovery.py','def checked_snapshot','日常入口为03；官方入口识别店铺、活动ID及时间。日历日期不等于精确价格窗口，不猜网址。'),
     node('campaign.schedule','活动定时与连续执行接入','campaign','run_auto_execute / continuous runtime','services/campaign_automation_service.py','def run_auto_execute','ERP调度交给本机Web Agent持久执行；不会回退旧预检链。登记程序不表示定时现已开启或验收通过。'),
     node('campaign.controller','Web Agent固定程序边界','campaign','continuous capabilities / dispatch','services/campaign_continuous_runtime.py','def dispatch','ERP通过接口交接；本机Web-Agent的campaign_continuous_worker与ERP scripts/campaign_continuous_execute.py执行。先单品立减、再超级立减、再同窗口主题活动是已约定业务顺序，不代表本场已执行。这里核对的是ERP接口，不冒充外部程序实时指纹。AI只看开头和终态，不分步接管浏览器。'),
@@ -283,6 +284,8 @@ NODES += [
 # preparation / execution / readback boundary. Do not retain a misleading edge.
 EDGES = [e for e in EDGES if e['id'] != 'campaign.files>campaign.receipt']
 EDGES += [
+    edge('sync.inbound','sync.platform_login','明确选择后仅登录','店铺后台扫码或支付宝扫码完整文字','按message_id持久去重；跨进程认领及扫码/编排互斥，unknown不重放','services/platform_scan_service.py','def _claim',kind='protect'),
+    edge('sync.platform_login','sync.freshness','登录不代表订单完成','任何平台登录结果','不重拉订单、不清pending、不更改原batch/claim/成功未知记录，原业务入口保持','services/platform_scan_service.py','def start_login',kind='boundary'),
     edge('campaign.entry','campaign.window','官方身份与精确窗口','官方页面完整且店铺匹配','日历仅到天时不能补造秒级窗口','services/campaign_official_discovery.py','def checked_snapshot'),
     edge('campaign.schedule','campaign.controller','接入固定连续执行器','原调度启用且接入就绪','不回退旧链；dispatch结果不代表业务完成','services/campaign_automation_service.py','def run_auto_execute'),
     edge('campaign.files','campaign.controller','准备与执行分离','ERP准备完成后由已有执行程序接手','workflow_service仅准备，不操控网页；具体外部版本另核','services/campaign_continuous_runtime.py','def dispatch',kind='boundary'),

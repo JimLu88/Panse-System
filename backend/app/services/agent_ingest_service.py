@@ -2828,12 +2828,12 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                 _add_pending_scan(db, task_id)
                 reason = (
                     "登录状态已失效 — 请在本飞书提醒群 @Panse System 回复“扫码”；"
-                    "二维码会发到本群，扫码成功后自动续跑"
+                    "选择店铺后台或支付宝后，在电脑弹出的窗口登录；登录后由原业务入口继续"
                     if any(marker in err for marker in (
                         "登录状态已失效", "需重新登录", "session_expired",
                     ))
                     else "需扫码 — 请在本飞书提醒群 @Panse System 回复“扫码”；"
-                         "二维码会发到本群并保持 10 分钟"
+                         "选择对应平台后在电脑弹出的窗口登录；其他平台请使用原专用入口"
                 )
                 out["pending_manual"].append(
                     {"task": task_id, "reason": reason})
