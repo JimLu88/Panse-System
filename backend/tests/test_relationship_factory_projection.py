@@ -71,7 +71,8 @@ def test_exact_dimension_asset_matches_sheet_not_product_default(db_session,monk
     assert row['尺寸']=='720×380×360mm'
     line.sku_code='OTHER';db_session.commit()
     row=d.build_rows(db_session)[0]
-    assert row['下单分组']=='事实待核实' and '720' not in row['尺寸']
+    assert row['下单分组']=='工厂正式单' and row['尺寸']=='尺寸尚未核实'
+    assert '尺寸尚未核实' in row['生产事实状态'] and '720' not in row['尺寸']
 
 
 def test_partial_held_child_does_not_hide_sibling(db_session):

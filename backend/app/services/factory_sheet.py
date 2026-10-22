@@ -527,7 +527,7 @@ def build_from_fields(
     # 占位文本按空处理 (2026-06-12 用户: 产品表 size_value 整列是"待定", 下单图不能照抄)
     def _clean_size(v: Optional[str]) -> Optional[str]:
         s = str(v).strip() if v else ""
-        if not s or s in ("待定", "-", "无", "暂无", "/"):
+        if not s or s in ("待定", "-", "无", "暂无", "/", "未知", "待核实", "未核实", "尺寸尚未核实", "未对应尺寸"):
             return None
         return s.replace("\n", "；")   # size_detail 是多行 mm 明细, 压成一行
     size_info = None
@@ -536,10 +536,10 @@ def build_from_fields(
     # 备注只展示不解析 — 自由文本机器提尺寸容易错单, 以人工核对为准。
     if dim_changes:
         size_info = "定制: " + "；".join(f"{k} {v}" for k, v in dim_changes.items())
-    elif pricing_sku and getattr(pricing_sku, "size_info", None):
+    elif pricing_sku and _clean_size(getattr(pricing_sku, "size_info", None)):
         # 该 SKU 自己录的成品尺寸 (2026-06-19: 从 SKU 尺寸图读出, 按 sku_code 取)。
         # 多规格(标准/窄款...)从此精确取本变体尺寸, 不再整段堆产品表 size_detail / 选错款。
-        size_info = pricing_sku.size_info
+        size_info = _clean_size(pricing_sku.size_info)
     elif sku and re.search(r"\d+(?:\.\d+)?\s*(?:米|m|M|cm|CM|mm|MM)", sku):
         # SKU 名带明确尺寸 (1.4米/45cm/1200mm) → 以 SKU 为准:
         # 产品表 size_detail 是默认款尺寸, 对非默认尺寸的 SKU 会误导工厂备料。
@@ -548,10 +548,8 @@ def build_from_fields(
         size_info = "定制尺寸 — 以客户备注为准"
         warnings.append(FactorySheetWarning(
             code="custom_size_in_remark",
-            severity="warning" if remark else "error",
-            message=("定制单未录定制尺寸, 下单图以客户备注为准, 请核对备注后再发工厂。"
-                     if remark else
-                     "定制单未录定制尺寸且客户备注为空 — 请先补尺寸再发工厂!"),
+            severity="warning",
+            message="尺寸尚未核实；定制要求按已有客户备注展示，不推算或套用其他SKU尺寸。",
         ))
     if size_info is None:
         from app.services.factory_production_evidence import verified_dimensions
@@ -563,11 +561,17 @@ def build_from_fields(
             # A product default may describe an upper cabinet while this SKU is
             # a lower cabinet. Never fabricate variant dimensions from it.
             warnings.append(FactorySheetWarning(
-                code="variant_size_unverified", severity="error",
+                code="variant_size_unverified", severity="warning",
                 message="本SKU缺专属尺寸，产品有多个规格，禁止套用产品默认尺寸；请核对该SKU尺寸资料。"))
         else:
             size_info = _clean_size(product.size_value) or _clean_size(product.size_detail)
-    # 无任何真实尺寸来源 → size_info 留 None, 下单图标红"未对应尺寸" (2026-06-19, 便于找出缺尺寸的SKU)
+    # 2026-10-22: absence is a visible advisory, not permission to borrow a sibling's dimensions.
+    if size_info is None or any(w.code == 'custom_size_in_remark' for w in warnings):
+        if not any(w.code in ('variant_size_unverified', 'custom_size_in_remark') for w in warnings):
+            warnings.append(FactorySheetWarning(code='size_unverified', severity='warning',
+                                                message='尺寸尚未核实'))
+        if '尺寸尚未核实' not in (production_note or ''):
+            production_note = '\n'.join(x for x in (production_note, '尺寸尚未核实') if x)
 
     # 图库配图: 主图 + SKU 尺寸图 (图库缺失/未挂载时悄悄留空, 不影响下单图)
     gallery_main = sku_img = None

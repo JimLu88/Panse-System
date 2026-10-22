@@ -439,14 +439,15 @@ def _production_projection(db, order, line=None):
     confirmed = getattr(sheet, 'quantity_confirmation', None)
     qty_unknown = (not confirmed and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
         w.code == 'production_quantity_unverified' for w in sheet.warnings)
-    blockers = [w.code for w in sheet.warnings if w.code in (
-        'production_quantity_unverified', 'variant_size_unverified')]
+    blockers = [w.code for w in sheet.warnings if w.code == 'production_quantity_unverified']
+    size_unverified = not sheet.size_info or any(w.code in (
+        'variant_size_unverified', 'size_unverified', 'custom_size_in_remark') for w in sheet.warnings)
     if qty_unknown and 'production_quantity_unverified' not in blockers:
         blockers.append('production_quantity_unverified')
     quantity = None if qty_unknown else sheet.qty
     other_warnings = [w.code for w in sheet.warnings if w.code not in blockers]
     return {
-        'quantity': quantity, 'size': sheet.size_info or '', 'blocked': bool(blockers),
+        'quantity': quantity, 'size': sheet.size_info or '尺寸尚未核实', 'blocked': bool(blockers),
         'fields': {
             '原购买数量': purchase_qty if type(purchase_qty) is int and purchase_qty > 0 else None,
             '确认成品数量': quantity,
@@ -454,6 +455,7 @@ def _production_projection(db, order, line=None):
             '数量确认依据': ((confirmed.get('evidence_ref') or '') if confirmed else
                          '原购买记录；无定制计价数量歧义' if not qty_unknown else '缺有效成品数量依据'),
             '生产事实状态': (('当前事实待核实，请勿据此新增生产：' + ', '.join(blockers)) if blockers
+                         else '尺寸尚未核实；数量按制单口径核对（不代表已经生产或发齐）' if size_unverified
                          else '数量与已提供尺寸按制单口径核对（不代表已经生产或发齐）')
                          + ('；其他制单提醒：' + ', '.join(other_warnings) if other_warnings else ''),
         },

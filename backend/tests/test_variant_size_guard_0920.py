@@ -22,10 +22,14 @@ def test_lower_cabinet_never_inherits_upper_dimensions(db_session):
     assert '本SKU：带抽翻门下柜' in sheets.render_html(sheet)
 
 
-def test_unverified_size_stops_production_before_image_upload(db_session,monkeypatch):
+def test_unverified_size_renders_explicit_notice_without_fake_dimensions(db_session,monkeypatch):
     sheet=setup(db_session)
-    monkeypatch.setattr(sheets,'_html_to_png',lambda *a,**k:pytest.fail('Must block before rendering/sending'))
-    with pytest.raises(ValueError,match='专属尺寸'):sheets.render_png(sheet)
+    monkeypatch.setattr(sheets,'_html_to_png',lambda html,**k:html)
+    html=sheets.render_png(sheet)
+    assert '尺寸尚未核实' in html
+    assert '隔板上柜 900' not in html
+    assert sheet.size_info is None
+    assert sheet.production_note == '尺寸尚未核实'
 
 
 def test_exact_sku_dimensions_remain_primary(db_session):

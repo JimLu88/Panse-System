@@ -1,5 +1,12 @@
 # Current state — logistics bill product analytics
 
+## 2026-10-22 缺尺寸不漏发（生产发布回执另存）
+
+- 缺本SKU尺寸改为提示，不再由variant_size_unverified拦截render_png。尺寸栏红字及渲染生产备注写“尺寸尚未核实”；保留原备注，不回写商品尺寸、不套用其他SKU尺寸。
+- 工厂表同口径保留未知尺寸说明，仅数量不明等原硬门继续阻断。发送前和原子占位新增sent_at保护。
+- 新增只读扫描/显式manifest补发CLI：app.cli.factory_size_delivery；当前发现旧同因失败559/595/627，line_id15104/15191/15310。04不发送，由01执行受控apply并核对真实回执。
+- 来源、测试、正式生产版本与图像渲染验收分别见项目outputs/factory-unverified-size-20261022；不把本地测试或生成图称为已补发。
+
 ## 2026-10-21 工厂人工转发登记（待正式发布读回）
 
 - 新增独立 FactoryForward 账本：按子单/兼容旧母单登记待转发、已转发、暂缓；版本冲突保护、操作历史。对勾不等于微信送达/工厂接单。

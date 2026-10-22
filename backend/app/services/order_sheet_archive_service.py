@@ -241,7 +241,7 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
         _nw = "white-space:nowrap;" if _n <= 30 else ""
         size_html = f"<div class='sz' style='font-size:{_szfs}px;{_nw}'>{e(_szt)}</div>"
     else:
-        size_html = "<div class='sz'>未对应尺寸</div>"
+        size_html = "<div class='sz' style='color:#dc2626'>尺寸尚未核实</div>"
     # 产品规格分项 (①②③ 编号)
     _items = _spec_items(sheet)
     if _items:
@@ -504,8 +504,6 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
-    if any(getattr(w, 'code', '') == 'variant_size_unverified' for w in getattr(sheet, 'warnings', [])):
-        raise ValueError('本SKU专属尺寸未核实，不能用其他规格尺寸发送生产单')
     if any(getattr(w, 'code', '') == 'production_quantity_unverified' for w in getattr(sheet, 'warnings', [])):
         raise ValueError('定制拍下数量不是已核成品件数，停止自动生产发送，待核对实物数量')
     return _html_to_png(render_html(sheet), width=1684)
@@ -593,6 +591,9 @@ def archive_sent_line_snapshot(
                 "product_code": rendered_sheet.product_code,
                 "purchase_qty": rendered_sheet.purchase_qty,
                 "quantity_confirmation": rendered_sheet.quantity_confirmation,
+                "size_info": rendered_sheet.size_info,
+                "size_unverified": '尺寸尚未核实' in (rendered_sheet.production_note or ''),
+                "production_note": rendered_sheet.production_note,
                 "content_sha256": __import__('hashlib').sha256(content).hexdigest(),
             } if rendered_sheet is not None else None),
             # 激活态是送达幂等的一部分。缺少它会让下一轮
@@ -635,7 +636,7 @@ def reconcile_order_line_delivery(
         if sub_order_no in sent or len(pushed) + len(failed) >= limit:
             continue
         if (line.factory_delivery_state in {"rendering", "sending_caption", "sending_image", "uncertain", "sent"}
-                or line.factory_delivery_message_id):
+                or line.factory_delivery_message_id or line.factory_delivery_sent_at):
             failed.append({
                 "order_no": line.order_no,
                 "sub_order_no": sub_order_no,
@@ -669,6 +670,7 @@ def reconcile_order_line_delivery(
         # not both deliver it; a process crash leaves a visible, non-replayable claim.
         claimed = db.execute(update(OrderDetail).where(
             OrderDetail.id == line.id,
+            OrderDetail.factory_delivery_sent_at.is_(None),
             or_(OrderDetail.factory_delivery_state.is_(None),
                 OrderDetail.factory_delivery_state.in_(["", "failed"])),
             or_(OrderDetail.factory_delivery_message_id.is_(None),

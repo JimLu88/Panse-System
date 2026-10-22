@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('factory.size_retry','缺尺寸旧失败受控补发','factory','precise child manifest / current fingerprint','services/factory_size_delivery_service.py','def apply_manifest','默认只读；仅执行者显式apply；sent/unknown/inflight及身份变化不重放'),
     node('factory.forward','人工微信转发登记','factory','FactoryForward.state/revision/history','services/factory_forward_service.py','def change'),
     node('marketing.feedback_read','千牛口碑只读巡检','marketing','Web-Agent feedback_patrol capture / official review rating / question-answer IDs','services/feedback_notification_service.py','def capability','外部程序 app/browser/feedback_patrol.py：中差评全部分页、所有问题下已展示回答；首次已有内容与新增分开。接口来源指纹不等于外部采集验收。'),
     node('marketing.feedback_judgment','新增问答语义判断与内容去重','marketing','source + stable id + content revision / sentiment + reason','services/feedback_notification_service.py','def send_digest','外部固定发件箱与一次批量语义判读；问题不是回答；否定句、混合反馈、不确定需区分。无新内容静默，不自动回复或投诉。'),
@@ -132,6 +133,7 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('factory.size_retry','factory.receipt','精确清单重核后复用原发送器','旧缺尺寸失败且无发送证据','数量/地址/退款/身份硬门不放宽，保留工厂号与原备注','services/factory_size_delivery_service.py','def apply_manifest'),
     edge('factory.receipt','factory.forward','图片下方关联独立操作卡','仅已取得图片消息ID','发送未知不重发，改图重置待转发，旧卡不能覆盖新状态','services/factory_forward_service.py','def attach_card'),
     edge('factory.forward','sync.factory','单向同步转发状态','ERP提交后异步投影','失败最多五次；不更改数量、生产状态或手工列','services/factory_forward_service.py','def sync_pending'),
     edge('factory.forward','shipping.fulfilled','转发登记不是工厂接单或发货','人工勾选仅为转发声明','禁止用对勾推断实际微信送达或仓库履约','models/factory_forward.py',kind='protect'),
@@ -201,7 +203,7 @@ EDGES = [
     edge('order.notes','quantity.physical','使旧确认失效','备注/购买数/SKU身份发生变化','不能沿用旧卡默认为已确认','services/factory_production_evidence.py','def _identity'),
     edge('quantity.physical','factory.sheet','取成品量制单','确认记录与当前身份相符','购买量仍原值；材料按成品量','services/factory_sheet.py','def build_for_order_line'),
     edge('order.qty','factory.sheet','普通购买数作为成品数','有效数量且无定制计价歧义','0/空/负数必须待确认','services/factory_sheet.py','def build_for_order_line'),
-    edge('product.dimensions','factory.sheet','读取精确尺寸','SKU/产品/hash一致','错变体和过期hash不通过','services/factory_sheet.py','def build_from_fields'),
+    edge('product.dimensions','factory.sheet','读取精确尺寸','SKU/产品/hash一致','缺尺寸注明尺寸尚未核实后可发图，绝不套用错变体或过期hash，不回写假尺寸','services/factory_sheet.py','def build_from_fields'),
     edge('bom.lines','factory.sheet','生成物料需求','BOM×确认成品数','未知数不能作为正式生产单','services/factory_sheet.py','def build_from_fields'),
     edge('order.customer','factory.sheet','收货信息和备注','地址未脱敏或明确待补分支','信息待补不捏造地址','services/factory_sheet.py','def build_for_order_line'),
     edge('factory.sheet','factory.receipt','固定逐子单发送','生产事实合格且未送达/未占用','未知发送不盲重试','services/order_sheet_archive_service.py'),
