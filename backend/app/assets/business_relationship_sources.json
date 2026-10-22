@@ -1,6 +1,6 @@
 {
   "version": "2026-09-26.3",
-  "reviewed_at": "2026-10-22T05:21:42.649882+00:00",
+  "reviewed_at": "2026-10-22T11:45:25.922808+00:00",
   "sources": {
     "backend/app/api/admin.py": "c1e10c6a08f790e814db6b511d2c09fc869ae8891f9c14649bde652741dc4489",
     "backend/app/api/refill_sync.py": "2b0ed5b0c69c191890b5a6a3aec75679ca7c37d0809bbc6b4fa761a85a7380b6",
@@ -37,9 +37,9 @@
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
     "backend/app/services/agent_ingest_service.py": "21c2544f78c5dcadf62a4fae01ba3427fee92aa60817efc43aa37eae0e0f8dab",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
-    "backend/app/services/automation_pipeline_service.py": "702e89ff66a9166e61478b4ff6bcae530283302506fd8eb4843aafb1501fa1ad",
+    "backend/app/services/automation_pipeline_service.py": "78d340663ebb23b8ff1faec048f42c69dce8b9e9ae867c3c31218ac34a31ed39",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "2884fbb7dccebc2a5aeefed2083679e796c7d758b50fad55fafd9802ad1c3824",
+    "backend/app/services/business_relationship_catalog.py": "38920bc3d37fe29685e960bc9ef31a59dbd4bbefbcdadcb4b9d4e4ac8bbe9051",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
     "backend/app/services/business_relationship_index.py": "3fe59dfb01482d53d8b648b5385936312302a421fd0e3a4edaef0ec8c748a929",
@@ -87,7 +87,7 @@
     "backend/app/services/remote_report_service.py": "6fba28eea67a6b4e5e53e2330e6b92e4256a53229dd3efa317a11725f4b52d3e",
     "backend/app/services/sales_analytics.py": "2886b733e4eecc5f8d3362d715c79b41f5cc152f251a0e66d90d499205c6f0cf",
     "backend/app/services/sales_rollup_service.py": "a71e84e81bb685eae5d3445e2d519ffe84d33f7e68cafecf0e5cfd962cb1ec40",
-    "backend/app/services/scheduler.py": "f93b9786b3233501e25b1e69aafae7b80a51155f405dd6b5ab27fc80aa11ddb8",
+    "backend/app/services/scheduler.py": "a593b4349d26ef4d54013d6a07c057a572ec39e7a9457c5c87235bcf69d4c07c",
     "backend/app/services/shipment_service.py": "0ece15887653479dc5aba6d181cf474dbf6c766258f75d260883dedcf522391a",
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "17db313b467b2714a5def173498152241486b2ba3f6b8289fb9726bc7d2b69de",

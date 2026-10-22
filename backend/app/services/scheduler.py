@@ -1011,6 +1011,7 @@ def _record_pipeline_result(
     from app.services import automation_pipeline_service
 
     if result.get("_run_status") == "fail":
+        result.pop("_success_message", None)
         event = automation_pipeline_service.record_failure(
             db,
             pipeline,
@@ -1737,6 +1738,18 @@ def _job_pull_catchup(db: Session) -> dict:
         return _finish(delivery)
     # ``final`` 只表示旧一轮重试已用尽，不得盖过后来由扫码/口令形成的
     # 成功证据。上面的新鲜度收口优先；确认仍旧失败后才停止无效重试。
+    if automation_pipeline_service.classify_failure(
+        pipeline.get("last_error") or ""
+    )["reason"] == "login_required":
+        if ai.is_running():
+            return {"skipped": "orchestrate_running", "_run_status": "skipped"}
+        if automation_pipeline_service.resume_order_after_login(db):
+            pipeline = automation_pipeline_service.get_pipeline(db, "order_delivery")
+        elif not pipeline.get("waiting_input") and not pipeline.get("final"):
+            # Upgrade an older unclassified login failure without another export.
+            return _finish({"_run_status": "fail", "_error": pipeline["last_error"]})
+        else:
+            return {"skipped": "waiting_for_shop_login", "_run_status": "skipped"}
     if pipeline.get("final"):
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
     if ai.is_running():

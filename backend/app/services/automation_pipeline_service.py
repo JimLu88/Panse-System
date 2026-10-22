@@ -140,7 +140,7 @@ def classify_failure(error: str) -> dict[str, str]:
     """把自动化故障分给执行端或程序维护端。
 
     只有具有确定代码/契约特征的错误才停止业务重试并进入程序维护队列；
-    平台、网络、超时和交互门继续由执行端按既定时刻有限重试。未知错误
+    订单登录失效等待新的登录回执；网络和超时由执行端有限重试。未知错误
     保守地留在执行端重试，同时标记为需要复核，避免分类器本身阻断业务。
     """
     normalized = str(error or "").lower()
@@ -150,6 +150,14 @@ def classify_failure(error: str) -> dict[str, str]:
             "label": "程序修复",
             "reason": "deterministic_program_error",
             "retry_policy": "stop_and_review",
+        }
+    if any(pattern in normalized for pattern in (
+        "session_expired", "登录已失效", "登录失效", "登录状态已失效",
+        "登录态缺失", "需重新登录", "需要重新登录", "需人工登录", "需扫码",
+    )):
+        return {
+            "owner": "execution", "label": "等待用户扫码登录",
+            "reason": "login_required", "retry_policy": "wait_for_input",
         }
     if any(pattern in normalized for pattern in (
         "本sku专属尺寸未核实", "主订单汇总被作为子订单发送",
@@ -447,6 +455,51 @@ def resume_for_retry(
     return dict(entry)
 
 
+def resume_order_after_login(db: Session, *, now: Optional[datetime] = None) -> bool:
+    """Consume a new shop-login receipt once; the scheduler still owns export.
+
+    A saved session only permits another attempt, never proves fresh order data.
+    Other platforms, old receipts and ambiguous login results cannot reopen it.
+    """
+    from sqlalchemy import select
+    from app.models.settings import SystemSetting
+    from app.services.platform_scan_service import ACTIVE_KEY
+
+    # Serialize the receipt claim across workers before any business dispatch.
+    db.execute(select(SystemSetting).where(
+        SystemSetting.key == SETTING_KEY,
+    ).with_for_update().execution_options(populate_existing=True)).scalar_one_or_none()
+    current = _now(now)
+    state = _load(db)
+    entry = _entry_for_day(state, "order_delivery", current.date().isoformat())
+    if (entry.get("success") or
+            classify_failure(entry.get("last_error") or "")["reason"] != "login_required"):
+        return False
+    row = db.execute(select(SystemSetting).where(SystemSetting.key == ACTIVE_KEY)).scalar_one_or_none()
+    try:
+        receipt = json.loads(row.value_plain or "{}") if row else {}
+        attempted = datetime.fromisoformat(entry["last_attempt_at"])
+        saved = row.updated_at if row else None
+        # SQLite timestamps are UTC without tzinfo; production Postgres is aware.
+        from datetime import timezone
+        if saved and saved.tzinfo is None:
+            saved = saved.replace(tzinfo=timezone.utc)
+        if (receipt.get("state") != "success" or receipt.get("platform") != "shop"
+                or not receipt.get("job") or not receipt.get("request_key")
+                or receipt["job"] == entry.get("consumed_login_job")
+                or not saved or saved <= _now(attempted) or saved > current
+                or saved.astimezone(current.tzinfo).date() != current.date()):
+            return False
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
+    entry.update({"final": False, "waiting_input": False,
+                  "consumed_login_job": receipt["job"],
+                  "login_resumed_at": current.isoformat(), "next_retry_at": None})
+    _save(db, state)
+    db.commit()  # durable one-time claim before the scheduler contacts the agent
+    return True
+
+
 def pause_for_input(
     db: Session,
     pipeline: str,
@@ -539,6 +592,11 @@ def record_failure(
     failures = int(entry.get("failures") or 0) + 1
     safe_error = _safe_error(error)
     routing = classify_failure(error)
+    if routing["reason"] == "login_required" and pipeline != "order_delivery":
+        # Finance has multiple independent sources. Its caller decides whether
+        # all remaining sources await login; one login must not pause the rest.
+        routing = {"owner": "execution", "label": "执行端",
+                   "reason": "transient_or_interaction_error", "retry_policy": "scheduled_retry"}
     future_slots = sorted(_now(x) for x in retry_slots if _now(x) > current)
     program_failure = routing["owner"] == "program_maintenance"
     evidence_blocked = routing["retry_policy"] == "wait_for_input"
@@ -569,6 +627,16 @@ def record_failure(
             "修复完成后再由正常计划或明确批准的补跑恢复。"
         )
         event = "program-maintenance"
+    elif evidence_blocked and routing["reason"] == "login_required":
+        _supersede_pending_failure_notifications(state, pipeline, day, current)
+        text = (
+            f"⚠️ {day}【{label}】等待扫码登录\n"
+            f"原因：{safe_error}\n"
+            "已暂停无效重试。请在飞书提醒群回复“扫码”，选择对应平台，在电脑窗口完成登录。\n"
+            + ("店铺登录成功后，当晚订单补跑任务会接续原批次；三份报表核验入库后仅推未发送订单。"
+               if pipeline == "order_delivery" else "登录完成后由原业务入口继续。")
+        )
+        event = "login-required"
     elif evidence_blocked:
         _supersede_pending_failure_notifications(state, pipeline, day, current)
         text = (
