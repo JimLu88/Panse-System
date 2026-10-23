@@ -42,7 +42,8 @@ def _last_end(db: Session, sku_code: str) -> Optional[date]:
 
 
 def record_dated_change(db: Session, sku: PricingSku, effective_from: date, *,
-                        actor: Optional[str] = None, note: Optional[str] = None) -> PricingSkuVersion:
+                        actor: Optional[str] = None, note: Optional[str] = None,
+                        preserve_all: bool = False) -> PricingSkuVersion:
     """把 sku 的**当前(旧)**定价值封存成一条区间 [上个边界或起点, effective_from)。调用须早于写新值。
 
     区间连续: period_start = 上一次调价边界 (无则 SENTINEL_START)。
@@ -54,6 +55,8 @@ def record_dated_change(db: Session, sku: PricingSku, effective_from: date, *,
         raise ValueError(f"生效日 {effective_from} 必须晚于上一次调价边界 {start}")
     snap = {f: (str(getattr(sku, f)) if getattr(sku, f, None) is not None else None)
             for f in (_COL_FIELDS + _JSON_FIELDS)}
+    if preserve_all:
+        snap["preserve_all_versions"] = True
     row = PricingSkuVersion(
         sku_code=sku.sku_code, product_code=sku.product_code,
         period_start=start, period_end=effective_from,
@@ -96,6 +99,12 @@ def record_if_price_changed(db: Session, sku: PricingSku, changes: dict, *,
 def prune(db: Session, sku_code: str, keep: int = MAX_VERSIONS_PER_SKU) -> int:
     """只保留该 SKU 最新的 keep 条调价版本(按生效日/period_end 倒序), 删更旧的。返回删除条数。
     删掉的是很久以前的老价区间; 那之前的订单会回退用 live 价(极老单, 影响可忽略)。"""
+    snapshots = db.execute(select(PricingSkuVersion.snapshot).where(
+        PricingSkuVersion.sku_code == sku_code)).scalars().all()
+    # Explicit, durable per-SKU preservation. Future ordinary edits must not
+    # delete history protected by a scoped sync. Other SKUs retain old policy.
+    if any(json.loads(s or '{}').get('preserve_all_versions') is True for s in snapshots):
+        return 0
     ids = db.execute(
         select(PricingSkuVersion.id).where(PricingSkuVersion.sku_code == sku_code)
         .order_by(PricingSkuVersion.period_end.desc(), PricingSkuVersion.id.desc())
