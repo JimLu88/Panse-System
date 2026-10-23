@@ -544,6 +544,8 @@ def _resolve_length_m(s) -> Optional[float]:
     """SKU 的主变体长度(米): 优先 SKU 名/编码的显式单位尺寸, 否则退回 size_info 长度(cm÷100)。
     修床头柜等按 size_info 尺寸分档(SKU 名只叫「标准/窄款」无「X米」)的产品 —— 否则解析不到长度
     → price_pts 空 → 退回代表档固定价(改长度/宽高价都不动)。"""
+    if getattr(s, "quote_outer_length_m", None) is not None:
+        return s.quote_outer_length_m
     ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
     if ln is not None:
         return ln
@@ -713,6 +715,7 @@ def quote_light(
     price_tier: str = "daily",
     base_sku_code: Optional[str] = None,
     factory_profit_rate: Optional[float] = None,
+    outer_dimensions: Optional[dict] = None,
 ) -> dict:
     """普通定制报价 (改现有产品): 真实SKU锚点价 + 尺寸delta(策略C) + 材质delta(wood_cost反推) + 增减部位delta。
 
@@ -765,6 +768,24 @@ def quote_light(
                 skus = same
 
     prod = db.query(Product).filter(Product.code == base_product_code).first()
+    outer_basis = None
+    if outer_dimensions is not None:
+        from app.services.custom_quote_reference import outer_reference
+        try:
+            selected_anchor_sku, outer_basis = outer_reference(
+                selected_anchor_sku, outer_dimensions, price_tier, tier_prices,
+                target_length_m, target_width_cm, target_height_cm,
+            )
+        except ValueError as exc:
+            return {"error": str(exc), "quote_ready": False, "final_price": None, "breakdown": []}
+        skus = [selected_anchor_sku]
+        target_length_m = outer_basis["target_length_cm"] / 100
+        target_width_cm = outer_basis["target_width_cm"]
+        # A stored buyer price is already the requested final basis. Do not
+        # inflate it again with the generic full-custom safety coefficient.
+        safety_rate = 1.0
+    elif prod and "床" in str(prod.category or "") and "床头柜" not in str(prod.category or "") and target_width_cm is not None:
+        return {"error": "床类尺寸报价须明确 outer_dimensions（床体外长/外宽），不可混用床垫规格", "quote_ready": False, "final_price": None, "breakdown": []}
     price_pts, wood_pts = _sku_points(skus, tier_prices)
     depth_pts, height_pts = _dim_points(skus)
     std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
@@ -781,7 +802,16 @@ def quote_light(
     area_price_pts, area_wood_pts = _area_points(skus, tier_prices, depth_pts)
     target_area = (target_length_m * eff_w / 100.0) if (target_length_m and eff_w) else None
     used_area = bool(target_area and area_price_pts)
-    if used_area:
+    if outer_basis:
+        # Only the wood component follows the existing area estimate. Packing,
+        # freight, installation and purchased accessories retain their cost.
+        ratio = target_area / outer_basis["reference_area_m2"]
+        anchor_wood = float(selected_anchor_sku.wood_cost) * ratio
+        anchor = round(outer_basis["buyer_price"] +
+                       (anchor_wood - float(selected_anchor_sku.wood_cost)) * outer_basis["cost_to_buyer_ratio"], 2)
+        method = "outer-area-wood-estimate"
+        note = "原SKU到手价锚点；仅木作按真实外形面积比估算，配件及打包运费安装不随面积缩放；非工厂板单"
+    elif used_area:
         anchor, method = interp(area_price_pts, target_area)
         anchor_wood, _ = interp(area_wood_pts, target_area) if area_wood_pts else (None, "no-data")
         note = f"面积定价 {target_length_m}m×{eff_w:.0f}cm≈{target_area:.3f}㎡ ({method}, {len(area_price_pts)}点)"
@@ -1027,6 +1057,7 @@ def quote_light(
         "selected_sku_name": (selected_anchor_sku.sku or selected_anchor_sku.sku_code)
         if selected_anchor_sku else None,
         "calculation_basis": calculation_basis,
+        "outer_dimension_basis": outer_basis,
         "anchor": round(anchor, 2),
         "anchor_method": note,
         "material_delta": material_delta,

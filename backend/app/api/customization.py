@@ -263,9 +263,14 @@ class BoardQuoteIn(BaseModel):
     overall_height_m: Optional[float] = None
     boards: list[BoardIn]
     factory_quote: Optional[float] = None   # 工厂报价(可填, 用于显示差额)
+    base_product_code: Optional[str] = None
+    base_sku_code: Optional[str] = None
+    price_tier: Optional[str] = None
 
 
 class BoardQuoteOut(BaseModel):
+    pricing_basis: Optional[dict] = None
+    big_buyer_price: Optional[float] = None
     wood_cost: float
     labor_fee: float
     factory_in_cost: float
@@ -296,11 +301,16 @@ def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
     from app.services import custom_quote_service as q
     from app.services import custom_quote_config_service as cfg_svc
     specs = [q.BoardSpec(**b.model_dump()) for b in payload.boards]
-    r = q.quote_from_spec(
-        db, product_type=payload.product_type, length_m=payload.length_m,
-        boards=specs, overall_width_m=payload.overall_width_m,
-        overall_height_m=payload.overall_height_m,
-    )
+    try:
+        r = q.quote_from_spec(
+            db, product_type=payload.product_type, length_m=payload.length_m,
+            boards=specs, overall_width_m=payload.overall_width_m,
+            overall_height_m=payload.overall_height_m,
+            base_product_code=payload.base_product_code,
+            base_sku_code=payload.base_sku_code, price_tier=payload.price_tier,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     cfg = cfg_svc.get_config(db)
     fq = payload.factory_quote
     _log_quote(db, source="board_quote",
@@ -308,6 +318,8 @@ def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
                extra={"final_quote": float(r.final_quote),
                       "factory_compare": float(r.factory_quote_conservative)})
     return BoardQuoteOut(
+        pricing_basis=r.pricing_basis,
+        big_buyer_price=float(r.final_quote) if r.pricing_basis else None,
         wood_cost=float(r.wood_cost), labor_fee=float(r.labor_fee),
         factory_in_cost=float(r.factory_in_cost), factory_profit=float(r.factory_profit),
         factory_wood_total=float(r.factory_wood_total), accessory_total=float(r.accessory_total),
@@ -356,6 +368,7 @@ class V2QuoteLightIn(BaseModel):
     modify_parts: list[dict] = Field(default_factory=list)
     price_tier: str = "big"
     base_sku_code: Optional[str] = None
+    outer_dimensions: Optional[dict] = None
     category: Optional[str] = None      # quote-both 用: 纯定制口径出板单的品类(空则从产品取)
     lower_cabinet_height_cm: Optional[float] = None   # quote-both 用: 下柜高(门/玻璃取尺寸)
     description: Optional[str] = None                  # quote-both 用: 选组合SKU的BOM
@@ -493,6 +506,7 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
         add_parts=payload.add_parts, remove_parts=payload.remove_parts,
         modify_parts=payload.modify_parts, price_tier=payload.price_tier,
         base_sku_code=payload.base_sku_code,
+        outer_dimensions=payload.outer_dimensions,
     )
     _log_quote(
         db, source="v2_quote_light",
@@ -506,6 +520,8 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
 def v2_quote_both(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
     """命中标准产品时并排两种口径: spec=按我们的规格(锚点) + custom=纯定制方向(板单引擎), 用户拍板选用。"""
     from app.services import custom_quote_v2_service as v2
+    if payload.outer_dimensions is not None:
+        raise HTTPException(400, "外尺寸报价请分别使用quote-light与绑定原SKU的board-quote；自动板单尚未验证，不可混用")
     r = v2.quote_both(
         db, base_product_code=payload.base_product_code, category=payload.category,
         target_length_m=payload.target_length_m,

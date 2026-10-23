@@ -85,6 +85,7 @@ class QuoteResult:
     factory_quote_conservative: Decimal = Decimal("0")  # 工厂对比×安全系数(宁高不低)
     wood_lines: list[dict] = field(default_factory=list)
     accessory_lines: list[dict] = field(default_factory=list)
+    pricing_basis: Optional[dict] = None
 
 
 def compute_quote(
@@ -179,6 +180,9 @@ def quote_from_spec(
     boards: list[BoardSpec],
     overall_width_m: Optional[float] = None,
     overall_height_m: Optional[float] = None,
+    base_product_code: Optional[str] = None,
+    base_sku_code: Optional[str] = None,
+    price_tier: Optional[str] = None,
 ) -> QuoteResult:
     """把"品类 + 板单"按后台配置(单价/人工/打包运费安装/系数)算出整套报价。
 
@@ -188,6 +192,10 @@ def quote_from_spec(
     from app.services import custom_quote_config_service as cfg_svc
 
     cfg = cfg_svc.get_config(db)
+    basis = None
+    if base_product_code or base_sku_code or price_tier:
+        from app.services.custom_quote_reference import board_reference
+        basis = board_reference(db, base_product_code, base_sku_code, price_tier)
 
     wood_lines, acc_lines = [], []
     for b in boards:
@@ -201,13 +209,13 @@ def quote_from_spec(
         )
         (acc_lines if (b.is_accessory or b.is_drawer_rail) else wood_lines).append(ln)
 
-    return compute_quote(
+    result = compute_quote(
         wood_lines=wood_lines,
         accessory_lines=acc_lines,
         labor_fee=_d(cfg_svc.lookup_labor(cfg, product_type, length_m, db=db)),
-        packing_fee=_d(cfg_svc.lookup_packing(cfg, product_type, length_m, db=db)),
-        freight=_d(cfg_svc.lookup_freight(cfg, product_type, length_m, db=db)),
-        install_fee=_d(cfg_svc.lookup_install(cfg, product_type, length_m, db=db)),
+        packing_fee=_d(basis["fees"]["packaging_cost"] if basis else cfg_svc.lookup_packing(cfg, product_type, length_m, db=db)),
+        freight=_d(basis["fees"]["logistics_cost"] if basis else cfg_svc.lookup_freight(cfg, product_type, length_m, db=db)),
+        install_fee=_d(basis["fees"]["install_cost"] if basis else cfg_svc.lookup_install(cfg, product_type, length_m, db=db)),
         factory_profit_rate=_d(cfg.get("factory_profit_rate", 0.25)),
         panse_profit_rate=_d(cfg.get("panse_profit_rate", 0.15)),
         overall_width_m=_d(overall_width_m) if overall_width_m else None,
@@ -215,6 +223,22 @@ def quote_from_spec(
         projection_rate=_d(cfg.get("projection_rate", 900)),
         safety_rate=_d(cfg.get("safety_rate", 1.0)),
     )
+    if basis:
+        # Match the selected SKU's physical-cost-to-buyer-price basis once,
+        # instead of applying generic margin, safety and platform cuts again.
+        result.final_quote = _q(result.panse_cost * _d(basis["buyer_price"]) / _d(basis["physical_cost"]))
+        result.safety_rate = Decimal("1")
+        result.factory_quote_conservative = result.factory_quote_compare
+        basis["formula"] = "board_physical_cost * original_big_buyer_price / original_physical_cost"
+        basis["estimate_only"] = True
+        basis["limitation"] = "仅计算传入板单，不证明板单完整；缺少支撑/脚等不得称工厂精确报价"
+        basis["materials"] = [{"material": b.material,
+            "effective_price": cfg_svc.lookup_price(cfg, b.material, db=db),
+            "material_library_price": cfg_svc._material_price(db, b.material),
+            "config_fallback_price": cfg.get("prices", {}).get(b.material),
+            "priority": "material_library_then_config"} for b in boards]
+        result.pricing_basis = basis
+    return result
 
 
 def material_diff_surcharge(
