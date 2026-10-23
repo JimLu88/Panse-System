@@ -42,3 +42,36 @@ def test_reconciliation_does_not_guess_or_expand(bad):
 def test_unrecognized_grant_is_rejected():
     with pytest.raises(ValueError, match='grant_unknown'):
         w.engine('september-grant')
+
+
+def test_verified_overlay_requires_saved_proof_and_preserves_history(tmp_path, monkeypatch):
+    import sqlite3
+    import json
+    from types import SimpleNamespace
+    offers, rows = fixture()
+    rows[0].update(new_deduct='25', deduct='25', target='60', final='60', offer_id=w.OFFER)
+    monkeypatch.setattr(w, 'derive_all', lambda: deepcopy(rows))
+    policy = w.Policy('1')
+    body = policy.derive()
+    proof = dict(state='verified_saved', claim_id='a'*32, job_id='b'*64,
+                 rows=[dict(item='1', offer_id=w.OFFER, state='verified_saved',
+                            window=dict(w.WINDOW, offer_id=w.OFFER),
+                            before={'new': '15'}, values={'new': '25'})])
+    path = tmp_path / 'proof.json'
+    path.write_text(json.dumps(proof))
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    a = SimpleNamespace(db=db)
+    w.core.table(a)
+    ref = {'path': str(path), 'sha256': w.file_sha(path)}
+    db.execute('INSERT INTO campaign_cost_revisions VALUES(?,?,?,?,?,?)',
+               ('a'*32, policy.GRANT, json.dumps(body), 'verified', 'b'*64, json.dumps(ref)))
+    result = w.verified_overlay(a, offers)
+    assert result[0]['rows'][0]['deduct'] == '25'
+    assert offers[0]['rows'][0]['sku'] == 'old'
+    assert result[0]['items'][0]['status'] == 'unknown'
+    assert result[0]['rows'][1] == offers[0]['rows'][1]
+    path.write_text('{}')
+    with pytest.raises(ValueError, match='receipt_changed'):
+        w.verified_overlay(a, offers)
+    db.close()
