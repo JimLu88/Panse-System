@@ -304,7 +304,9 @@ class Authority:
         result=apply_verified_amendments(self,result)
         from campaign_discount_include import overlay as include_overlay
         from campaign_discount_availability import overlay as availability_overlay
-        return availability_overlay(self,include_overlay(self,result))
+        result=availability_overlay(self,include_overlay(self,result))
+        from campaign_walnut_revision import verified_overlay as walnut_overlay
+        return walnut_overlay(self,result)
 
     def blocked(self, campaign, phase, start, end):
         exact_campaign(campaign);result={}

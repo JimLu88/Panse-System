@@ -40,6 +40,9 @@ def table(a):
 
 
 def engine(grant_id):
+    if grant_id.startswith('walnut-list-k-amount-only-20261023:'):
+        from campaign_walnut_revision import engine as walnut_engine
+        return walnut_engine(grant_id)
     if grant_id == GRANT:return sys.modules[__name__]
     from campaign_autumn_cost_revision import GRANT as autumn_grant
     if grant_id == autumn_grant:
@@ -250,6 +253,8 @@ def overlay(a,offers):
                     if item['item'] in {r['item'] for r in body['rows']}:item['status']='unknown'
                 offer['cost_revision_pending']=True
     for row in a.db.execute("SELECT * FROM campaign_cost_revisions WHERE state='verified'"):
+        if row['grant_id'].startswith('walnut-list-k-amount-only-20261023:'):
+            continue  # Applied after existing readback/availability overlays.
         p=engine(row['grant_id']);body=p.derive()
         if json.loads(row['body'])!=body:raise ValueError('cost_revision_overlay_claim_changed')
         ref=json.loads(row['receipt'])
