@@ -37,6 +37,9 @@ async function openQuotePage(page: Page) {
   await page.route('**/api/customization/quote-config', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify(quoteConfig),
   }));
+  await page.route('**/api/customization/v2/bed-references', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ products: [], items: [], materials: [] }),
+  }));
   await page.route('**/api/customization/v2/part-options*', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ parts: [], materials: [], woods: ['榉木'] }),
   }));

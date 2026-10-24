@@ -85,7 +85,7 @@ def bed_references(db):
     from app.services.custom_quote_v2_service import _parse_size_info, _tier_price_map, _is_quoteable_sku, detect_wood, _QUOTE_BAD_WORDS
     from app.services import sku_utils
     products = {p.code: p for p in db.query(Product).all()
-                if '床' in (p.category or p.name or '') and '床头柜' not in (p.category or '') + (p.name or '')}
+                if '床' in (p.category or '') + (p.name or '') and '床头柜' not in (p.category or '') + (p.name or '')}
     skus = db.query(PricingSku).filter(PricingSku.product_code.in_(products)).all() if products else []
     prices = _tier_price_map(db, skus, 'big_buyer')
     materials = {m.name: m for m in db.query(Material).all()}
@@ -120,5 +120,6 @@ def bed_references(db):
                       'length_cm': length, 'width_cm': width, 'height_cm': height,
                       'source': 'PricingSku.size_info', 'buyer_price': prices.get(s.sku_code),
                       'fees': basis['fees'] if basis else None, 'error': error, 'parts': parts})
-    return {'items': items, 'materials': [{'name': m.name, 'unit': m.unit, 'price': float(m.price) if m.price is not None else None}
+    return {'products': [{'product_code': p.code, 'product_name': p.name} for p in products.values()],
+            'items': items, 'materials': [{'name': m.name, 'unit': m.unit, 'price': float(m.price) if m.price is not None else None}
             for m in materials.values()], 'price_tier': 'big_buyer'}

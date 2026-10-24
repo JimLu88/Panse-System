@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Descriptions, InputNumber, Select, Space, Table, Typography } from 'antd';
 
 type Part = { name: string; qty: number; unit: string; price: number | null };
@@ -9,7 +9,7 @@ type RefSku = {
   fees: { packaging_cost: number; logistics_cost: number; install_cost: number } | null;
   error: string | null; parts: Part[];
 };
-type Data = { items: RefSku[]; materials: { name: string; unit: string; price: number | null }[] };
+export type BedReferenceData = { products?: { product_code: string; product_name: string }[]; items: RefSku[]; materials: { name: string; unit: string; price: number | null }[] };
 type Change = { material: string; qty: number; length_cm?: number; width_cm?: number; material_real?: string };
 type Result = {
   final_price: number | null; error?: string; selected_sku_code: string;
@@ -28,9 +28,7 @@ async function request<T>(path: string, body?: object): Promise<T> {
 }
 
 /** Deterministic bed form; never calls classify, quote-both, product or order writes. */
-export default function BedQuotePanel() {
-  const [data, setData] = useState<Data>({ items: [], materials: [] });
-  const [product, setProduct] = useState<string>();
+export default function BedQuotePanel({ product, data }: { product: string; data: BedReferenceData }) {
   const [skuCode, setSkuCode] = useState<string>();
   const [unit, setUnit] = useState<'cm' | 'mm'>('cm');
   const [length, setLength] = useState<number | null>(null);
@@ -47,10 +45,9 @@ export default function BedQuotePanel() {
   const revision = useRef(0);
   const ref = data.items.find(s => s.sku_code === skuCode && s.product_code === product);
   const reset = () => { revision.current++; setConfirmed(false); setResult(null); setError(''); };
-  useEffect(() => { request<Data>('bed-references').then(setData).catch(e => setError(e.message)); }, []);
-  const products = [...new Map(data.items.map(s => [s.product_code, { value: s.product_code, label: `${s.product_name} · ${s.product_code}` }])).values()];
   // Only individually priced BOM accessories can be removed. Never remove an entire wood assembly as a headboard.
   const removable = ref?.parts.filter(p => !/木作|铺板/.test(p.name)) ?? [];
+  const specialHead = /软包|编织/.test(`${ref?.product_name || ''} ${ref?.sku_name || ''}`);
   const woods = data.materials.filter(m => /木/.test(m.name) && /平方|平米|㎡|m²|m2/i.test(m.unit || ''));
   const cm = (n: number) => unit === 'mm' ? n / 10 : n;
   const selectSku = (code: string) => {
@@ -87,11 +84,10 @@ export default function BedQuotePanel() {
     finally { setBusy(false); }
   };
   const fees = result?.outer_dimension_basis?.fees ?? ref?.fees;
-  return <Card title="床定制（外尺寸）" style={{ marginBottom: 20 }}>
+  return <Card title="床的尺寸与配置" style={{ marginBottom: 20 }}>
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Alert type="info" message="选原款 → 确认材质与大促到手价 → 填床体外尺寸 → 增减配置 → 计算估算价" description="此入口不调用 AI，不改商品、价格或尺寸，不创建订单。床垫规格不是床体外尺寸。" />
-      <Select aria-label="床产品" placeholder="选择床产品" showSearch optionFilterProp="label" style={{ width: '100%' }} options={products}
-        value={product} onChange={code => { reset(); setProduct(code); setSkuCode(undefined); setRemoved([]); setAdditions([]); }} />
+      {!data.items.some(s => s.product_code === product) && <Alert type="error" message="该床款没有可报价的真实规格，请先核实原SKU与价格；不会套用其他床款" />}
       <Select aria-label="原款规格" placeholder="选择精确原款 SKU（材质 / 铺板）" showSearch optionFilterProp="label" style={{ width: '100%' }}
         value={skuCode} onChange={selectSku} options={data.items.filter(s => s.product_code === product).map(s => ({ value: s.sku_code, label: `${s.sku_name} · ${s.sku_code} · 大促到手价 ${s.buyer_price ?? '缺价'}元` }))} />
       {ref && <>
@@ -108,7 +104,8 @@ export default function BedQuotePanel() {
           <label>目标床体外长 <InputNumber aria-label="目标床体外长" min={0.1} value={length} onChange={n => { reset(); setLength(n); }} /> {unit}</label>
           <label>目标床体外宽 <InputNumber aria-label="目标床体外宽" min={0.1} value={width} onChange={n => { reset(); setWidth(n); }} /> {unit}</label>
         </Space>
-        <Checkbox checked={removeHead} onChange={e => { reset(); setRemoveHead(e.target.checked); }}>去掉床头板（1件，宽度按目标外宽；需确认实际高度和木料）</Checkbox>
+        {specialHead ? <Alert type="info" message="软包或编织床头不能按实木平板扣价；若下方有该SKU的独立床头配件，可按实际BOM移除，否则须先核实床头成本" /> :
+        <Checkbox checked={removeHead} onChange={e => { reset(); setRemoveHead(e.target.checked); }}>去掉床头板（1件，宽度按目标外宽；需确认实际高度和木料）</Checkbox>}
         {removeHead && <Space wrap>
           <label>床头板高度 <InputNumber aria-label="床头板高度" min={0.1} value={headHeight} onChange={n => { reset(); setHeadHeight(n); }} /> {unit}</label>
           <Select aria-label="床头板木料" style={{ width: 230 }} value={headMaterial} placeholder="确认床头板木料" options={woods.map(m => ({ value: m.name, label: `${m.name} / ${m.price ?? '缺价'}元` }))} onChange={v => { reset(); setHeadMaterial(v); }} />

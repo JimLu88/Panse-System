@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Checkbox,
@@ -32,7 +33,7 @@ import {
 import { CompetitorImportButton } from '../components/CompetitorImportButton';
 import { QuoteSettingsTab } from './CustomizationPage';
 import './CustomQuoteV2Page.css';
-import BedQuotePanel from '../components/BedQuotePanel';
+import BedQuotePanel, { BedReferenceData } from '../components/BedQuotePanel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -504,7 +505,17 @@ function MarginFloor({
 }
 
 export default function CustomQuoteV2Page() {
-  const [bedFormOpen, setBedFormOpen] = useState(false);
+  const [bedData, setBedData] = useState<BedReferenceData>({ items: [], materials: [] });
+  const [bedLoadError, setBedLoadError] = useState('');
+  const bedRequest = useRef<Promise<BedReferenceData> | null>(null);
+  const loadBedData = () => {
+    if (!bedRequest.current) bedRequest.current = apiGet<BedReferenceData>('/v2/bed-references').then(r => {
+      setBedData(r); setBedLoadError(''); return r;
+    }).catch(e => { bedRequest.current = null; setBedLoadError('产品报价规则加载失败，请重试；暂不套用通用公式'); throw e; });
+    return bedRequest.current;
+  };
+  useEffect(() => { loadBedData().catch(() => undefined); }, []);
+  const bedProducts = bedData.products ?? [...new Map(bedData.items.map(s => [s.product_code, { product_code: s.product_code, product_name: s.product_name }])).values()];
   // ── 分类 ──
   const [desc, setDesc] = useState('');
   const [clsImages, setClsImages] = useState<File[]>([]);
@@ -522,6 +533,8 @@ export default function CustomQuoteV2Page() {
 
   // ── 普通定制 ──
   const [pcode, setPcode] = useState('');
+  const isBed = bedProducts.some(p => p.product_code === pcode.trim()) ||
+    (cls?.base_product_code === pcode.trim() && /床/.test(cls.base_product_name || '') && !/床头柜/.test(cls.base_product_name || ''));
   const [len, setLen] = useState<number | null>(null);
   const [wid, setWid] = useState<number | null>(null);   // 宽/深(cm), 空=该长度的标准宽
   const [hgt, setHgt] = useState<number | null>(null);   // 高(cm), 空=标准高
@@ -617,7 +630,10 @@ export default function CustomQuoteV2Page() {
       if (!resp.ok) throw new Error('分类失败');
       const r = (await resp.json()) as ClassifyResult;
       setCls(r);
-      setWorkspaceMode(r.customization_type === '特殊定制' ? 'heavy' : 'light');
+      const bedRefs = await loadBedData();
+      const matchedBed = (bedRefs.products ?? bedRefs.items).some(p => p.product_code === r.base_product_code) ||
+        (/床/.test(r.base_product_name || '') && !/床头柜/.test(r.base_product_name || ''));
+      setWorkspaceMode(matchedBed ? 'light' : r.customization_type === '特殊定制' ? 'heavy' : 'light');
       setCandidates(r.candidates ?? []);
       setSkuCandidates(r.sku_candidates ?? []);
       setSelectedSku(undefined);
@@ -643,7 +659,11 @@ export default function CustomQuoteV2Page() {
         if (r.target_height_cm) setTHeight(r.target_height_cm);
       }
       // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
-      if (autoQuote && !ac.signal.aborted) {
+      if (matchedBed) {
+        setLight(null); setCustomQ(null);
+        message.info('已识别为床：请在下方确认精确规格、床体外尺寸及增减配置后计算；不会把床垫尺寸当外尺寸');
+      }
+      if (autoQuote && !matchedBed && !ac.signal.aborted) {
         if (r.customization_type === '普通定制' && r.base_product_code) {
           await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, undefined, r.target_height_cm ?? null, r.target_width_cm ?? null);
         } else if (r.customization_type === '特殊定制') {
@@ -692,6 +712,15 @@ export default function CustomQuoteV2Page() {
       message.warning('请填基础产品编码');
       return;
     }
+    // All existing-product routes (manual code, classifier and candidate/SKU switches)
+    // resolve the bed catalogue before any legacy quote request.
+    try {
+      const refs = await loadBedData();
+      if ((refs.products ?? refs.items).some(p => p.product_code === code.trim())) {
+        setWorkspaceMode('light'); setLight(null); setCustomQ(null);
+        message.info('床款请确认下方外尺寸与配置后计算'); return;
+      }
+    } catch { message.error('产品报价规则加载失败，未执行通用报价'); return; }
     setLightLoading(true);
     setLight(null);
     setCustomQ(null);
@@ -890,8 +919,6 @@ export default function CustomQuoteV2Page() {
         width={1000} footer={null} destroyOnClose>
         <QuoteSettingsTab onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
       </Modal>
-      <Button style={{ marginBottom: 16 }} onClick={() => setBedFormOpen(!bedFormOpen)}>床定制（外尺寸）</Button>
-      {bedFormOpen && <BedQuotePanel />}
       <Card className="tq-quote-composer" bordered={false}>
         <div className="tq-section-heading">
           <span className="tq-step">1</span>
@@ -1006,6 +1033,16 @@ export default function CustomQuoteV2Page() {
         </div>
       }>
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <AutoComplete
+            aria-label="基础产品编码或名称" value={pcode} style={{ width: '100%' }}
+            options={bedProducts.map(p => ({ value: p.product_code, label: `${p.product_name} · ${p.product_code}` }))}
+            filterOption={(input, option) => String(option?.label || '').toLowerCase().includes(input.toLowerCase())}
+            onChange={value => { setPcode(value); setLight(null); setCustomQ(null); }}
+            onSelect={code => loadSkuCandidates(code)}
+            onBlur={() => loadSkuCandidates(pcode)}
+            placeholder="基础产品编码（可直接搜索床款名称；其他商品沿用编码或上方识别）"
+          />
+          {bedLoadError && <Alert type="error" message={bedLoadError} />}
           {candidates.length > 0 && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -1025,6 +1062,7 @@ export default function CustomQuoteV2Page() {
               />
             </Space>
           )}
+          {isBed ? <BedQuotePanel key={pcode.trim()} product={pcode.trim()} data={bedData} /> : <>
           {pcode && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -1048,14 +1086,6 @@ export default function CustomQuoteV2Page() {
             </Space>
           )}
           <Space wrap>
-            <Input
-              addonBefore="基础产品编码"
-              value={pcode}
-              onChange={(e) => setPcode(e.target.value)}
-              onBlur={() => loadSkuCandidates(pcode)}
-              style={{ width: 320 }}
-              placeholder="如 PFG25210021222(分类自动填)"
-            />
             <InputNumber
               addonBefore="目标长度(米)"
               value={len}
@@ -1385,6 +1415,7 @@ export default function CustomQuoteV2Page() {
           {light && light.final_price == null && (
             <Alert type="error" showIcon message={light.error ?? '算价失败'} />
           )}
+          </>}
         </Space>
       </Card>}
 

@@ -153,3 +153,29 @@ def test_bed_form_sample_exact_head_and_one_light_set(reference):
         remove_parts=[{'material': '床头板', 'material_real': '榉木-2.2cm', 'length_cm':170, 'width_cm':70.5, 'qty':1},
                       {'material':'榉木柔光床小夜灯','qty':1}])
     assert result['final_price'] == 3379.73
+
+
+@pytest.mark.parametrize('name,category', [('樱桃木齐边床','卧室'), ('黑胡桃软包床','卧室-床'), ('榉木无边床',None)])
+def test_all_bed_names_route_without_borrowing_other_sku(reference, name, category):
+    from app.services.custom_quote_reference import bed_references
+    db, s = reference
+    p = db.query(Product).filter_by(code='BED').one()
+    p.name, p.category = name, category
+    db.commit()
+    result = bed_references(db)
+    assert result['products'] == [{'product_code':'BED','product_name':name}]
+    r = light(db, outer_dimensions={'length_cm':210,'width_cm':185})
+    assert r['final_price'] == 4030.61
+    assert not db.dirty
+
+
+def test_empty_bed_is_not_silently_routed_as_nonbed(reference):
+    from app.services.custom_quote_reference import bed_references
+    db, _ = reference
+    db.add(Product(code='EMPTY', name='待补数据床', category='卧室'))
+    db.add(Product(code='CABINET', name='榉木床头柜', category='卧室'))
+    db.commit()
+    result = bed_references(db)
+    assert 'EMPTY' in {p['product_code'] for p in result['products']}
+    assert 'CABINET' not in {p['product_code'] for p in result['products']}
+    assert not [x for x in result['items'] if x['product_code']=='EMPTY']
