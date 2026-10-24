@@ -53,11 +53,17 @@ with sync_playwright() as p:
     expect(button).to_be_disabled()
     page.get_by_role('checkbox', name='我确认本次材质', exact=False).check()
     button.click()
+    expect(page.get_by_text('请填写床头板实际宽度、高度并确认木料；不能用整床尺寸代替', exact=True)).to_be_visible()
+    assert not requests, 'missing headboard width must not reuse bed width or submit'
+    page.get_by_label('床头板宽度', exact=True).fill('160')
+    page.get_by_role('checkbox', name='我确认本次材质', exact=False).check()
+    button.click()
     expect(page.get_by_test_id('bed-quote-result')).to_contain_text('3379.73')
     assert requests[-1]['outer_dimensions'] == dict(length_cm=200, width_cm=170)
     assert requests[-1]['price_tier'] == 'big_buyer'
     assert requests[-1]['remove_parts'][0] == dict(material='榉木柔光床小夜灯', qty=1)
     assert requests[-1]['remove_parts'][1]['width_cm'] == 70.5
+    assert requests[-1]['remove_parts'][1]['length_cm'] == 160, 'headboard width is independent of bed width 170'
     assert requests[-1]['remove_parts'][1]['material_real'] == '榉木-2.2cm厚度'
     page.get_by_text('厘米 cm', exact=True).click()
     page.get_by_text('毫米 mm', exact=True).click()

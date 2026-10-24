@@ -35,6 +35,7 @@ export default function BedQuotePanel({ product, data }: { product: string; data
   const [width, setWidth] = useState<number | null>(null);
   const [removeHead, setRemoveHead] = useState(false);
   const [headHeight, setHeadHeight] = useState<number | null>(null);
+  const [headWidth, setHeadWidth] = useState<number | null>(null);
   const [headMaterial, setHeadMaterial] = useState<string>();
   const [removed, setRemoved] = useState<string[]>([]);
   const [additions, setAdditions] = useState<Change[]>([]);
@@ -51,7 +52,7 @@ export default function BedQuotePanel({ product, data }: { product: string; data
   const woods = data.materials.filter(m => /木/.test(m.name) && /平方|平米|㎡|m²|m2/i.test(m.unit || ''));
   const cm = (n: number) => unit === 'mm' ? n / 10 : n;
   const selectSku = (code: string) => {
-    reset(); setSkuCode(code); setRemoved([]); setRemoveHead(false); setHeadHeight(null); setAdditions([]);
+    reset(); setSkuCode(code); setRemoved([]); setRemoveHead(false); setHeadHeight(null); setHeadWidth(null); setAdditions([]);
     const s = data.items.find(s => s.sku_code === code && s.product_code === product);
     setLength(s?.length_cm ? s.length_cm * (unit === 'mm' ? 10 : 1) : null);
     setWidth(s?.width_cm ? s.width_cm * (unit === 'mm' ? 10 : 1) : null);
@@ -68,8 +69,8 @@ export default function BedQuotePanel({ product, data }: { product: string; data
         return { material: name, qty: p.qty };
       });
       if (removeHead) {
-        if (!headHeight || !headMaterial) throw new Error('请填写床头板实际高度并确认木料；不能用整床高度代替');
-        remove_parts.push({ material: '床头板', material_real: headMaterial, qty: 1, length_cm: cm(width), width_cm: cm(headHeight) });
+        if (!headWidth || !headHeight || !headMaterial) throw new Error('请填写床头板实际宽度、高度并确认木料；不能用整床尺寸代替');
+        remove_parts.push({ material: '床头板', material_real: headMaterial, qty: 1, length_cm: cm(headWidth), width_cm: cm(headHeight) });
       }
       if (additions.some(p => !p.material || !(p.qty > 0) || (/平方|米/.test(data.materials.find(m => m.name === p.material)?.unit || '') && !(p.length_cm && p.width_cm)))) {
         throw new Error('新增配置须选择已知物料、数量；板件须填写厘米尺寸，缺失不能按零计价');
@@ -100,13 +101,14 @@ export default function BedQuotePanel({ product, data }: { product: string; data
         {ref.error && <Alert type="error" message={ref.error} />}
         <Space wrap>
           <Select aria-label="外尺寸单位" value={unit} options={[{ value: 'cm', label: '厘米 cm' }, { value: 'mm', label: '毫米 mm' }]}
-            onChange={next => { reset(); const k = next === 'mm' ? 10 : .1; setLength(length == null ? null : length*k); setWidth(width == null ? null : width*k); setHeadHeight(headHeight == null ? null : headHeight*k); setUnit(next); }} />
+            onChange={next => { reset(); const k = next === 'mm' ? 10 : .1; setLength(length == null ? null : length*k); setWidth(width == null ? null : width*k); setHeadHeight(headHeight == null ? null : headHeight*k); setHeadWidth(headWidth == null ? null : headWidth*k); setUnit(next); }} />
           <label>目标床体外长 <InputNumber aria-label="目标床体外长" min={0.1} value={length} onChange={n => { reset(); setLength(n); }} /> {unit}</label>
           <label>目标床体外宽 <InputNumber aria-label="目标床体外宽" min={0.1} value={width} onChange={n => { reset(); setWidth(n); }} /> {unit}</label>
         </Space>
         {specialHead ? <Alert type="info" message="软包或编织床头不能按实木平板扣价；若下方有该SKU的独立床头配件，可按实际BOM移除，否则须先核实床头成本" /> :
-        <Checkbox checked={removeHead} onChange={e => { reset(); setRemoveHead(e.target.checked); }}>去掉床头板（1件，宽度按目标外宽；需确认实际高度和木料）</Checkbox>}
+        <Checkbox checked={removeHead} onChange={e => { reset(); setRemoveHead(e.target.checked); }}>去掉床头板（1件；需确认板件实际宽度、高度和木料）</Checkbox>}
         {removeHead && <Space wrap>
+          <label>床头板宽度 <InputNumber aria-label="床头板宽度" min={0.1} value={headWidth} onChange={n => { reset(); setHeadWidth(n); }} /> {unit}</label>
           <label>床头板高度 <InputNumber aria-label="床头板高度" min={0.1} value={headHeight} onChange={n => { reset(); setHeadHeight(n); }} /> {unit}</label>
           <Select aria-label="床头板木料" style={{ width: 230 }} value={headMaterial} placeholder="确认床头板木料" options={woods.map(m => ({ value: m.name, label: `${m.name} / ${m.price ?? '缺价'}元` }))} onChange={v => { reset(); setHeadMaterial(v); }} />
         </Space>}
