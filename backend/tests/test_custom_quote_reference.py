@@ -198,6 +198,7 @@ def test_bed_uses_own_variant_cost_curve_and_preserves_original_prices(reference
     assert r['outer_dimension_basis']['calibration']['wood']==2010
     assert r['outer_dimension_basis']['calibration']['mode']=='recorded_area'
     assert r['final_price']==round(4030.61+(2010-2210)*4030.61/3460,2)
+    assert not any('同一 ¥/㎡' in row.get('note','') for row in r['breakdown'])
     assert s.big_promo==3950 and not db.dirty
 
 

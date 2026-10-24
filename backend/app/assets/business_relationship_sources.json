@@ -6,7 +6,7 @@
     "backend/app/cli/custom_quote_verify.py": "11062052a63450d4a29909654bd5861f75281e15b40ab59cf0c6803ad0b5568f",
     "backend/app/services/custom_quote_reference.py": "ac1b6dfbd92700822be8c4dd69a9cbc7e342b3a9bfa52ed32af7662e8d1514b4",
     "backend/app/services/custom_quote_service.py": "26b50b6cbf31e744e137dae27c166a97136af4888ae0c5d15a3d2ee98483dd7c",
-    "backend/app/services/custom_quote_v2_service.py": "0605e48da21ca78ace6dbd1e711f3f804a89084815b59f4fc7d4a5b7b6053dc1",
+    "backend/app/services/custom_quote_v2_service.py": "83d7d8e7ed6f22646971a244f822d9d37b5eb33e4cff2184c21f0c66d2c97c8f",
     "backend/app/api/admin.py": "c1e10c6a08f790e814db6b511d2c09fc869ae8891f9c14649bde652741dc4489",
     "backend/app/api/refill_sync.py": "2b0ed5b0c69c191890b5a6a3aec75679ca7c37d0809bbc6b4fa761a85a7380b6",
     "backend/app/api/web_agent.py": "3767391ffb07821babbeafd4c18ffeaa94dbb8db5b8dd483fbf9f80ae39a0ee2",

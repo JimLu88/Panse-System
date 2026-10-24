@@ -935,8 +935,8 @@ def quote_light(
     has_box_part = any(_is_box_part((p.get("material") or p.get("name") or "")) for p in (add_parts or []))
     if used_area and target_width_cm and std_w and abs(float(target_width_cm) - std_w) > 0.1:
         breakdown.append({
-            "label": f"宽 {float(target_width_cm):.0f}cm(标准{std_w:.0f}) 已计入底面积定价",
-            "amount": 0.0, "note": "长、宽同一 ¥/㎡, 宽度差异已体现在上面的底面积定价里"})
+            "label": f"宽 {float(target_width_cm):.0f}cm(标准{std_w:.0f}) 已计入" + ("床款成本校准" if outer_basis else "底面积定价"),
+            "amount": 0.0, "note": "宽度变化已纳入同配置木作成本校准，不重复加价" if outer_basis else "长、宽同一 ¥/㎡, 宽度差异已体现在上面的底面积定价里"})
     if anchor_wood and std_h and target_height_cm and not has_box_part:
         th = float(target_height_cm)
         height_factor = th / std_h
