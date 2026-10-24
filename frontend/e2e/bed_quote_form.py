@@ -20,7 +20,7 @@ with sync_playwright() as p:
             out = dict(id=1, username='test', role='admin', is_active=True)
         elif '/bed-references' in path:
             out = dict(items=[ref, {**ref, 'sku_code':'BED15', 'sku_name':'不同铺板-缺价', 'buyer_price':None, 'error':'原SKU指定到手价须为已确认的正数'}],
-                       materials=[dict(name='榉木-2.2cm', unit='平方米', price=240)])
+                       materials=[dict(name='榉木-2.2cm厚度', unit='每平米', price=240)])
         elif '/part-options' in path:
             out = dict(parts=[], materials=[], woods=[])
         elif '/quote-light' in path:
@@ -53,6 +53,7 @@ with sync_playwright() as p:
     assert requests[-1]['price_tier'] == 'big_buyer'
     assert requests[-1]['remove_parts'][0] == dict(material='榉木柔光床小夜灯', qty=1)
     assert requests[-1]['remove_parts'][1]['width_cm'] == 70.5
+    assert requests[-1]['remove_parts'][1]['material_real'] == '榉木-2.2cm厚度'
     page.get_by_text('厘米 cm', exact=True).click()
     page.get_by_text('毫米 mm', exact=True).click()
     expect(page.get_by_label('目标床体外长', exact=True)).to_have_value('2000')

@@ -51,14 +51,14 @@ export default function BedQuotePanel() {
   const products = [...new Map(data.items.map(s => [s.product_code, { value: s.product_code, label: `${s.product_name} · ${s.product_code}` }])).values()];
   // Only individually priced BOM accessories can be removed. Never remove an entire wood assembly as a headboard.
   const removable = ref?.parts.filter(p => !/木作|铺板/.test(p.name)) ?? [];
-  const woods = data.materials.filter(m => /木/.test(m.name) && /平方/.test(m.unit));
+  const woods = data.materials.filter(m => /木/.test(m.name) && /平方|平米|㎡|m²|m2/i.test(m.unit || ''));
   const cm = (n: number) => unit === 'mm' ? n / 10 : n;
   const selectSku = (code: string) => {
     reset(); setSkuCode(code); setRemoved([]); setRemoveHead(false); setHeadHeight(null); setAdditions([]);
     const s = data.items.find(s => s.sku_code === code && s.product_code === product);
     setLength(s?.length_cm ? s.length_cm * (unit === 'mm' ? 10 : 1) : null);
     setWidth(s?.width_cm ? s.width_cm * (unit === 'mm' ? 10 : 1) : null);
-    const candidate = woods.find(m => m.name === `${s?.wood}-2.2cm`);
+    const candidate = woods.find(m => m.name === `${s?.wood}-2.2cm厚度`) ?? woods.find(m => m.name === `${s?.wood}-2.2cm`);
     setHeadMaterial(candidate?.name);
   };
   const calculate = async () => {
