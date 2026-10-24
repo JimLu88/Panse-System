@@ -15,4 +15,3 @@ export default function StoreTabs() {
       : <span title="孚格独立环境尚未配置" style={{ color: '#bbb' }}>孚格（未启用）</span>}
   </nav>;
 }
-
