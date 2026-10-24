@@ -35,6 +35,7 @@ def run(handoff,root):
   p=Path(a['path']);raw=p.read_bytes()
   if len(raw)!=a['bytes'] or hashlib.sha256(raw).hexdigest()!=a['sha256']:raise ValueError('source_image_changed:'+str(p))
   category=a['relative_path'].split('/')[0]
+  if category=='详情单屏':category='详情页'
   if category not in ('主图','SKU图','详情页','评价图'):category='其他'
   add_catalog_image(store,ids[a['product_code']],category,a['relative_path'],raw);total+=len(raw)
   if (i+1)%100==0:print('copied',i+1,flush=True)

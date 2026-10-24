@@ -172,3 +172,15 @@ def test_locked_setup_and_catalog(tmp_path):
  document['store_id']='panse'
  with pytest.raises(ValueError):import_catalog(s,document)
  assert api.get('/api/stores/fuge/products').json()['items']==[]
+
+def test_streaming_catalog_recovery_and_alias(tmp_path):
+ from app.isolated_store_catalog import import_catalog,add_catalog_image
+ from app.isolated_store_recovery import backup_file,recover_file
+ s=initialize(tmp_path/'source','fuge')
+ d=dict(schema='fuge-catalog-import-v1',store_id='fuge',source_type='authorized_fuge_product_handoff',entries=[dict(source_key='001',title='x',metadata={})])
+ rid=import_catalog(s,d)['entries'][0]['id'];m=add_catalog_image(s,rid,'其他','详情单屏/a.png',photo());s=Store(s.root,'fuge')
+ with s.db() as db:assert db.execute('SELECT category FROM catalog_media').fetchone()[0]=='详情页'
+ f=backup_file(s);r=recover_file(s.root/'store.json',f,tmp_path/'restored')
+ assert (r.root/'media'/m['sha256']).read_bytes()==photo()
+ with pytest.raises(ValueError):recover_file(s.root/'store.json',f,tmp_path/'rejected',max_bytes=1)
+ assert not (tmp_path/'rejected').exists()

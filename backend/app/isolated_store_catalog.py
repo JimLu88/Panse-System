@@ -13,6 +13,9 @@ def ensure_schema(store):
         CREATE TABLE IF NOT EXISTS catalog_media(id TEXT PRIMARY KEY, catalog_id TEXT NOT NULL REFERENCES catalog(id), category TEXT NOT NULL, sha256 TEXT NOT NULL, path TEXT NOT NULL, original_name TEXT NOT NULL, UNIQUE(catalog_id,category,sha256));
         CREATE TABLE IF NOT EXISTS source_packages(sha256 TEXT PRIMARY KEY, imported_at TEXT NOT NULL, entry_count INTEGER NOT NULL, document TEXT NOT NULL);
         ''')
+        if store.owner=='fuge':
+            changed=db.execute("UPDATE catalog_media AS old SET category='详情页' WHERE category='其他' AND original_name LIKE '详情单屏/%' AND NOT EXISTS (SELECT 1 FROM catalog_media AS present WHERE present.catalog_id=old.catalog_id AND present.sha256=old.sha256 AND present.category='详情页')").rowcount
+            if changed:store.audit(db,'normalize_detail_gallery_category',str(changed))
 
 def import_catalog(store, document):
     from app.isolated_store import dumps
