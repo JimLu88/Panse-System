@@ -1,0 +1,7 @@
+**
+!backend/
+!backend/app/
+!backend/app/isolated_store.py
+!backend/app/isolated_store_pricing.py
+!backend/app/isolated_store_recovery.py
+!backend/app/isolated_store.html

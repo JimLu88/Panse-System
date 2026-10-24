@@ -9,6 +9,7 @@ import ForcePasswordChange from './components/ForcePasswordChange';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
 import VersionTag from './components/VersionTag';
+import StoreTabs from './components/StoreTabs';
 import { useAuth } from './auth/AuthProvider';
 import { useThemeMode } from './theme/ThemeProvider';
 
@@ -306,7 +307,7 @@ export default function App() {
               style={{ color: '#fff', flexShrink: 0, marginRight: 4 }}
             />
             <div style={{ color: 'white', fontWeight: 600, whiteSpace: 'nowrap', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              畔色孚格 ERP
+              <StoreTabs />
             </div>
             <Button
               type="text" aria-label="搜索"
@@ -332,7 +333,7 @@ export default function App() {
         ) : (
           <>
         <div style={{ color: 'white', fontWeight: 600, marginRight: 16, whiteSpace: 'nowrap' }}>
-          畔色孚格 ERP
+          <StoreTabs />
         </div>
         <Menu
           theme="dark"
