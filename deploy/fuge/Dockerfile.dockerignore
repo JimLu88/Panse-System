@@ -8,3 +8,4 @@
 
 !backend/app/isolated_store_catalog.py
 !backend/app/isolated_store_setup.py
+!backend/app/isolated_store_account.py

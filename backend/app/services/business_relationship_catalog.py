@@ -29,8 +29,8 @@ def node(id, label, domain, field, path, anchor='', note=''):
 NODES = [
     {'id':'governance.fuge_isolation','label':'孚格独立运行与恢复边界','domain':'governance',
      'field':'store_id / instance_id / store.sqlite / independent media root',
-     'sources':[source('isolated_store.py','class Store'),source('isolated_store_pricing.py','def calculate'),source('isolated_store_recovery.py','def recover'),source('isolated_store.html','const STORE='),source('isolated_store_catalog.py','def import_catalog'),source('isolated_store_setup.py','def set_admin'),source('isolated_store_import.py','def run')],
-     'note':'独立进程、库、存储和账号；不导入畔色数据；只启用商品图片及计算；竞品平台券前价70%，不扣店铺/个人券；其他业务及在线恢复关闭；部署与验收证据独立记录'},
+     'sources':[source('isolated_store.py','class Store'),source('isolated_store_pricing.py','def calculate'),source('isolated_store_recovery.py','def recover'),source('isolated_store.html','const STORE='),source('isolated_store_catalog.py','def import_catalog'),source('isolated_store_setup.py','def set_admin'),source('isolated_store_import.py','def run'),source('isolated_store_account.py','def import_owner')],
+     'note':'独立进程、库、存储和会话；用户授权仅复用主账号密码校验信息，不共享token，不导入畔色业务数据；只启用商品图片及计算；竞品平台券前价70%，不扣店铺/个人券；其他业务及在线恢复关闭；部署与验收证据独立记录'},
     {'id':'price.custom_reference','label':'定制原SKU只读报价','domain':'price',
      'field':'PricingSku / PricingSkuPromo.big_buyer_price / Material.price',
      'sources':[source('services/custom_quote_reference.py','def reference_costs'),

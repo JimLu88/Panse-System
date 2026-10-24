@@ -185,7 +185,8 @@ def create_app(store):
         if config.get('store_id')!=store.owner or config.get('instance_id')!=store.instance:raise HTTPException(503,'store_identity_changed')
         if not config.get('username') or not config.get('password_hash'):raise HTTPException(503,'account_setup_required')
         store.config=config
-        valid=hmac.compare_digest(password_hash(body.password,store.config['salt']),store.config['password_hash'])
+        from app.isolated_store_account import verify_password
+        valid=verify_password(body.password,store.config)
         if not valid or body.username!=store.config['username']:
             failures[ip].append(now);raise HTTPException(401,'invalid_store_login')
         token=secrets.token_urlsafe(48)
