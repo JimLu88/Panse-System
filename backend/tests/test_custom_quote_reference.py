@@ -110,3 +110,46 @@ def test_readonly_recalculation_fingerprints(reference):
     assert result["before"] == result["after"]
     assert result["prices_unchanged"] is True
     assert result["platform_actions"] == 0
+
+
+def test_bed_form_references_are_exact_and_readonly(reference):
+    from app.services.custom_quote_reference import bed_references
+    db, s = reference
+    result = bed_references(db)
+    row = next(x for x in result['items'] if x['sku_code'] == 'BED14')
+    assert row['length_cm'] == 210
+    assert row['width_cm'] == 185
+    assert row['buyer_price'] == 4030.61
+    assert row['fees']['packaging_cost'] == 150
+    assert row['source'] == 'PricingSku.size_info'
+    assert not db.dirty and not db.new and not db.deleted
+
+
+def test_bed_form_missing_size_is_visible(reference):
+    from app.services.custom_quote_reference import bed_references
+    db, s = reference
+    s.size_info = None
+    db.commit()
+    row = bed_references(db)['items'][0]
+    assert row['length_cm'] is None
+    assert '外长' in row['error']
+
+
+def test_bed_form_missing_buyer_price_not_fallback(reference):
+    from app.services.custom_quote_reference import bed_references
+    db, s = reference
+    db.query(PricingSkuPromo).delete()
+    db.commit()
+    row = bed_references(db)['items'][0]
+    assert row['buyer_price'] is None
+    assert row['error']
+
+
+def test_bed_form_sample_exact_head_and_one_light_set(reference):
+    db, _ = reference
+    db.add(Material(code='AC-LAMP', name='榉木柔光床小夜灯', price=D(100), unit='套'))
+    db.commit()
+    result = light(db, outer_dimensions={'length_cm': 200, 'width_cm': 170},
+        remove_parts=[{'material': '床头板', 'material_real': '榉木-2.2cm', 'length_cm':170, 'width_cm':70.5, 'qty':1},
+                      {'material':'榉木柔光床小夜灯','qty':1}])
+    assert result['final_price'] == 3379.73

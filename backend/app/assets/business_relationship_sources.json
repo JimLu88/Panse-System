@@ -2,9 +2,9 @@
   "version": "2026-09-26.3",
   "reviewed_at": "2026-10-23T09:44:44.640757+00:00",
   "sources": {
-    "backend/app/api/customization.py": "b9ce6d1eb55901ac1abc5e5f0126a72523625458d6815adc1a0801ae6cb595e1",
+    "backend/app/api/customization.py": "b12298f908245033c600e52301c29f9968cba3a039726501d11e4aca37260bdc",
     "backend/app/cli/custom_quote_verify.py": "11062052a63450d4a29909654bd5861f75281e15b40ab59cf0c6803ad0b5568f",
-    "backend/app/services/custom_quote_reference.py": "d2a8df82eba26ad8cc5cb44063ce45193e87fbb266fc2ca158af741aea7ad184",
+    "backend/app/services/custom_quote_reference.py": "2c8ed9c9aec8863b9b1193e1ccbf8ddbc52f80b09db10aa052b28000a240d6af",
     "backend/app/services/custom_quote_service.py": "26b50b6cbf31e744e137dae27c166a97136af4888ae0c5d15a3d2ee98483dd7c",
     "backend/app/services/custom_quote_v2_service.py": "8e62afc3fef2345a2eeefb9d01d62d3375591e62d4bf562efcf68f853940a216",
     "backend/app/api/admin.py": "c1e10c6a08f790e814db6b511d2c09fc869ae8891f9c14649bde652741dc4489",

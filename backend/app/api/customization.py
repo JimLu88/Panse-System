@@ -494,6 +494,12 @@ def v2_sku_candidates(
     return {"product_code": product_code, "items": items}
 
 
+@router.get("/v2/bed-references")
+def v2_bed_references(db: Session = Depends(get_db)) -> dict:
+    from app.services.custom_quote_reference import bed_references
+    return bed_references(db)
+
+
 @router.post("/v2/quote-light")
 def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
     """普通定制报价: 真实SKU锚点价 + 尺寸/材质/增减部位 delta (0 AI, 纯算术)。"""
@@ -511,7 +517,9 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
     _log_quote(
         db, source="v2_quote_light",
         user_message=f"{payload.base_product_code} L={payload.target_length_m} 料={payload.target_material}",
-        extra={k: r.get(k) for k in ("final_price", "anchor", "material_delta", "addremove_delta")},
+        extra={**{k: r.get(k) for k in ("final_price", "anchor", "material_delta", "addremove_delta")},
+               **({"outer_request": payload.model_dump(exclude_none=True),
+                   "outer_dimension_basis": r.get("outer_dimension_basis")} if payload.outer_dimensions else {})},
     )
     return r
 

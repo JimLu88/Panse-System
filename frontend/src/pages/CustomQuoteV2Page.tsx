@@ -32,6 +32,7 @@ import {
 import { CompetitorImportButton } from '../components/CompetitorImportButton';
 import { QuoteSettingsTab } from './CustomizationPage';
 import './CustomQuoteV2Page.css';
+import BedQuotePanel from '../components/BedQuotePanel';
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -503,6 +504,7 @@ function MarginFloor({
 }
 
 export default function CustomQuoteV2Page() {
+  const [bedFormOpen, setBedFormOpen] = useState(false);
   // ── 分类 ──
   const [desc, setDesc] = useState('');
   const [clsImages, setClsImages] = useState<File[]>([]);
@@ -888,6 +890,8 @@ export default function CustomQuoteV2Page() {
         width={1000} footer={null} destroyOnClose>
         <QuoteSettingsTab onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
       </Modal>
+      <Button style={{ marginBottom: 16 }} onClick={() => setBedFormOpen(!bedFormOpen)}>床定制（外尺寸）</Button>
+      {bedFormOpen && <BedQuotePanel />}
       <Card className="tq-quote-composer" bordered={false}>
         <div className="tq-section-heading">
           <span className="tq-step">1</span>

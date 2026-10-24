@@ -74,3 +74,51 @@ def board_reference(db, product_code, sku_code, price_tier):
     if sku is None or not _is_quoteable_sku(sku, resolved_price=price):
         raise ValueError("原SKU不存在、占位或缺少有效大促到手价")
     return reference_costs(sku, price)
+
+
+def bed_references(db):
+    """Exact stored references for the bed form. No inferred mattress dimensions."""
+    from app.models.product import Product
+    from app.models.pricing import PricingSku
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    from app.services.custom_quote_v2_service import _parse_size_info, _tier_price_map, _is_quoteable_sku, detect_wood, _QUOTE_BAD_WORDS
+    from app.services import sku_utils
+    products = {p.code: p for p in db.query(Product).all()
+                if '床' in (p.category or p.name or '') and '床头柜' not in (p.category or '') + (p.name or '')}
+    skus = db.query(PricingSku).filter(PricingSku.product_code.in_(products)).all() if products else []
+    prices = _tier_price_map(db, skus, 'big_buyer')
+    materials = {m.name: m for m in db.query(Material).all()}
+    bom = {}
+    for b in db.query(BomLine).filter(BomLine.product_code.in_(products)).all() if products else []:
+        bom.setdefault((b.product_code, b.sku_code), []).append(b)
+    items = []
+    for s in skus:
+        # Keep missing-price real variants visible, but never offer placeholder specifications.
+        if (s.is_custom_placeholder or sku_utils.is_custom_sku_code(s.sku_code, s.product_code)
+                or any(word in (s.sku or '') for word in _QUOTE_BAD_WORDS)):
+            continue
+        p = products[s.product_code]
+        length, width, height = _parse_size_info(s.size_info)
+        error = None
+        try:
+            basis = reference_costs(s, prices.get(s.sku_code))
+            positive(length, '原SKU外长'); positive(width, '原SKU外宽')
+            positive(s.wood_cost, '原SKU木作成本')
+            if not _is_quoteable_sku(s, resolved_price=prices.get(s.sku_code)):
+                raise ValueError('原SKU到手价低于已知成本保护线，须核价')
+        except ValueError as e:
+            error, basis = str(e), None
+        parts = []
+        for b in bom.get((p.code, s.sku_code), []):
+            m = materials.get(b.material_name)
+            parts.append({'name': b.material_name, 'qty': float(b.qty_per_product), 'unit': b.unit,
+                          'price': float(m.price) if m and m.price is not None else None})
+        items.append({'product_code': p.code, 'product_name': p.name, 'sku_code': s.sku_code,
+                      'sku_name': s.sku, 'material': p.main_material, 'wood': detect_wood(s.sku) or detect_wood(p.name),
+                      'size_info': s.size_info, 'size_status': p.size_confirmed,
+                      'length_cm': length, 'width_cm': width, 'height_cm': height,
+                      'source': 'PricingSku.size_info', 'buyer_price': prices.get(s.sku_code),
+                      'fees': basis['fees'] if basis else None, 'error': error, 'parts': parts})
+    return {'items': items, 'materials': [{'name': m.name, 'unit': m.unit, 'price': float(m.price) if m.price is not None else None}
+            for m in materials.values()], 'price_tier': 'big_buyer'}
