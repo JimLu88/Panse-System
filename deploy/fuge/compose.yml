@@ -23,6 +23,26 @@ services:
     mem_limit: 256m
     restart: "no"
     networks: [isolated]
+  setup:
+    profiles: [setup]
+    image: fuge-erp-isolated:${FUGE_VERSION:?Set exact reviewed commit}
+    command: [uvicorn, app.isolated_store_setup:environment_app, --factory, --host, 0.0.0.0, --port, "8292", --no-access-log, --no-proxy-headers]
+    environment:
+      ISOLATED_STORE_ID: fuge
+      ISOLATED_STORE_ROOT: /data/store
+    ports: ["127.0.0.1:8292:8292"]
+    volumes:
+      - type: bind
+        source: ${FUGE_DATA_ROOT:?Set new dedicated FUGE root}
+        target: /data
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    mem_limit: 128m
+    restart: "no"
+    networks: [isolated]
 networks:
   isolated:
     internal: true
