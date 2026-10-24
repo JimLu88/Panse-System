@@ -1873,3 +1873,7 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 - 账号未设置。自动创建本机SSH连接被工具策略拒绝，需用户按账号设置说明手动连接并自行设置；不得复制畔色账号或公开初始化入口。设置成功后关闭setup服务即可，不能读取/回传密码。
 - 真实4.397GB ZIP64备份/新目录恢复演练通过；临时恢复副本已清理，正式备份保留。NAS PIDs限制不支持，其他容器隔离和内存限制已验。
 - 证据：D:/AI/畔色ERP系统/outputs/fuge-pricing-isolation-20261024/erp-maintenance/delivery.json、交付结果.md、production-verification.json、nas-data-verification.json、nas-recovery-verification.json、账号设置说明.txt。
+
+
+## 2026-10-24 孚格沿用现有主账号部署完成
+用户明确不另设密码。孚格 a16e4a6 已部署，仅一次同步唯一活跃admin lightrat 的 bcrypt 校验信息；没有读取明文或复制业务库，运行时仍无畔色库/网络访问。账户ready，setup服务停止；畔色API/Web StartedAt前后完全一致。112款/2确认SKU/3300图未变。42项本地测试通过、1项Windows符号链接跳过；错误口令和跨店token受拒。真实密码登录待用户自行输入，不声称已代用户登录。证据 outputs/fuge-pricing-isolation-20261024/erp-maintenance/owner-login-production.json。以后畔色改密不自动同步孚格。
