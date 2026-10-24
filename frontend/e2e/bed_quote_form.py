@@ -29,7 +29,9 @@ with sync_playwright() as p:
             body = route.request.post_data_json
             requests.append(body)
             out = dict(final_price=3379.73, selected_sku_code='BED14',
-                       outer_dimension_basis=dict(buyer_price=4030.61, fees=ref['fees']), breakdown=[])
+                       outer_dimension_basis=dict(buyer_price=4030.61, fees=ref['fees'], limitation='铺板原款整套保留',
+                           calibration=dict(mode='interpolated',wood=2080,note='按相邻两档实际成本插值',sample_count=4,
+                               points=[dict(area=3.255,wood=2070,skus=['BED13']),dict(area=3.885,wood=2210,skus=['BED14'])])), breakdown=[])
         elif '/classify' in path:
             out = dict(customization_type='特殊定制', base_product_code='SOFT', base_product_name='黑胡桃软包床', confidence=1, reasoning='test', target_length_m=1.8)
         elif '/quote-both' in path:
@@ -59,6 +61,8 @@ with sync_playwright() as p:
     page.get_by_role('checkbox', name='我确认本次材质', exact=False).check()
     button.click()
     expect(page.get_by_test_id('bed-quote-result')).to_contain_text('3379.73')
+    expect(page.get_by_test_id('bed-quote-result')).to_contain_text('按相邻两档实际成本插值')
+    expect(page.get_by_test_id('bed-quote-result')).to_contain_text('BED13')
     assert requests[-1]['outer_dimensions'] == dict(length_cm=200, width_cm=170)
     assert requests[-1]['price_tier'] == 'big_buyer'
     assert requests[-1]['remove_parts'][0] == dict(material='榉木柔光床小夜灯', qty=1)

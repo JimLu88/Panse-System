@@ -55,7 +55,7 @@ def outer_reference(sku, dimensions, tier, prices, legacy_length, legacy_width, 
                  reference_source=source, dimension_conflict=(rl != length or rw != width),
                  target_length_cm=tl, target_width_cm=tw,
                  reference_area_m2=rl * rw / 10000,
-                 estimate_only=True, limitation="面积法仅为木作估算，非完整工厂板单；铺板采购价保持原款")
+                 estimate_only=True, limitation="同款成本校准与内部配置核算；未观测的结构变化须明确标注，铺板采购价保持原款")
     # A plain projection, not an ORM copy: no attached state or DB dirty fields.
     projection = SimpleNamespace(**{c.name: getattr(sku, c.name) for c in sku.__table__.columns})
     projection.quote_outer_length_m = rl / 100
@@ -109,6 +109,14 @@ def bed_references(db):
                 raise ValueError('原SKU到手价低于已知成本保护线，须核价')
         except ValueError as e:
             error, basis = str(e), None
+        missing = []
+        for value,label in ((length,'原SKU外长'),(width,'原SKU外宽'),(s.wood_cost,'原SKU木作成本')):
+            try:
+                positive(value,label)
+            except ValueError as exc:
+                missing.append(str(exc))
+        if missing:
+            error = '；'.join(dict.fromkeys(([error] if error else []) + missing))
         parts = []
         for b in bom.get((p.code, s.sku_code), []):
             m = materials.get(b.material_name)

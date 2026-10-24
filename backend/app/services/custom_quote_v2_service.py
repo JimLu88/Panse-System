@@ -769,9 +769,13 @@ def quote_light(
 
     prod = db.query(Product).filter(Product.code == base_product_code).first()
     outer_basis = None
+    bed_peer_skus = list(skus)
     if outer_dimensions is not None:
         from app.services.custom_quote_reference import outer_reference
         try:
+            from app.services.bed_cost_curve import validate_removals
+            if selected_anchor_sku is not None:
+                validate_removals(db, selected_anchor_sku, remove_parts, add_parts)
             selected_anchor_sku, outer_basis = outer_reference(
                 selected_anchor_sku, outer_dimensions, price_tier, tier_prices,
                 target_length_m, target_width_cm, target_height_cm,
@@ -803,14 +807,19 @@ def quote_light(
     target_area = (target_length_m * eff_w / 100.0) if (target_length_m and eff_w) else None
     used_area = bool(target_area and area_price_pts)
     if outer_basis:
-        # Only the wood component follows the existing area estimate. Packing,
-        # freight, installation and purchased accessories retain their cost.
-        ratio = target_area / outer_basis["reference_area_m2"]
-        anchor_wood = float(selected_anchor_sku.wood_cost) * ratio
+        from app.services.bed_cost_curve import calibrated_wood
+        try:
+            calibration = calibrated_wood(bed_peer_skus, outer_basis, selected_anchor_sku)
+        except ValueError as exc:
+            return {"error": str(exc), "quote_ready": False, "final_price": None, "breakdown": [],
+                    "outer_dimension_basis": outer_basis}
+        outer_basis['calibration'] = calibration
+        outer_basis['limitation'] = '；'.join(calibration['limitations'])
+        anchor_wood = calibration['wood']
         anchor = round(outer_basis["buyer_price"] +
                        (anchor_wood - float(selected_anchor_sku.wood_cost)) * outer_basis["cost_to_buyer_ratio"], 2)
-        method = "outer-area-wood-estimate"
-        note = "原SKU到手价锚点；仅木作按真实外形面积比估算，配件及打包运费安装不随面积缩放；非工厂板单"
+        method = "bed-cost-" + calibration['mode']
+        note = calibration['note'] + '；原SKU到手价加木作成本差额，打包运费安装及原配件不同比缩放'
     elif used_area:
         anchor, method = interp(area_price_pts, target_area)
         anchor_wood, _ = interp(area_wood_pts, target_area) if area_wood_pts else (None, "no-data")
@@ -862,7 +871,7 @@ def quote_light(
     # 尺寸超出标准 SKU 范围(偏大)仍走线性外推 → 标注为外推估算, 提示人工复核(偏小已在上面走面积正比)
     if "extrap" in note:
         note += " ⚠尺寸超出标准SKU范围, 锚点为外推估算, 建议人工复核"
-    breakdown.append({"label": "底面积定价(长×宽)" if used_area else "标准原价(同尺寸)",
+    breakdown.append({"label": "床款成本校准" if outer_basis else "底面积定价(长×宽)" if used_area else "标准原价(同尺寸)",
                       "amount": round(anchor, 2), "note": note})
 
     final = anchor
@@ -999,6 +1008,12 @@ def quote_light(
     })
     breakdown.extend(paint_lines)
     final = round(subtotal_before_safety + safety_delta + paint_surcharge, 2)
+    if outer_basis and (final <= 0 or any(
+            p.get('name') == '床头板' and float(p.get('material_cost') or 0) > anchor_wood
+            for p in parts_detail)):
+        return {'error':'板件扣减超过本次木作成本或报价非正数，请核实实际用量与单位',
+                'quote_ready':False,'final_price':None,'breakdown':breakdown,
+                'outer_dimension_basis':outer_basis}
     missing_materials.extend(
         str(p.get("material") or p.get("name") or "未命名物料")
         for p in parts_detail if not p.get("priced")

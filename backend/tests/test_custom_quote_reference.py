@@ -148,6 +148,9 @@ def test_bed_form_missing_buyer_price_not_fallback(reference):
 def test_bed_form_sample_exact_head_and_one_light_set(reference):
     db, _ = reference
     db.add(Material(code='AC-LAMP', name='榉木柔光床小夜灯', price=D(100), unit='套'))
+    from app.models.bom import BomLine
+    db.add(BomLine(product_code='BED', sku_code='BED14', material_code='AC-LAMP',
+                   material_name='榉木柔光床小夜灯', qty_per_product=D(1), unit='套'))
     db.commit()
     result = light(db, outer_dimensions={'length_cm': 200, 'width_cm': 170},
         remove_parts=[{'material': '床头板', 'material_real': '榉木-2.2cm', 'length_cm':170, 'width_cm':70.5, 'qty':1},
@@ -179,3 +182,38 @@ def test_empty_bed_is_not_silently_routed_as_nonbed(reference):
     assert 'EMPTY' in {p['product_code'] for p in result['products']}
     assert 'CABINET' not in {p['product_code'] for p in result['products']}
     assert not [x for x in result['items'] if x['product_code']=='EMPTY']
+
+
+def test_bed_uses_own_variant_cost_curve_and_preserves_original_prices(reference):
+    db,s=reference
+    for code,label,width,cost in [('BED12','榉木柔光床-1.2米-榉木铺板',125,2010),
+                                  ('BEDX','榉木柔光床-1.2米-松木铺板',125,999)]:
+        db.add(PricingSku(product_code='BED',sku_code=code,sku=label,
+            size_info=f'宽度：{width*10}mm；长度：2100mm；高度：880mm',wood_cost=D(cost),
+            packaging_cost=D(150),logistics_cost=D(300),install_cost=D(50),
+            physical_cost=D(cost+1250),big_promo=D(3600)))
+        db.add(PricingSkuPromo(sku_code=code,big_buyer_price=D(3700)))
+    db.commit()
+    r=light(db,outer_dimensions={'length_cm':210,'width_cm':125})
+    assert r['outer_dimension_basis']['calibration']['wood']==2010
+    assert r['outer_dimension_basis']['calibration']['mode']=='recorded_area'
+    assert r['final_price']==round(4030.61+(2010-2210)*4030.61/3460,2)
+    assert s.big_promo==3950 and not db.dirty
+
+
+@pytest.mark.parametrize('parts',[
+    [{'material':'不存在配件','qty':1}],
+    [{'material':'床头板','qty':1,'material_real':'榉木-2.2cm','width_cm':70}],
+    [{'material':'床头板','qty':1},{'material':'床头板','qty':1}],
+])
+def test_bed_unverified_or_repeated_removal_blocks(reference,parts):
+    db,_=reference
+    r=light(db,outer_dimensions={'length_cm':210,'width_cm':185},remove_parts=parts)
+    assert r['final_price'] is None
+
+
+def test_equal_area_is_not_claimed_as_unchanged_shape(reference):
+    db,_=reference
+    r=light(db,outer_dimensions={'length_cm':185,'width_cm':210})
+    assert r['outer_dimension_basis']['calibration']['mode']=='equal_area_shape_change'
+    assert r['outer_dimension_basis']['calibration']['estimated']

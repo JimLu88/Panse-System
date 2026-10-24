@@ -13,7 +13,9 @@ export type BedReferenceData = { products?: { product_code: string; product_name
 type Change = { material: string; qty: number; length_cm?: number; width_cm?: number; material_real?: string };
 type Result = {
   final_price: number | null; error?: string; selected_sku_code: string;
-  outer_dimension_basis?: { buyer_price: number; fees: RefSku['fees']; limitation: string };
+  outer_dimension_basis?: { buyer_price: number; fees: RefSku['fees']; limitation: string;
+    calibration?: { mode: string; wood: number; note: string; sample_count: number; limitations: string[];
+      points: {area: number; wood: number; skus: string[]}[] } };
   breakdown: { label: string; amount: number; note: string }[];
 };
 async function request<T>(path: string, body?: object): Promise<T> {
@@ -48,7 +50,8 @@ export default function BedQuotePanel({ product, data }: { product: string; data
   const reset = () => { revision.current++; setConfirmed(false); setResult(null); setError(''); };
   // Only individually priced BOM accessories can be removed. Never remove an entire wood assembly as a headboard.
   const removable = ref?.parts.filter(p => !/木作|铺板/.test(p.name)) ?? [];
-  const specialHead = /软包|编织/.test(`${ref?.product_name || ''} ${ref?.sku_name || ''}`);
+  const specialHead = /软包|编织|无床头/.test(`${ref?.product_name || ''} ${ref?.sku_name || ''}`) ||
+    !!ref?.parts.some(p => /软包|编织/.test(p.name));
   const woods = data.materials.filter(m => /木/.test(m.name) && /平方|平米|㎡|m²|m2/i.test(m.unit || ''));
   const cm = (n: number) => unit === 'mm' ? n / 10 : n;
   const selectSku = (code: string) => {
@@ -105,7 +108,7 @@ export default function BedQuotePanel({ product, data }: { product: string; data
           <label>目标床体外长 <InputNumber aria-label="目标床体外长" min={0.1} value={length} onChange={n => { reset(); setLength(n); }} /> {unit}</label>
           <label>目标床体外宽 <InputNumber aria-label="目标床体外宽" min={0.1} value={width} onChange={n => { reset(); setWidth(n); }} /> {unit}</label>
         </Space>
-        {specialHead ? <Alert type="info" message="软包或编织床头不能按实木平板扣价；若下方有该SKU的独立床头配件，可按实际BOM移除，否则须先核实床头成本" /> :
+        {specialHead ? <Alert type="info" message="软包、编织或无床头款不按实木平板扣价；已有独立配件按下方物料清单核算，避免重复扣床头" /> :
         <Checkbox checked={removeHead} onChange={e => { reset(); setRemoveHead(e.target.checked); }}>去掉床头板（1件；需确认板件实际宽度、高度和木料）</Checkbox>}
         {removeHead && <Space wrap>
           <label>床头板宽度 <InputNumber aria-label="床头板宽度" min={0.1} value={headWidth} onChange={n => { reset(); setHeadWidth(n); }} /> {unit}</label>
@@ -123,17 +126,24 @@ export default function BedQuotePanel({ product, data }: { product: string; data
           <Button onClick={() => { reset(); setAdditions(additions.filter((_,j) => j !== i)); }}>移除此配置</Button>
         </Space>)}
         <Button onClick={() => { reset(); setAdditions([...additions, { material: '', qty: 1 }]); }}>增加已有物料配置</Button>
-        <Alert type="warning" message="当前为原款木作面积估算，不是工厂精确板单报价" description="支撑、床脚、龙骨结构和板单未核实；铺板采购价按原款整套保留。未知配置不能填零，改变床型或铺板请重新选准确原款。床头非同材质平板时不可套用本项。" />
+        <Alert type="info" message="由系统按同款实际成本校准，内部完成报价" description="优先采用同材质、同铺板、同结构的相邻规格木作成本，保留固定成本。新增板件填写实际用量；原配件与费用不随面积同比变化。样本不足或超出范围会在结果中明确提示，不把未知成本当零。" />
         <Checkbox checked={confirmed} onChange={e => { revision.current++; setConfirmed(e.target.checked); setResult(null); }}>
           我确认本次材质 / 铺板为「{ref.material || '未核实'} / {ref.sku_name}」，价型为大促到手价，采用上述原款外尺寸及本次配置作估算
         </Checkbox>
         <Button type="primary" loading={busy} disabled={!confirmed || !!ref.error || !length || !width} onClick={calculate}>计算床定制估算价</Button>
       </>}
       {error && <Alert type="error" message={error} />}
-      {result?.final_price != null && <Card title="本次定制估算结果（非工厂核价）" data-testid="bed-quote-result">
+      {result?.final_price != null && <Card title="本次定制内部核算" data-testid="bed-quote-result">
         <Typography.Title level={3}>大促到手估算价 ¥{result.final_price.toFixed(2)}</Typography.Title>
         <p>基准款到手价 ¥{result.outer_dimension_basis?.buyer_price}；增减差额 ¥{(result.final_price - (result.outer_dimension_basis?.buyer_price ?? 0)).toFixed(2)}</p>
         <p>继承原SKU费用：打包 {fees?.packaging_cost} 元 / 运费 {fees?.logistics_cost} 元 / 安装 {fees?.install_cost} 元（已在报价中，不重复加）</p>
+        {result.outer_dimension_basis?.calibration && <>
+          <Alert type={['extrapolated','insufficient_samples','equal_area_shape_change','area_equivalent'].includes(result.outer_dimension_basis.calibration.mode) ? 'warning' : 'info'}
+            message={result.outer_dimension_basis.calibration.note}
+            description={`同配置有效样本 ${result.outer_dimension_basis.calibration.sample_count} 条；本次木作成本 ${result.outer_dimension_basis.calibration.wood.toFixed(2)} 元。`} />
+          {result.outer_dimension_basis.calibration.points.map(p => <p key={p.area}>依据规格 {p.skus.join(' / ')}：外形面积 {p.area}㎡，木作成本 {p.wood}元</p>)}
+          <p>{result.outer_dimension_basis.limitation}</p>
+        </>}
         <Table rowKey={(_, i) => String(i)} pagination={false} size="small" dataSource={result.breakdown} columns={[{title:'项目',dataIndex:'label'},{title:'金额',dataIndex:'amount'},{title:'依据',dataIndex:'note'}]} />
       </Card>}
     </Space>
