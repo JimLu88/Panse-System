@@ -68,6 +68,8 @@ class Store:
         for folder in ['media','thumbs','exports','backups','logs']:
             if not safe_child(self.root,folder).is_dir():
                 raise ValueError('missing_store_directory')
+        from app.isolated_store_catalog import ensure_schema
+        ensure_schema(self)
     @contextmanager
     def db(self):
         db = sqlite3.connect(str(self.db_path),timeout=10)
@@ -97,7 +99,7 @@ class Store:
         db.execute('INSERT INTO audit(created_at,store_id,action,resource_id) VALUES(?,?,?,?)',(time.time(),self.owner,action,rid))
     def export(self):
         with self.db() as db:
-            data={t:[dict(r) for r in db.execute('SELECT * FROM '+t)] for t in ['products','media','quotes','audit']}
+            data={t:[dict(r) for r in db.execute('SELECT * FROM '+t)] for t in ['products','media','quotes','audit','catalog','catalog_media','source_packages']}
         body={'schema':'isolated-store-export-v1','store_id':self.owner,'instance_id':self.instance,'exported_at':datetime.now(timezone.utc).isoformat(),'data':data}
         signature=hmac.new(bytes.fromhex(self.config['backup_key']),dumps(body).encode(),hashlib.sha256).hexdigest()
         return {'body':body,'signature':signature}
@@ -110,15 +112,16 @@ class Store:
             raise ValueError('backup_signature_mismatch')
         return body
 
-def initialize(root, owner, username, password):
+def initialize(root, owner, username=None, password=None):
     root=Path(root)
     if not root.is_absolute() or root.exists() or not re.fullmatch('[a-z][a-z0-9_-]{1,30}',owner):
         raise ValueError('new_absolute_directory_required')
-    if len(password)<14 or not username.strip():
+    locked = username is None and password is None
+    if not locked and (not password or len(password)<14 or not username or not username.strip()):
         raise ValueError('independent_username_and_14_character_password_required')
-    root.mkdir(parents=True)
+    root.mkdir(parents=True, mode=0o700)
     salt=secrets.token_hex(16);instance=uuid.uuid4().hex
-    config={'store_id':owner,'instance_id':instance,'username':username,'salt':salt,'password_hash':password_hash(password,salt),'backup_key':secrets.token_hex(32)}
+    config={'store_id':owner,'instance_id':instance,'username':username,'salt':salt,'password_hash':None if locked else password_hash(password,salt),'backup_key':secrets.token_hex(32)}
     (root/'store.json').write_text(dumps(config),encoding='utf8');os.chmod(root/'store.json',0o600)
     for folder in ['media','thumbs','exports','backups','logs']:(root/folder).mkdir()
     with sqlite3.connect(root/'store.sqlite') as db:
@@ -172,12 +175,16 @@ def create_app(store):
             row=db.execute('SELECT expires FROM sessions WHERE token_hash=?',(digest,)).fetchone()
         if row is None or row['expires']<time.time():raise HTTPException(401,'store_login_required')
     @app.get('/health')
-    def health():return {'ok':True,'store_id':store.owner,'enabled':['products','gallery','price_calculation'],'disabled':DISABLED}
+    def health():return {'account_ready':bool(json.loads(safe_child(store.root,'store.json').read_text(encoding='utf8')).get('username')),'ok':True,'store_id':store.owner,'enabled':['products','gallery','price_calculation'],'disabled':DISABLED}
     @app.post(prefix+'/login')
     def login(body:LoginInput,request:Request):
         ip=request.client.host if request.client else 'unknown';now=time.time()
         failures[ip]=[t for t in failures.get(ip,[]) if now-t<300]
         if len(failures[ip])>=5:raise HTTPException(429,'login_rate_limited')
+        config=json.loads(safe_child(store.root,'store.json').read_text(encoding='utf8'))
+        if config.get('store_id')!=store.owner or config.get('instance_id')!=store.instance:raise HTTPException(503,'store_identity_changed')
+        if not config.get('username') or not config.get('password_hash'):raise HTTPException(503,'account_setup_required')
+        store.config=config
         valid=hmac.compare_digest(password_hash(body.password,store.config['salt']),store.config['password_hash'])
         if not valid or body.username!=store.config['username']:
             failures[ip].append(now);raise HTTPException(401,'invalid_store_login')
@@ -262,6 +269,8 @@ def create_app(store):
     def ui():
         source=Path(__file__).with_name('isolated_store.html').read_text(encoding='utf8')
         return source.replace('__STORE_ID__',store.owner)
+    from app.isolated_store_catalog import register_routes
+    register_routes(app,store,prefix,authenticate)
     return app
 
 def environment_app():
@@ -271,9 +280,11 @@ def environment_app():
     return create_app(Store(root,owner))
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['initialize','backup']);parser.add_argument('--root',required=True);parser.add_argument('--store',required=True);parser.add_argument('--username')
+    parser=argparse.ArgumentParser();parser.add_argument('action',choices=['initialize','initialize-locked','backup']);parser.add_argument('--root',required=True);parser.add_argument('--store',required=True);parser.add_argument('--username')
     args=parser.parse_args()
-    if args.action=='initialize':
+    if args.action=='initialize-locked':
+        initialize(args.root,args.store);print('Independent empty store initialized; account disabled')
+    elif args.action=='initialize':
         import getpass
         password=getpass.getpass('New independent store password (14+ characters): ')
         if password!=getpass.getpass('Repeat password: '):raise SystemExit('Passwords differ')

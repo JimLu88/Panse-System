@@ -14,7 +14,7 @@ def backup(store):
     with store.db() as source, closing(sqlite3.connect(snapshot)) as dest:source.backup(dest)
     files={'store.sqlite':snapshot.read_bytes()}
     with closing(sqlite3.connect(snapshot)) as db:
-        for path,sha in db.execute('SELECT DISTINCT path,sha256 FROM media'):
+        for path,sha in db.execute('SELECT path,sha256 FROM media UNION SELECT path,sha256 FROM catalog_media'):
             if path!='media/'+sha:raise ValueError('noncanonical_media_path')
             raw=safe_child(store.root,path).read_bytes()
             if hashlib.sha256(raw).hexdigest()!=sha:raise ValueError('media_hash_mismatch')

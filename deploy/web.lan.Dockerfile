@@ -10,6 +10,8 @@ ENV NODE_OPTIONS=--max-old-space-size=1536
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-fund --no-audit
 COPY frontend/ ./
+ARG VITE_FUGE_ORIGIN=""
+ENV VITE_FUGE_ORIGIN=$VITE_FUGE_ORIGIN
 RUN npm run build
 
 FROM nginx:alpine

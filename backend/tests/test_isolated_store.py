@@ -149,3 +149,26 @@ def test_runtime_database_switch_fails_closed(stores):
 @pytest.mark.parametrize('changes',[{'shop_and_personal_coupons_excluded':False},{'price_basis':'buyer_final'}])
 def test_old_price_basis_never_accepted(changes):
  with pytest.raises(ValueError):calculate(evidence(**changes))
+
+def test_locked_setup_and_catalog(tmp_path):
+ from app.isolated_store_setup import create_setup_app
+ from app.isolated_store_catalog import import_catalog,add_catalog_image
+ import re
+ s=initialize(tmp_path/'locked','fuge');api=TestClient(create_app(s));api.headers['X-Store-ID']='fuge'
+ assert api.post('/api/stores/fuge/login',json={'username':'x','password':'long-enough-password'}).status_code==503
+ c=TestClient(create_setup_app(s),base_url='http://127.0.0.1:8292')
+ assert c.get('/',headers={'host':'evil.example'}).status_code==403
+ nonce=re.search('name="nonce" value="([^"]+)',c.get('/').text).group(1)
+ body=dict(username='owner',password='long-enough-password',repeat='long-enough-password',nonce=nonce)
+ assert c.post('/',data=body,headers={'Origin':'http://evil.example'}).status_code==403
+ assert c.post('/',data=body,headers={'Origin':'http://127.0.0.1:8292'}).status_code==200
+ assert c.post('/',data=body,headers={'Origin':'http://127.0.0.1:8292'}).status_code==422
+ token=api.post('/api/stores/fuge/login',json={'username':'owner','password':'long-enough-password'}).json()['token'];api.headers['Authorization']='Bearer '+token
+ document=dict(schema='fuge-catalog-import-v1',store_id='fuge',source_type='authorized_fuge_product_handoff',entries=[dict(source_key='001',title='书柜',metadata={'material':'实木多层板'})])
+ r=import_catalog(s,document);rid=r['entries'][0]['id'];assert import_catalog(s,document)['entries'][0]['created'] is False
+ m=add_catalog_image(s,rid,'主图','a.png',photo());assert api.get('/api/stores/fuge/catalog-media/'+m['id']).status_code==200
+ assert api.get('/api/stores/fuge/catalog').json()['items'][0]['image_count']==1
+ assert api.get('/api/stores/fuge/catalog-media/panse_unknown').status_code==404
+ document['store_id']='panse'
+ with pytest.raises(ValueError):import_catalog(s,document)
+ assert api.get('/api/stores/fuge/products').json()['items']==[]

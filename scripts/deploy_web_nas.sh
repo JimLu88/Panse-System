@@ -47,7 +47,8 @@ echo "[1/7] build web.lan @ $head_short (Docker 层缓存: 前端没改则秒过
 BUILDX_NO_DEFAULT_ATTESTATIONS=1 docker build -f deploy/web.lan.Dockerfile -t "$IMAGE" \
   --build-arg GIT_COMMIT="$head_full" \
   --build-arg GIT_COMMIT_DATE="$commit_date" \
-  --build-arg BUILD_TIME="$build_time" .
+  --build-arg BUILD_TIME="$build_time" \
+  --build-arg VITE_FUGE_ORIGIN="${VITE_FUGE_ORIGIN:-}" .
 
 img_rev=$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
 if [[ "$img_rev" != "$head_full" ]]; then
