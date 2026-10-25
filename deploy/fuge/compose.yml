@@ -110,14 +110,16 @@ services:
       - type: bind
         source: ${FUGE_DATA_ROOT:?Set a dedicated FUGE_DATA_ROOT}/backups
         target: /backups
-    entrypoint: ["bash", "-c"]
-    command: |
-      set -e
-      while :; do
-        sleep 86400
-        pg_dump | gzip > "/backups/fuge-$$(date +%Y%m%d-%H%M%S).sql.gz"
-        find /backups -name 'fuge-*.sql.gz' -mtime +30 -delete
-      done
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        set -e;
+        while :; do
+          sleep 86400;
+          pg_dump | gzip > "/backups/fuge-$$(date +%Y%m%d-%H%M%S).sql.gz";
+          find /backups -name 'fuge-*.sql.gz' -mtime +30 -delete;
+        done
     networks: [fuge_internal]
 
 networks:
