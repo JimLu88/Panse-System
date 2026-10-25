@@ -47,6 +47,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://${FUGE_POSTGRES_USER:-fuge}:${FUGE_POSTGRES_PASSWORD}@db:5432/${FUGE_POSTGRES_DB:-fuge_erp}
       CORS_ORIGINS: ${FUGE_CORS_ORIGINS:-http://127.0.0.1:8290}
       JWT_SECRET: ${FUGE_JWT_SECRET:?Set a unique FUGE_JWT_SECRET}
+      SETTINGS_ENCRYPTION_KEY: ${FUGE_SETTINGS_ENCRYPTION_KEY:?Set a unique FUGE_SETTINGS_ENCRYPTION_KEY}
       GALLERY_ROOT: /app/gallery
       STORAGE_ROOT: /app/storage
       AGENT_OUTPUT_DIR: /app/agent_output

@@ -23,6 +23,7 @@ def test_fuge_env_requires_dedicated_secrets_and_data_root():
     assert "FUGE_DATA_ROOT=" in text
     assert "FUGE_POSTGRES_PASSWORD=" in text
     assert "FUGE_JWT_SECRET=" in text
+    assert "FUGE_SETTINGS_ENCRYPTION_KEY=" in text
     assert "FUGE_DISABLE_SCHEDULER=1" in text
 
 
