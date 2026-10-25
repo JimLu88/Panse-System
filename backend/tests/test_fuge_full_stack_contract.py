@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "deploy" / "fuge" / "compose.yml"
 ENV_EXAMPLE = ROOT / "deploy" / "fuge" / ".env.example"
