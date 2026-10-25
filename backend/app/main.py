@@ -447,7 +447,25 @@ app.include_router(refill_sync_api.router)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "instance_id": settings.erp_instance_id,
+        "brand_code": settings.erp_brand_code,
+        "brand_name": settings.erp_brand_name,
+        "shop_name": settings.erp_shop_name,
+    }
+
+
+@app.get("/api/instance")
+def instance_identity():
+    """Public, non-secret runtime identity for deployment/readback checks."""
+    return {
+        "instance_id": settings.erp_instance_id,
+        "brand_code": settings.erp_brand_code,
+        "brand_name": settings.erp_brand_name,
+        "shop_name": settings.erp_shop_name,
+        "data_isolation": "dedicated_database_and_storage",
+    }
 
 
 @app.get("/api/ready")

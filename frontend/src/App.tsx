@@ -11,6 +11,7 @@ import CommandPalette from './components/CommandPalette';
 import VersionTag from './components/VersionTag';
 import StoreTabs from './components/StoreTabs';
 import { useAuth } from './auth/AuthProvider';
+import { erpTitle } from './brand';
 import { useThemeMode } from './theme/ThemeProvider';
 
 // ChatBI 问数抽屉 (Plan4 v2, 仅 admin)
@@ -415,7 +416,7 @@ export default function App() {
       )}
       {isMobile && (
         <Drawer
-          title={<span style={{ fontWeight: 700 }}>畔色孚格 ERP</span>}
+          title={<span style={{ fontWeight: 700 }}>{erpTitle}</span>}
           placement="left"
           open={navOpen}
           onClose={() => setNavOpen(false)}

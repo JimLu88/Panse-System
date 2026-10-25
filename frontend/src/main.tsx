@@ -10,6 +10,9 @@ import './styles/design-tokens.css';
 import './styles/global.css';
 import './styles/design-overrides.css';
 import './styles/mobile.css';
+import { setDocumentBrand } from './brand';
+
+setDocumentBrand();
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 5_000, refetchOnWindowFocus: false } },

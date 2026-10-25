@@ -7,6 +7,14 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./panse_erp.db"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Runtime identity. A Fuge deployment uses the same modules but its own
+    # database/storage/secret; this marker makes accidental cross-instance
+    # routing visible in health checks and support screenshots.
+    erp_instance_id: str = "panse"
+    erp_brand_code: str = "PS"
+    erp_brand_name: str = "畔色"
+    erp_shop_name: str = "畔色木作"
+
     # AI 辅助 (plan §7.2)
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-4-6"

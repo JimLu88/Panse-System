@@ -18,6 +18,16 @@ FROM nginx:alpine
 ARG GIT_COMMIT=unknown
 ARG GIT_COMMIT_DATE=""
 ARG BUILD_TIME=""
+ARG VITE_BRAND_CODE=PS
+ARG VITE_BRAND_NAME="畔色"
+ARG VITE_SHOP_NAME="畔色木作"
+ARG VITE_FUGE_ORIGIN=""
+ARG VITE_PANSE_ORIGIN=""
+ENV VITE_BRAND_CODE=$VITE_BRAND_CODE \
+    VITE_BRAND_NAME=$VITE_BRAND_NAME \
+    VITE_SHOP_NAME=$VITE_SHOP_NAME \
+    VITE_FUGE_ORIGIN=$VITE_FUGE_ORIGIN \
+    VITE_PANSE_ORIGIN=$VITE_PANSE_ORIGIN
 LABEL org.opencontainers.image.revision=$GIT_COMMIT \
       org.opencontainers.image.created=$BUILD_TIME
 COPY deploy/nginx.lan.conf /etc/nginx/conf.d/default.conf

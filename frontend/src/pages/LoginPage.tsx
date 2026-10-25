@@ -3,6 +3,7 @@ import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider';
+import { erpTitle, isFuge } from '../brand';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -39,13 +40,13 @@ export default function LoginPage() {
     >
       <Card style={{ width: 360 }}>
         <Typography.Title level={3} style={{ textAlign: 'center', marginBottom: 24 }}>
-          畔色孚格 ERP
+          {erpTitle}
         </Typography.Title>
         <Alert
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message="默认管理员"
+          message={isFuge ? '孚格管理员账号' : '默认管理员'}
           description={
             <span>
               首次启动可用 <code>admin / admin</code> 登录；登入后立刻去 /admin 改密码。
