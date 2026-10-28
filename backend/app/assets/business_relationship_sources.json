@@ -40,11 +40,11 @@
     "backend/app/models/taobao_listing.py": "3408c4ee3fec07d611d623f83c005f0a305a301005b6c97fc504179c07130dd3",
     "backend/app/services/accounting_period_service.py": "ce5fafbbecc6bad20090011028f697caf34154fffddb32b47949d695996f0b0d",
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
-    "backend/app/services/agent_ingest_service.py": "21c2544f78c5dcadf62a4fae01ba3427fee92aa60817efc43aa37eae0e0f8dab",
+    "backend/app/services/agent_ingest_service.py": "b612b9caeb4e462b3d332349fd0640b719cc40da73b6181350e7590a6001d0ea",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "78d340663ebb23b8ff1faec048f42c69dce8b9e9ae867c3c31218ac34a31ed39",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "85e84c25f22e0f385f085cdc4788476c8ba5239cfb65438059c319a0d20c6ba2",
+    "backend/app/services/business_relationship_catalog.py": "e6166eb22bb78649a90fc939f0c83ef45eaa861e4e7b30e199e2d07ad1a330c8",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
     "backend/app/services/business_relationship_index.py": "3fe59dfb01482d53d8b648b5385936312302a421fd0e3a4edaef0ec8c748a929",
@@ -118,6 +118,7 @@
     "backend/app/isolated_store_catalog.py": "5766326a71f36a3109c3d60ef95b2ac03b82022b09b9df0d4128a10b45a96b79",
     "backend/app/isolated_store_import.py": "8c58b031490438b97da4c93ae6f6796430ec7c68ec659b34b6110b5a27820bb0",
     "backend/app/isolated_store_setup.py": "ae769c7d11499b4fea952829b44d86b6d26e89c15dede8e11ea5cb237e61690e",
-    "backend/app/isolated_store_account.py": "d3dd13eb85d3e6288817d14ffc5b11b76c688039aec6a9d567f9d5deb9f73dd7"
+    "backend/app/isolated_store_account.py": "d3dd13eb85d3e6288817d14ffc5b11b76c688039aec6a9d567f9d5deb9f73dd7",
+    "backend/app/services/alipay_collection_audit.py": "99846ac94019086e27ef85f74c48b7b18ea226be230746b86d5f98f073e0b38a"
   }
 }

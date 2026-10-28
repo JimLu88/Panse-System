@@ -188,6 +188,7 @@ def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatc
         "task": ingest.MAIN_ALIPAY_FLOW_TASK,
         "status": "error",
         "error": "任务完成但未生成支付宝主力账号流水文件",
+        "job_id": "job-empty",
     }]
     assert result["pending_manual"] == []
     assert result["task_errors"][0]["task"] == ingest.MAIN_ALIPAY_FLOW_TASK

@@ -508,6 +508,9 @@ def start_pending_scans(db: Session) -> dict:
                     key: int((main_alipay_ingest_result or {}).get(key) or 0)
                     for key in ("scanned", "imported", "skipped_known", "pending", "errors")
                 }
+            if any(f.get("task") == MAIN_ALIPAY_FLOW_TASK for f in failures):
+                from app.services import alipay_collection_audit
+                alipay_collection_audit.after_collection(collection_failed=True)
             batch_artifacts = [
                 Path(str(path).replace("\\", "/")).name
                 for path in (done_artifacts.get("taobao_orders") or [])
@@ -1451,11 +1454,17 @@ def run_ingest(
     content before import; a disagreement is a hard batch error.
     """
     ingest_started_at = datetime.now(timezone.utc)
+    main_audit_requested = any(
+        _is_main_alipay_path(Path(str(p).replace("\\", "/"))) for p in (only_paths or [])
+    )
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
     _pending_pw_files: list[str] = []   # 本轮新下载、待新口令解密的加密发货报表
     if not OUTPUT_DIR.exists():
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
+        if main_audit_requested:
+            from app.services import alipay_collection_audit
+            report["main_completeness"] = alipay_collection_audit.after_collection(collection_failed=True)
         return report
     state = _load_json(db, KEY_STATE)
     scoped_names = {
@@ -1473,7 +1482,16 @@ def run_ingest(
             continue
         category = _classify(rel)
         report["scanned"] += 1
-        raw = path.read_bytes()
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            if category != "alipay" or not _is_main_alipay_path(rel):
+                raise
+            main_audit_requested = True
+            report["errors"] += 1
+            report["files"].append({"path":str(rel), "category":category, "status":"error",
+                                    "summary":{"error":"主力号账单无法读取"}})
+            continue
         file_hash = hashlib.sha256(raw).hexdigest()
         expected_role = _normalize_order_report_role(
             (artifact_roles or {}).get(path.name)
@@ -1524,6 +1542,8 @@ def run_ingest(
         retry_failed_alipay = (
             prior is not None and category == "alipay" and prior_status == "error"
         )
+        if category == "alipay" and _is_main_alipay_path(rel) and (prior is None or retry_failed_alipay):
+            main_audit_requested = True
         if prior is not None and not retry_failed_alipay:
             report["skipped_known"] += 1
             status = str(prior_summary.get("agent_status") or "unknown")
@@ -1685,6 +1705,12 @@ def run_ingest(
     _save_json(db, KEY_STATE, state)
     _save_json(db, KEY_LAST_INGEST, report)
     db.commit()
+    if main_audit_requested:
+        from app.services import alipay_collection_audit
+        main_files = [f for f in report["files"] if f.get("category") == "alipay"
+                      and _is_main_alipay_path(Path(f["path"]))]
+        report["main_completeness"] = alipay_collection_audit.after_collection(
+            collection_failed=not main_files or any(f.get("status") != "imported" for f in main_files))
     if report["imported"]:
         # 定时订单/流水入库完成后，用独立 Session 做补单事实回填和全量对账；
         # 防抖器会合并同批连续更新，避免每个文件各跑一遍。
@@ -2859,6 +2885,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         order_batch_id=order_batch_id,
     )
     out["artifacts"] = run_artifacts
+    main_tasks = [t for t in out["tasks"] if t.get("task") == MAIN_ALIPAY_FLOW_TASK]
+    if main_tasks and any(t.get("status") not in ("done", "ok", "success") or not t.get("artifacts") for t in main_tasks):
+        from app.services import alipay_collection_audit
+        out["main_completeness"] = alipay_collection_audit.after_collection(collection_failed=True)
     out["artifact_roles"] = run_artifact_roles
     automation_pipeline_service.record_stage(
         db,

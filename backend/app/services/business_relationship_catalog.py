@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('finance.main_completeness','主力号采集后完整性核对','finance','AlipayFlow + ImportedFile / alipay_main_completeness_latest_v1','services/alipay_collection_audit.py','def after_collection','采集/入账后独立会话只读核对原始账单时间覆盖与逐笔金额日期；零交易日不当缺失。不自动补拉或改账。新异常先持久化发送意图，仅飞书提醒群通知，未知不重发，正常静默。'),
     {'id':'governance.fuge_isolation','label':'孚格独立运行与恢复边界','domain':'governance',
      'field':'store_id / instance_id / store.sqlite / independent media root',
      'sources':[source('isolated_store.py','class Store'),source('isolated_store_pricing.py','def calculate'),source('isolated_store_recovery.py','def recover'),source('isolated_store.html','const STORE='),source('isolated_store_catalog.py','def import_catalog'),source('isolated_store_setup.py','def set_admin'),source('isolated_store_import.py','def run'),source('isolated_store_account.py','def import_owner')],
@@ -163,6 +164,8 @@ EDGES = [
     edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
     edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),
     edge('finance.source_recovery','finance.pipeline_completion','按全来源证据收口','逐来源入库成功','单账户扫码成功不能抹掉其他来源失败或隔离文件','services/scheduler.py','def _reconcile_finance_success_from_persisted_evidence',kind='protect'),
+    edge('finance.source_recovery','finance.main_completeness','主力号采集后核对','文件导入提交后或本次任务失败','独立Session，不能回滚订单/流水导入','services/agent_ingest_service.py','def run_ingest'),
+    edge('finance.main_completeness','sync.route','新异常去重提醒','有未通知异常且提醒群已配置','先落发送意图，真实message_id才算送达；未知不重试，正常静默','services/alipay_collection_audit.py','def record_and_notify'),
     edge('marketing.review','sync.review_refill','仅同步已确认的补单订单号','评价程序已确认且订单号有效','接口接收不证明订单报表已经入库；缺订单时保留待后续回填','api/refill_sync.py','def sync_review_order_tracks',kind='boundary'),
     edge('sync.review_refill','after.refill_record','幂等生成评价补单记录','同订单号未有记录，或已有评价自动记录','人工财务记录只补空白识别字段，不覆盖人工核定日期和金额','api/refill_sync.py','def sync_review_order_tracks',kind='protect'),
     edge('order.parent','after.refill_record','订单后到时回填业务日和实付','记录明确标记为评价系统自动同步且订单号精确匹配','Order.order_date和paid_amount为最终口径；不得据金额相似匹配其他订单','services/order_sync_service.py','def repair_review_refill_records'),
