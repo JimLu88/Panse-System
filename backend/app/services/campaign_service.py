@@ -1446,12 +1446,13 @@ def _item_signup_rows(
 def _erp_listed_product_codes(db: Session) -> set[str] | None:
     """Return the ERP in-sale scope, or None for legacy/test databases with no products."""
     from app.models.product import Product
+    from app.services.taobao_listing_guard_service import ACTIVE
 
     total = db.execute(select(func.count()).select_from(Product)).scalar_one()
     if total == 0:
         return None
     return set(db.execute(
-        select(Product.code).where(Product.listing_status == "在售")
+        select(Product.code).where(Product.listing_status.in_(ACTIVE))
     ).scalars().all())
 
 

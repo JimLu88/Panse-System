@@ -1,0 +1,227 @@
+--- a/app/engine/uploader.py
++++ b/app/engine/uploader.py
+@@ -11,7 +11,9 @@
+ - 商品价格:  我的商品 → 更多批量操作 → excel商品批量编辑 → 上传快速编辑模板 → 停在提交前。 (final selector 待录制)
+ - 活动报名:  营销 → 活动报名/超级立减 → 进具体活动 → 批量报名/批量导入 → 挂 xlsx → 停在『确认报名』前。(per-activity, 待录制)
+ """
+-from __future__ import annotations
++from __future__ import annotations
++
++from .upload_listing_guard import payload as listing_checked_payload
+ 
+ import asyncio
+ import hashlib
+@@ -575,14 +577,14 @@
+                     async with page.expect_file_chooser(timeout=8000) as fc:
+                         await page.get_by_text(trigger, exact=False).first.click(timeout=6000)
+                     chooser = await fc.value
+-                    await chooser.set_files(xlsx_path)
++                    await chooser.set_files(await listing_checked_payload(xlsx_path))
+                     attached = True
+                     break
+                 except Exception:
+                     continue
+             if not attached:   # 兜底: 直连隐藏 input
+                 try:
+-                    await page.locator('input[type=file]').first.set_input_files(xlsx_path, timeout=10_000)
++                    await page.locator('input[type=file]').first.set_input_files(await listing_checked_payload(xlsx_path), timeout=10_000)
+                     attached = True
+                 except Exception:
+                     pass
+@@ -2299,7 +2301,7 @@
+     try:
+         async with page.expect_file_chooser(timeout=10_000) as chooser_info:
+             await visible_triggers[0].click(timeout=8000)
+-        await (await chooser_info.value).set_files(xlsx_path)
++        await (await chooser_info.value).set_files(await listing_checked_payload(xlsx_path))
+     except Exception as exc:
+         raise RuntimeError("计划7补报文件未通过官方上传区挂上") from exc
+ 
+@@ -2785,7 +2787,7 @@
+     try:
+         async with page.expect_file_chooser(timeout=10_000) as chooser_info:
+             await visible_triggers[0].click(timeout=8000)
+-        await (await chooser_info.value).set_files(xlsx_path)
++        await (await chooser_info.value).set_files(await listing_checked_payload(xlsx_path))
+     except Exception as exc:
+         raise RuntimeError("计划8补报文件未通过官方上传区挂上") from exc
+ 
+@@ -4449,7 +4451,7 @@
+                     async with pg.expect_file_chooser(timeout=8000) as fc:
+                         await pg.get_by_text(trig, exact=False).first.click(timeout=6000)
+                     chooser = await fc.value
+-                    await chooser.set_files(xlsx_path)
++                    await chooser.set_files(await listing_checked_payload(xlsx_path))
+                     attached = True
+                     break
+                 except Exception:
+@@ -4457,7 +4459,7 @@
+             if not attached:
+                 for fr in pg.frames:
+                     try:
+-                        await fr.locator('input[type=file]').first.set_input_files(xlsx_path, timeout=8000)
++                        await fr.locator('input[type=file]').first.set_input_files(await listing_checked_payload(xlsx_path), timeout=8000)
+                         attached = True
+                         break
+                     except Exception:
+@@ -4766,7 +4768,7 @@
+                     async with page.expect_file_chooser(timeout=6000) as fc:
+                         await page.get_by_text(trig, exact=False).first.click(timeout=5000)
+                     chooser = await fc.value
+-                    await chooser.set_files(xlsx_path)
++                    await chooser.set_files(await listing_checked_payload(xlsx_path))
+                     attached = True
+                     break
+                 except Exception:  # noqa: BLE001
+@@ -4774,7 +4776,7 @@
+             if not attached:
+                 for fr in page.frames:
+                     try:
+-                        await fr.locator("input[type=file]").first.set_input_files(xlsx_path, timeout=6000)
++                        await fr.locator("input[type=file]").first.set_input_files(await listing_checked_payload(xlsx_path), timeout=6000)
+                         attached = True
+                         break
+                     except Exception:  # noqa: BLE001
+@@ -9652,7 +9654,7 @@
+             attached = False
+             for sel in ('input[type=file][name="file"]', 'input[type=file][accept*="xls"]', 'input[type=file]'):
+                 try:
+-                    await page.locator(sel).first.set_input_files(xlsx_path, timeout=8000)
++                    await page.locator(sel).first.set_input_files(await listing_checked_payload(xlsx_path), timeout=8000)
+                     attached = True; break
+                 except Exception:  # noqa: BLE001
+                     continue
+@@ -9661,7 +9663,7 @@
+                     try:
+                         async with page.expect_file_chooser(timeout=6000) as fc:
+                             await page.get_by_text(trig, exact=False).first.click(timeout=5000)
+-                        await (await fc.value).set_files(xlsx_path)
++                        await (await fc.value).set_files(await listing_checked_payload(xlsx_path))
+                         attached = True; break
+                     except Exception:  # noqa: BLE001
+                         continue
+--- a/app/engine/campaign_page_io.py
++++ b/app/engine/campaign_page_io.py
+@@ -37,6 +37,8 @@
+     path=Path(path);data=path.read_bytes()
+     if not data or hashlib.sha256(data).hexdigest()!=expected_sha:
+         raise SurfaceError('workbook_changed_before_file_transfer')
++    from .upload_listing_guard import check_bytes
++    check_bytes(data)
+     return {'name':path.name,'mimeType':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+             'buffer':data}
+ 
+--- a/app/engine/plan8_final_recovery_v3.py
++++ b/app/engine/plan8_final_recovery_v3.py
+@@ -7,6 +7,8 @@
+ cannot be proved is non-retryable; ``readback`` remains available.
+ """
+ from __future__ import annotations
++
++from .upload_listing_guard import payload as listing_checked_payload
+ 
+ import base64
+ import asyncio
+@@ -1655,7 +1657,7 @@
+             if await inputs.count() != 1:
+                 return {"ok": False, "error": "plan8_v3_update_file_input_not_unique",
+                         "submitted": False}
+-            await inputs.first.set_input_files(str(path))
++            await inputs.first.set_input_files(await listing_checked_payload(path))
+             # QianNiu treats file selection as the import/write trigger.  Any
+             # later exception is therefore an unknown write outcome, never a
+             # safe pre-write failure.
+--- a/app/engine/plan8_final_recovery_v5.py
++++ b/app/engine/plan8_final_recovery_v5.py
+@@ -7,6 +7,8 @@
+ cannot be proved is non-retryable; ``readback`` remains available.
+ """
+ from __future__ import annotations
++
++from .upload_listing_guard import payload as listing_checked_payload
+ 
+ import base64
+ import asyncio
+@@ -1655,7 +1657,7 @@
+             if await inputs.count() != 1:
+                 return {"ok": False, "error": "plan8_v3_update_file_input_not_unique",
+                         "submitted": False}
+-            await inputs.first.set_input_files(str(path))
++            await inputs.first.set_input_files(await listing_checked_payload(path))
+             # QianNiu treats file selection as the import/write trigger.  Any
+             # later exception is therefore an unknown write outcome, never a
+             # safe pre-write failure.
+--- a/app/engine/plan8_final_recovery_v6.py
++++ b/app/engine/plan8_final_recovery_v6.py
+@@ -6,7 +6,9 @@
+ publishes the six exact drafts.  Any result after the local write claim that
+ cannot be proved is non-retryable; ``readback`` remains available.
+ """
+-from __future__ import annotations
++from __future__ import annotations
++
++from .upload_listing_guard import payload as listing_checked_payload
+ 
+ import base64
+ import asyncio
+@@ -2391,7 +2393,7 @@
+             # safe pre-write failure.
+             if input_count == 1:
+                 upload_started = True
+-                await inputs.first.set_input_files(str(path))
++                await inputs.first.set_input_files(await listing_checked_payload(path))
+                 import_binding = {"mode": "existing_file_input"}
+             else:
+                 try:
+@@ -2401,7 +2403,7 @@
+                         await action.click(timeout=8_000)
+                     chooser = await info.value
+                     upload_started = True
+-                    await chooser.set_files(str(path))
++                    await chooser.set_files(await listing_checked_payload(path))
+                     import_binding = {**import_binding,
+                                       "mode": "exact_import_file_chooser"}
+                 except ValueError as exc:
+--- a/app/engine/plan8_merchant_code_repair.py
++++ b/app/engine/plan8_merchant_code_repair.py
+@@ -6,6 +6,8 @@
+ change; every other row field is compared before the single product submit.
+ """
+ from __future__ import annotations
++
++from .upload_listing_guard import payload as listing_checked_payload
+ 
+ import hashlib
+ import json
+@@ -1379,7 +1381,7 @@
+                             "platform_product_write": False,
+                             "automatic_retry_allowed": False}
+             await visible_or_attached[0].set_input_files(
+-                str(output_path), timeout=8000)
++                await listing_checked_payload(output_path), timeout=8000)
+             await page.wait_for_timeout(6000)
+             facts = await page.evaluate(r"""() => {
+               const clean=v=>String(v||'').replace(/\s+/g,' ').trim();
+--- a/tests/test_campaign_page_io.py
++++ b/tests/test_campaign_page_io.py
+@@ -72,7 +72,11 @@
+ 
+ 
+ @pytest.mark.parametrize('records_label', ['批量操作记录', '批量操作记录 212'])
+-def test_real_local_download_then_single_claimed_upload_without_ai(tmp_path, records_label):
++def test_real_local_download_then_single_claimed_upload_without_ai(tmp_path, records_label, monkeypatch):
++    # This is a local HTML fixture, with no production ERP or platform calls.
++    from app.engine import upload_listing_guard
++    listing_checks = []
++    monkeypatch.setattr(upload_listing_guard, 'check_bytes', lambda data: listing_checks.append(data))
+     async def scenario():
+         from playwright.async_api import async_playwright
+         source_workbook = workbook()
+@@ -138,6 +142,7 @@
+             result = await driver.upload_once(template, claim_id='TEST', claim_payload_sha='test', verify_claim=approved)
+             assert result['state'] == 'uploaded_outcome_unknown'
+             assert await page.locator('#uploaded').inner_text() == '1'
++            assert listing_checks == [source_workbook]
+             terminal = await driver.await_upload_terminal(before=before, filename=Path(template['path']).name, expected_count=2)
+             assert terminal['state'] == 'terminal'
+             assert terminal['counts']['failed'] == 2  # execution success is NOT signup success

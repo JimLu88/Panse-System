@@ -22,8 +22,7 @@ _SKUID_RE = re.compile(r"SKUID[=:：]\s*(\d{6,})")
 _DELISTED_MARKERS = ("已下架", "不属于当前商品", "不支持报名")
 
 
-def get_delisted(db: Session) -> set[str]:
-    """当前登记的下架 skuId 集合。"""
+def _registered(db: Session) -> set[str]:
     from app.services import settings_service
     raw = settings_service.get(db, _KEY, env_fallback=False)
     try:
@@ -31,6 +30,23 @@ def get_delisted(db: Session) -> set[str]:
     except (ValueError, TypeError):
         items = []
     return {str(x).strip() for x in items if str(x).strip()}
+
+
+def get_delisted(db: Session) -> set[str]:
+    """Explicit platform exclusions plus current ERP offsale state (not persisted)."""
+    from app.services import settings_service
+    excluded = _registered(db)
+    # Derive current primary/alias IDs, so a later remap cannot resurrect an
+    # ERP-offsale specification. The upload boundary separately requires the registry.
+    if settings_service.get(db, 'product_sheet_sku_status_overrides_v1', env_fallback=False):
+        from app.services.taobao_listing_guard_service import snapshot, sku_block_reason
+        skus, statuses, pairs, registered, records = snapshot(db)
+        excluded.update(registered)
+        for (_, sid), codes in pairs.items():
+            if any(code in skus and sku_block_reason(
+                    skus[code], statuses.get(skus[code].product_code), records) for code in codes):
+                excluded.add(sid)
+    return excluded
 
 
 def _save(db: Session, ids: set[str]) -> None:
@@ -43,7 +59,7 @@ def _save(db: Session, ids: set[str]) -> None:
 
 def add_delisted(db: Session, skuids: Iterable[str]) -> set[str]:
     """登记下架 skuId(并集)。返回登记后的全集。无变化则不写库。"""
-    cur = get_delisted(db)
+    cur = _registered(db)
     new = cur | {str(x).strip() for x in (skuids or []) if str(x).strip()}
     if new != cur:
         _save(db, new)
@@ -52,7 +68,7 @@ def add_delisted(db: Session, skuids: Iterable[str]) -> set[str]:
 
 def remove_delisted(db: Session, skuids: Iterable[str]) -> set[str]:
     """撤销登记(SKU 重新上架时)。返回剩余全集。"""
-    cur = get_delisted(db)
+    cur = _registered(db)
     new = cur - {str(x).strip() for x in (skuids or [])}
     if new != cur:
         _save(db, new)

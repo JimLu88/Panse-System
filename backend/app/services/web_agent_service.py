@@ -187,6 +187,14 @@ def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
     """把 ERP 生成的 xlsx 传给 Web-Agent 千牛上传管线 (multipart)。返回 {job:<id>}。
     phase='stage' 挂文件停在提交前; phase='commit' ★不可逆★ 真提交 (仅比对表确认后调)。
     start_dt/end_dt(单品立减用, 'YYYY-MM-DD HH:MM:SS'): 给了则把千牛活动时间填成该精确档期。"""
+    from app.services.taobao_listing_guard_service import CHANNELS, validate_workbook
+    if channel in CHANNELS:
+        try:
+            listing_check = validate_workbook(db, xlsx_bytes)
+        except Exception as exc:
+            return {"ok": False, "error": "upload_listing_guard_unavailable", "detail": str(exc)}
+        if not listing_check['ok']:
+            return listing_check
     data = {"phase": phase, "level": level}
     if start_dt:
         data["start_dt"] = start_dt
@@ -209,6 +217,11 @@ def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
         online = ensure_online(db, reason=f"upload:{channel}:{phase}")
         if not online.get("online"):
             return {"ok": False, "error": online.get("error", "取数服务未能按需启动")}
+        # Waking the browser can take minutes: do not reuse the earlier decision.
+        if channel in CHANNELS:
+            listing_check = validate_workbook(db, xlsx_bytes)
+            if not listing_check['ok']:
+                return listing_check
         r = requests.post(
             f"{BASE_URL}/api/upload/{channel}", headers=_headers(db),
             data=data,

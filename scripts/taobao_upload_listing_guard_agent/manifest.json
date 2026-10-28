@@ -1,0 +1,49 @@
+{
+  "target": "D:/AI/畔色ERP系统/Web-Agent程序",
+  "files": [
+    {
+      "path": "app/engine/uploader.py",
+      "before_sha256": "6695a4b544a59276027bfc5820381987c706edbc0a581c4aa2d016602d17ab34",
+      "after_sha256": "494e3e1eb2aaadc66aa41a16abb3926c7e6674a7c0834ed8394865dad9735bb7"
+    },
+    {
+      "path": "app/engine/campaign_page_io.py",
+      "before_sha256": "bed7314f058dc4400b99b775032be896046390d935517b7bcf106fe171dc4d4a",
+      "after_sha256": "313379c99714e645830cd789982eb18293564ce70f2835eae0a66958343013ee"
+    },
+    {
+      "path": "app/engine/plan8_final_recovery_v3.py",
+      "before_sha256": "038454fc86e1fd45111336b3869c62816cadc1644459de0f8a22c4590ad92734",
+      "after_sha256": "192cd6363d489d49bb5b79bd7309ad512ed16ab609d190d34789c801e0105091"
+    },
+    {
+      "path": "app/engine/plan8_final_recovery_v5.py",
+      "before_sha256": "5d2084dd270838e932137d77f4c6d37bb1827716198de48efebe395b8fd1d046",
+      "after_sha256": "bb8013061e895f73ace901c185ed3d069299d7c05fcf99899db32b8bb586b55c"
+    },
+    {
+      "path": "app/engine/plan8_final_recovery_v6.py",
+      "before_sha256": "71be9517130932e7235e6246eae573144fe82dc334abd738a200644db0b8529f",
+      "after_sha256": "358c0a9dc68ae1d666394dd1395e34eb60681f88cbae9edd53d9342c746948fa"
+    },
+    {
+      "path": "app/engine/plan8_merchant_code_repair.py",
+      "before_sha256": "df2484b62884dba6bf258ed7b16662b8fd3ec6dacee88f52c4df0b3fcdd7ecab",
+      "after_sha256": "4f9931156369c6fef6670ac61a362b34f3867a0e70f5ab94ac54d6466082dfaf"
+    },
+    {
+      "path": "tests/test_campaign_page_io.py",
+      "before_sha256": "d3f345dd6a9fd13b66526aa6483bd024571501124cdb9201b333557b1985598b",
+      "after_sha256": "42b38a583c25ee8ae0cc571e5bbac830dd1180dcaa3abc89ca32d9c46694aabc"
+    },
+    {
+      "path": "app/engine/upload_listing_guard.py",
+      "after_sha256": "af05b6cc43e7ad499a74133d965d4bd80bcb3046a529372548c03dc02242b406"
+    },
+    {
+      "path": "tests/test_upload_listing_guard.py",
+      "after_sha256": "e1b77051f4e28095a09b2ddb66eeb41848b30b59675a5c43d3ba869aa4acfe82"
+    }
+  ],
+  "purpose": "Scoped local integration; preserve all unrelated preexisting changes; apply only with exact baseline hashes."
+}

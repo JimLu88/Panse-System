@@ -85,7 +85,13 @@ def _fetch_rows(db: Session, category: Optional[str], product_codes: Optional[li
         stmt = stmt.where(Product.category == category)
     if product_codes:
         stmt = stmt.where(PricingSku.product_code.in_(product_codes))
-    return db.execute(stmt).all()
+    from app.services.taobao_listing_guard_service import read_registry, sku_block_reason
+    from app.services.delisted_sku_service import get_delisted
+    registry = read_registry(db)
+    excluded = get_delisted(db)
+    return [(s, p, listing) for s, p, listing in db.execute(stmt).all()
+            if not sku_block_reason(s, p.listing_status if p else None, registry)
+            and (listing is None or str(listing.taobao_sku_id or '') not in excluded)]
 
 
 def _save(wb: Workbook) -> bytes:
