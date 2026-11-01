@@ -1,3 +1,4 @@
+import StoreTabs from '../components/StoreTabs';
 import React, { useState } from 'react';
 import {
   Alert,
@@ -125,6 +126,7 @@ export default function AdminPage() {
       </Typography.Title>
       <Tabs
         items={[
+          { key: 'stores', label: '店铺入口', children: <Card title="独立店铺"><StoreTabs /><Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>孚格在独立窗口打开，两家店铺的数据分别保存。</Typography.Paragraph></Card> },
           { key: 'users', label: '用户管理', children: <UsersTab /> },
           { key: 'integrations', label: 'AI 集成 / OCR 配置', children: <IntegrationsTab /> },
           { key: 'monitor', label: <Space><DashboardOutlined />系统监控 / 看门狗</Space>, children: <MonitorTab /> },
