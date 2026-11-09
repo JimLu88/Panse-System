@@ -2,6 +2,7 @@
 """淘宝订单多格式自动识别导入测试。"""
 import csv
 import io
+from datetime import date
 from decimal import Decimal
 
 from openpyxl import Workbook
@@ -137,6 +138,7 @@ def test_import_completed_full_refund_preserves_refund(db_session):
     assert order.paid_amount == Decimal("0")
     assert order.buyer_payable_amount == Decimal("1928.57")
     assert order.refund_amount == Decimal("1928.57")
+    assert order.customer_confirmed_date == date(2026, 8, 4)
 
 
 def test_reimport_completed_full_refund_updates_existing_order(db_session):

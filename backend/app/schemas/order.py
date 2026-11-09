@@ -58,6 +58,7 @@ class OrderOut(BaseModel):
     is_refill: bool
     order_date: Optional[date]
     ship_date: Optional[date]
+    customer_confirmed_date: Optional[date]
     customer_name: Optional[str]
     product_code: Optional[str]
     product_name: Optional[str]

@@ -101,6 +101,7 @@ class Order(Base, TimestampMixin):
     # (支付宝该单收入含此运费), 否则被误报"正差"; 营收/利润口径不含(运费≈代收代付, 对利润中性)。
     buyer_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))           # 买家应付邮费
     shop_received_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 店铺实收金额
+    customer_confirmed_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)  # 淘宝确认收货日期，非物流签收
     tax: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))                    # 税费
     other_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))              # 其它费用
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))             # 总成本

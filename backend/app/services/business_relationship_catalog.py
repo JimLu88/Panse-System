@@ -160,6 +160,7 @@ EDGES = [
     edge('product.sku','product.taobao_links','按精确编码读取当前淘宝映射','产品精选/全列/SKU展开','不拼接不同款式ID，不用历史备用SKU；缺失与冲突可见','services/product_taobao_links.py','def build_link_maps'),
     edge('finance.agg_settlement','order.parent','以母订单号关联收款凭据','账单含淘宝订单编号或主订单id','原单号逐笔核对；没有订单列则拒绝导入，不将扣款或保证金误当订单收款','services/settlement_import_service.py','def import_bill'),
     edge('finance.agg_settlement','automation.alert','为缺收款异常提供复核依据','同订单有聚合结算记录','按订单号核对后销账；流水入库不自动证明净额或全部结算正确','services/exception_recheck_service.py','def _check_order_missing_alipay'),
+    edge('order.parent','automation.alert','客户确认收货后延时核查缺收款','淘宝订单报表有明确确认收货日期且已满三天','物流签收和人工签收均不是客户确认收货；缺日期不报缺收款，已有关联流水/聚合/打款金额仍销账','services/data_quality_service.py','def _payment_check_due'),
     edge('marketing.feedback_read','marketing.feedback_judgment','完整新内容进入语义判读','两个来源登录、分页、范围和身份核验完成','失败不是零负面；未判读回答不视为好评。跨程序来源及定时启用另行验收','services/feedback_notification_service.py','def capability',kind='boundary',evidence='review'),
     edge('marketing.feedback_judgment','sync.feedback_receipt','负面摘要与待人工判断提醒','内容有变化且未发送、安静时段外、每日最多一份','仅语义判断，不改变平台评价；收到真实飞书message_id才记已送达','services/feedback_notification_service.py','def send_digest'),
     edge('sync.feedback_receipt','finance.actual','保护交易和核算事实','任何口碑提醒','通知不得触发改价、订单补推、退款、财务重算或工厂表变更','services/feedback_notification_service.py','def send_digest',kind='boundary'),

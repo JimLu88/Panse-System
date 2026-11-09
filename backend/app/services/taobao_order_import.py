@@ -996,6 +996,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             single_line=len(lines) == 1,
         )
         ship_dt = _to_date(o.ship_time)
+        confirmed_dt = _to_date(o.confirm_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
         # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款(视为已识别)。
         # ⚠ 不用物流单号作凭据: 实测物流号会出现在 ¥0/补拍/未成交单上, 不可靠(全刷会把假单也算进来)。
@@ -1105,6 +1106,10 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             if ship_dt is not None:
                 _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt
+            # 仅记录淘宝明确给出的客户确认收货日期；稀疏报表的空值不抹掉已确认事实。
+            if confirmed_dt is not None and existing.customer_confirmed_date != confirmed_dt:
+                _trace("customer_confirmed_date", "客户确认收货日期", existing.customer_confirmed_date, confirmed_dt)
+                existing.customer_confirmed_date = confirmed_dt
             # 物流单号/承运商: 重导时回填(只填空, 不覆盖已手工改的)。
             # 修复(2026-06-15): 原更新分支漏了这两个 → 已发货订单重导也补不上物流号(图四常驻27)。
             _car = _clean(o.carrier)
@@ -1171,6 +1176,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             order_no=no,
             order_date=_to_date(o.order_date),
             ship_date=ship_dt,
+            customer_confirmed_date=confirmed_dt,
             customer_name=_prefer_clear_private_value(None, o.customer_name),
             customer_phone=_prefer_clear_private_value(None, o.customer_phone, phone=True),
             customer_address=_prefer_clear_private_value(None, o.customer_address),
