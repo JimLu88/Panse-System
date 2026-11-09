@@ -121,6 +121,8 @@ const TYPE_META: Record<string, TypeMeta> = {
   // —— 对账 / 财务问题 ——
   order_missing_alipay: { category: 'finance', label: '订单缺支付宝收款流水',
     hint: '这笔订单找不到对应的支付宝收款记录，无法核实是否真收到钱。请去「支付宝流水」页关联对应流水。' },
+  order_payment_pending_confirmation: { category: 'finance', label: '待客户确认收货',
+    hint: 'ERP 尚未取得淘宝确认收货日期；这不等于客户一定尚未确认，也不代表货款已到账。请核对平台状态或补导含确认时间的订单报表。' },
   alipay_missing_txn: { category: 'finance', label: '支付宝流水缺交易号',
     hint: '这条支付宝流水没有交易流水号，无法对账。请去支付宝后台找到该笔，补填交易流水号。' },
   duplicate_alipay_flow: { category: 'finance', label: '支付宝流水跨账户重复',

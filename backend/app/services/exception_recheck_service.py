@@ -136,14 +136,46 @@ def _check_cost_exceeds_paid(db: Session, exc: DataException) -> Optional[str]:
     return f"订单 {o.order_no} 实付 ¥{paid} 仍背成本 ¥{cost}, 错配未解决"
 
 
+def _has_order_payment_evidence(db: Session, order) -> bool:
+    """与缺收款复核共用逐单凭据口径；仅订单上的流水号文本不算到账证明。"""
+    from app.models.finance import AlipayFlow
+    from app.models.settlement import OrderSettlement
+    if order.shop_received_amount and order.shop_received_amount > 0:
+        return True
+    if db.execute(select(func.count()).select_from(AlipayFlow).where(
+        AlipayFlow.related_order_no.like(f"%{order.order_no}%")
+    )).scalar():
+        return True
+    return bool(db.execute(select(func.count()).select_from(OrderSettlement).where(
+        OrderSettlement.order_no == order.order_no
+    )).scalar())
+
+
+def _pending_customer_confirmation(db: Session, exc: DataException) -> bool:
+    """旧缺收款告警只有签收状态、无淘宝确认日期时，转成待确认提示。"""
+    from app.services.data_quality_service import _NON_PRODUCT_KW, _order_fully_refunded
+    order = _get_order(db, exc)
+    if order is None or order.is_historical or order.customer_confirmed_date is not None:
+        return False
+    if (order.status or "") not in ("signed", "completed", "success", "finished"):
+        return False
+    if _order_fully_refunded(order) or _has_order_payment_evidence(db, order):
+        return False
+    product = f"{order.product_name or ''} {order.sku or ''} {order.sku_code or ''}"
+    return not any(keyword in product for keyword in _NON_PRODUCT_KW)
+
+
+def _check_order_payment_pending_confirmation(db: Session, exc: DataException) -> Optional[str]:
+    if _pending_customer_confirmation(db, exc):
+        return "尚无淘宝确认收货日期；待客户确认或补导平台确认时间后再核查收款"
+    return None
+
+
 def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str]:
     """订单缺收款记录: 修好(销账) = 已成交单有了支付宝流水或聚合结算关联; 或本就不该要收款
     (担保交易中 paid/shipped、退款 aftersales、取消、待付款、历史)。
     根因修(2026-06-15): 淘宝企业单走聚合批量打款, 逐单货款在聚合账单(OrderSettlement), 故聚合
     结算也算已收款; 且只有已成交(signed/completed) 才该有收款流水, 在途单不算缺。与 scanner 同口径。"""
-    from sqlalchemy import func
-    from app.models.finance import AlipayFlow
-    from app.models.settlement import OrderSettlement
     o = _get_order(db, exc)
     if o is None:
         return None
@@ -153,18 +185,8 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
     from app.services.data_quality_service import _order_fully_refunded
     if _order_fully_refunded(o):
         return None
-    # 归一: 支付宝 related_order_no 常带 T200P 前缀 → 用 LIKE 匹配核心订单号 (2026-06-22)
-    n = db.execute(select(func.count()).select_from(AlipayFlow)
-                   .where(AlipayFlow.related_order_no.like(f"%{o.order_no}%"))).scalar() or 0
-    if n:
-        return None
-    m = db.execute(select(func.count()).select_from(OrderSettlement)
-                   .where(OrderSettlement.order_no == o.order_no)).scalar() or 0
-    if m:
-        return None
-    # 淘宝逐单『打款商家金额』有值 = 淘宝已确认放款(批量结算逐单流水不可得), 视为已收款; 总额由
-    # 月度货款对账兜底。仅当连打款金额都没有才是真缺收款凭据 (2026-06-15 用户拍板)。
-    if o.shop_received_amount and o.shop_received_amount > 0:
+    # 归一: 支付宝 related_order_no 常带 T200P 前缀；逐单打款金额也属于有效凭据。
+    if _has_order_payment_evidence(db, o):
         return None
     # 非产品单与未到客户确认收货后的收款核查时点，均不是缺收款。
     from app.services.data_quality_service import _NON_PRODUCT_KW, _payment_check_due
@@ -621,6 +643,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "cost_exceeds_paid": _check_cost_exceeds_paid,
     "order_missing_tracking": _check_order_missing_tracking,
     "order_missing_alipay": _check_order_missing_alipay,
+    "order_payment_pending_confirmation": _check_order_payment_pending_confirmation,
     "alipay_flow_no_missing": _check_alipay_flow_no_missing,
     "refill_unmatched": _check_refill_unmatched,
     "refill_record_missing": _check_refill_record_missing,
@@ -668,6 +691,17 @@ def bulk_close_resolved(db: Session, *, types: Optional[list[str]] = None) -> di
     closed: Counter = Counter()
     now = datetime.now().isoformat(timespec="seconds")
     for exc in rows:
+        if exc.exception_type == "order_missing_alipay" and _pending_customer_confirmation(db, exc):
+            order = _get_order(db, exc)
+            exc.exception_type = "order_payment_pending_confirmation"
+            exc.severity = "info"
+            exc.description = (
+                f"订单 {order.order_no} 待客户确认收货：ERP 尚无淘宝确认收货日期，"
+                "暂不判定为缺支付宝收款流水。"
+            )
+            exc.suggestion_action = "核对淘宝确认收货状态，或补导含确认收货时间的订单报表；不得视为已收款。"
+            exc.context = {**(exc.context or {}), "pending_reason": "missing_buyer_confirmation_date"}
+            continue
         if recheck(db, exc) is None:        # 条件已不成立 = 已修复
             exc.status = "resolved"
             exc.resolved_by = "系统复核(批量)"
