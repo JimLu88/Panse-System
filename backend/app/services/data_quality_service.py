@@ -36,6 +36,14 @@ def _order_fully_refunded(order: Order) -> bool:
     return paid <= 0 and payable > 0 and refund >= payable * Decimal("0.99")
 
 
+def _payment_check_due(order: Order, *, today: date | None = None) -> bool:
+    """淘宝确认收货满 3 天才查缺收款；物流签收/发货日期不代表放款。"""
+    confirmed = order.customer_confirmed_date
+    if confirmed is None:
+        return False
+    return confirmed <= (today or date.today()) - timedelta(days=3)
+
+
 def _record(db: Session, **kwargs: Any) -> None:
     """幂等写: 若同 source_table+source_pk+type+status=open 已存在则跳过."""
     from app.models.exception import DataException
@@ -128,23 +136,10 @@ def scan_order_missing_alipay(db: Session) -> int:
         _okey(r) for (r,) in db.query(OrderSettlement.order_no)
         .filter(OrderSettlement.order_no.isnot(None)).all() if _okey(r)
     }
-    # 只查『货款应已到账』的订单 —— 交易成功(signed)/已完成。担保交易中的 paid(买家已付款待发货)/
-    # shipped(已发货待确认收货) 货款仍在淘宝担保未释放, 本就无收款流水, 不算缺失(在途, 归现金流预测);
-    # aftersales(退款)/cancelled/pending_payment 同理不该要收款流水。否则把"在途"误报成"缺数据"。
+    # 只查可能已放款的订单：状态需为 signed/已完成，且下方另查淘宝确认收货日期。
+    # 物流签收也可使状态变为 signed，单凭这个状态不能证明买家确认收货。
+    # shipped/aftersales/cancelled/pending_payment 同样不该要求收款流水。
     SETTLED_STATES = ("signed", "completed", "success", "finished")
-    # 签收宽限 (2026-07-10 治本"当天签收必空报"): 凭据到账节奏跟【签收日】走(签收→淘宝打款→流水/
-    # 账单 T+1~2 才拉到), 而原宽限只看下单日 —— 老单刚签收时下单日早超14天 → 立报"缺收款"、过一两天
-    # 凭据到了又自动消, 天天空报。修: 近5天内才转 signed 的单(状态改动档案里查)不报; 发货日近12天
-    # 内(发货→签收→打款还在途)也不报。凭据到了照旧自动销账, 真缺的过了宽限仍会报。
-    from datetime import datetime as _dt
-    from app.models.field_change import FieldChange as _FC
-    _sign_cut = _dt.now() - timedelta(days=5)
-    _recently_signed = {
-        fc.row_pk for fc in db.query(_FC).filter(
-            _FC.table_name == "orders", _FC.field == "status",
-            _FC.new_value == "signed", _FC.created_at >= _sign_cut,
-        ).all()
-    }
     count = 0
     for o in db.query(Order).filter(
         Order.status.in_(SETTLED_STATES),
@@ -168,15 +163,10 @@ def scan_order_missing_alipay(db: Session) -> int:
         _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
         if any(k in _txt for k in _NON_PRODUCT_KW):
             continue
-        # 宽限期: 下单 14 天内货款多在结算途中(淘宝 T+7~14), 暂不报缺收款 (避免新单噪声)
-        if o.order_date and o.order_date >= date.today() - timedelta(days=14):
+        # 客户尚未在淘宝确认收货，或确认后仍在结算/账单导入宽限期。
+        if not _payment_check_due(o):
             continue
-        # 签收宽限: 刚转 signed / 刚发货的单, 打款与流水还在 T+1~2 途中 → 暂不报 (2026-07-10)
-        if o.order_no in _recently_signed:
-            continue
-        if o.ship_date and o.ship_date >= date.today() - timedelta(days=12):
-            continue
-        # 已成交 + 无流水 + 无聚合 + 连淘宝打款金额都没有 + 非新单/非服务单 → 真·缺收款凭据
+        # 已有明确买家确认收货日期且过宽限期，仍无流水/聚合/淘宝打款金额 → 缺收款凭据
         _record(
             db,
             source_table="orders",
@@ -188,7 +178,7 @@ def scan_order_missing_alipay(db: Session) -> int:
             context={"order_no": o.order_no, "paid_amount": str(o.paid_amount)},
         )
         count += 1
-    _log.info("scan_order_missing_alipay: %d (settled, no flow/settlement/淘宝打款金额)", count)
+    _log.info("scan_order_missing_alipay: %d (buyer-confirmed >3d, no flow/settlement/淘宝打款金额)", count)
     return count
 
 

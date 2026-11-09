@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""缺收款凭据·签收宽限 (2026-07-10 治本"当天签收必空报"):
-凭据到账节奏跟签收日走(签收→打款→流水T+1~2), 刚签收/刚发货的单暂不报; 老单真缺的照报。"""
+"""缺收款凭据按淘宝客户确认收货日期延后核查，物流签收不算放款。"""
 from datetime import date, timedelta
 from decimal import Decimal as D
 
@@ -30,8 +29,9 @@ def _excs(db, ono):
 
 
 def test_old_signed_without_evidence_still_flagged(db_session):
-    """老签收单(无近签收记录/发货日久远)无任何凭据 → 照报, 宽限不放水。"""
-    _order(db_session, "G-OLD1", ship_date=date.today() - timedelta(days=40))
+    """客户确认收货已超过三天而无凭据 → 报警。"""
+    _order(db_session, "G-OLD1", ship_date=date.today() - timedelta(days=40),
+           customer_confirmed_date=date.today() - timedelta(days=4))
     db_session.commit()
     dq.scan_order_missing_alipay(db_session)
     db_session.commit()
@@ -39,7 +39,7 @@ def test_old_signed_without_evidence_still_flagged(db_session):
 
 
 def test_recently_signed_not_flagged(db_session):
-    """近5天内才转 signed(状态改动档案可查) → 打款/流水还在途, 不报。"""
+    """物流近期签收但客户未确认收货 → 不报。"""
     _order(db_session, "G-NEW1", ship_date=date.today() - timedelta(days=40))
     db_session.add(FieldChange(table_name="orders", row_pk="G-NEW1", field="status",
                                old_value="paid", new_value="signed", actor="订单重导", source="import"))
@@ -50,7 +50,7 @@ def test_recently_signed_not_flagged(db_session):
 
 
 def test_recent_shipdate_not_flagged(db_session):
-    """发货日近12天内(发货→签收→打款在途) → 不报。"""
+    """未确认收货不因近期发货或 signed 状态报警。"""
     _order(db_session, "G-SHIP1", ship_date=date.today() - timedelta(days=5))
     db_session.commit()
     dq.scan_order_missing_alipay(db_session)
@@ -59,7 +59,7 @@ def test_recent_shipdate_not_flagged(db_session):
 
 
 def test_checker_closes_recently_signed(db_session):
-    """复核器同口径: 已存在的空报, 该单是近签收 → 复核 None(可销账)。"""
+    """复核器同口径: 客户未确认收货，已有异常应销账。"""
     o = _order(db_session, "G-NEW2", ship_date=date.today() - timedelta(days=40))
     db_session.flush()
     db_session.add(FieldChange(table_name="orders", row_pk="G-NEW2", field="status",
@@ -69,6 +69,28 @@ def test_checker_closes_recently_signed(db_session):
                         description="订单 G-NEW2 已成交却无任何收款凭据", status="open")
     db_session.add(exc); db_session.commit()
     assert er.recheck(db_session, exc) is None
+    assert er.bulk_close_resolved(db_session, types=["order_missing_alipay"]) == {
+        "order_missing_alipay": 1,
+    }
+    assert exc.status == "resolved"
+
+
+def test_customer_confirmation_starts_three_day_grace(db_session):
+    _order(db_session, "G-CONFIRM-NEW", ship_date=date.today() - timedelta(days=40),
+           customer_confirmed_date=date.today() - timedelta(days=2))
+    db_session.commit()
+    dq.scan_order_missing_alipay(db_session)
+    db_session.commit()
+    assert not _excs(db_session, "G-CONFIRM-NEW")
+
+
+def test_old_logistics_signoff_without_customer_confirmation_not_flagged(db_session):
+    _order(db_session, "G-LOGISTICS-OLD", ship_date=date.today() - timedelta(days=50),
+           tracking_confirmed=True)
+    db_session.commit()
+    dq.scan_order_missing_alipay(db_session)
+    db_session.commit()
+    assert not _excs(db_session, "G-LOGISTICS-OLD")
 
 
 def test_zero_paid_full_refund_not_flagged_and_rechecker_closes(db_session):

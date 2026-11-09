@@ -286,7 +286,8 @@ class TestDataQualityService:
         from datetime import date
         db.add(Order(platform="taobao", order_no="5027779368272592526", qty=1, status="signed",
                      is_historical=False, is_refill=True, paid_amount=Decimal("10"),
-                     order_date=date(2026, 1, 22), product_name="餐桌"))
+                     order_date=date(2026, 1, 22), customer_confirmed_date=date(2026, 1, 22),
+                     product_name="餐桌"))
         db.commit()
         data_quality_service.run_all(db)
         assert db.query(DataException).filter(
