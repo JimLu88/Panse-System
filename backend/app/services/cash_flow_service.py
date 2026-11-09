@@ -201,6 +201,34 @@ def _parts_costs_row(db: Session, o: Order):
     return None, None
 
 
+def _paid_rock_slip_allocations(db: Session) -> dict[str, Decimal]:
+    """Audited, paid rock-slip lines already charged to a single real order.
+
+    The purchase ledger is the evidence for money already spent.  Only the
+    explicitly reviewed per-order slip type participates: a group bill or a
+    name appearing in a transfer remark is not sufficient to clear an order's
+    future-cash estimate.  The exact 19-digit order key and payment flow are
+    required so unrelated/multi-order purchases cannot be deducted silently.
+    """
+    import re
+    from app.models.order import PartPurchase
+
+    rows = db.execute(select(PartPurchase).where(
+        PartPurchase.purchase_type == "岩板纸单逐单已付",
+        PartPurchase.payment_status == "paid",
+        PartPurchase.related_order_no.isnot(None),
+        PartPurchase.alipay_flow_no.isnot(None),
+    )).scalars().all()
+    paid: dict[str, Decimal] = {}
+    for p in rows:
+        no = (p.related_order_no or "").strip()
+        amount = _d(p.total_amount if p.total_amount is not None else p.amount)
+        if not re.fullmatch(r"\d{19}", no) or amount <= 0 or not p.alipay_flow_no.strip():
+            continue
+        paid[no] = paid.get(no, Decimal("0")) + amount
+    return paid
+
+
 # 五金 = 金属件族(用户 2026-07-14 汇总口径): 抽屉轨+铁销+连接件+铝轨+塑轨+小拉手
 _HW_COLS = ("drawer_rail", "iron_pin", "connector", "aluminum_rail", "plastic_rail", "mini_handle")
 
@@ -238,7 +266,8 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
     """未开账单预估按类拆分 (用户 2026-07-14): 木作/岩板/五金/玻璃/电力轨道/其他配件/打包/物流安装
     + 封顶兜底调整(=最终口径 − 毛分类合计, 片段实付×85%压缩为负、定制兜底抬高为正)。
     分类值订单缺实际就读定价表配件明细(pricing_sku_costs), 件数按 est_parts/单件外配件 等比折算
-    (防差价单大数量爆表)。九项之和恒等于原单行"未开账单·预测成本" → 剩余流水分毫不变。"""
+    (防差价单大数量爆表)。已付款且逐单核实的岩板纸单从未来现金支出中扣除，
+    不改订单产品成本；九项之和等于原预测成本减去这些已付金额。"""
     from app.models.pricing import PricingSku
     from app.services import order_financials as ofin
     orders = db.execute(
@@ -251,6 +280,7 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
     agg = {k: Decimal("0") for k in
            ("wood", "rock_slab", "hardware", "glass", "electric_rail",
             "other_parts", "packing", "logi_inst")}
+    paid_rock_by_order = _paid_rock_slip_allocations(db)
     total = Decimal("0")
     counted = 0
     for o in orders:
@@ -276,10 +306,17 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
         factor = (ep / unit) if unit > 0 else Decimal("1")
         g = lambda a: _d(getattr(row, a, None))  # noqa: E731
         rock = g("rock_slab") * factor
+        # A paid, individually audited slab is already in the account balance.
+        # Keep its order/product cost intact, but do not reserve that same cash
+        # again in the *future* unpaid estimate.  Never clear more than the
+        # order's rock estimate (or its positive physical forecast).
+        already_paid = min(max(rock, Decimal("0")),
+                           paid_rock_by_order.get(o.order_no, Decimal("0")), f)
+        total -= already_paid
         gl = g("glass") * factor
         el = g("electric_rail") * factor
         hw = sum((g(a) for a in _HW_COLS), Decimal("0")) * factor
-        agg["rock_slab"] += rock
+        agg["rock_slab"] += rock - already_paid
         agg["glass"] += gl
         agg["electric_rail"] += el
         agg["hardware"] += hw
@@ -519,7 +556,7 @@ def compute_summary(db: Session) -> dict:
         {"key": "factory_estimate_wood", "label": "未开账单·预估木作", "amount": fe_split["wood"], "manual": False,
          "source": f"活跃单{fe_counted}单·定价木作估(有账单用账单)"},
         {"key": "factory_estimate_rock", "label": "未开账单·预估岩板", "amount": fe_split["rock_slab"], "manual": False,
-         "source": "定价表配件明细(rock_slab)"},
+         "source": "定价表配件明细(rock_slab)−已付且逐单核实的岩板纸单"},
         {"key": "factory_estimate_hw", "label": "未开账单·预估五金", "amount": fe_split["hardware"], "manual": False,
          "source": "定价表配件明细(抽屉轨+铁销+连接件+铝/塑轨+小拉手)"},
         {"key": "factory_estimate_glass", "label": "未开账单·预估玻璃", "amount": fe_split["glass"], "manual": False,

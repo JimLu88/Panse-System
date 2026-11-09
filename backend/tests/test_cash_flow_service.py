@@ -1,7 +1,9 @@
 from decimal import Decimal
 
 from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
-from app.models.order import FactoryOrder, Order
+from app.models.order import FactoryOrder, Order, PartPurchase
+from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuCosts
 from app.services import cash_flow_service
 
 
@@ -89,6 +91,41 @@ def test_cash_flow_summary_formula(db_session):
                     + Decimal("150") + Decimal("600") + Decimal("700") + Decimal("80"))
     assert s["total"] == (expected_add - expected_sub).quantize(Decimal("0.01"))
     assert s["total"] > 0   # 有账面现金时可用资金必为正 (核心修复)
+
+
+def test_paid_audited_rock_slip_clears_only_future_cash_estimate(db_session):
+    db = db_session
+    db.add(PricingSku(product_code="TABLE", sku_code="ROCK1",
+                      external_parts_cost=Decimal("240")))
+    db.add(PricingSkuCosts(sku_code="ROCK1", rock_slab=Decimal("220")))
+    db.add(Order(platform="淘宝", order_no="1234567890123456789", status="paid",
+                 product_code="TABLE", sku_code="ROCK1", paid_amount=Decimal("3000"),
+                 theoretical_cost=Decimal("1000"), wood_cost_est=Decimal("500"),
+                 est_parts=Decimal("240")))
+    db.flush()
+    before, _ = cash_flow_service._factory_estimate_split(db, set(), set())
+    assert before["rock_slab"] == Decimal("220")
+
+    # A paid group bill is not a per-order allocation.
+    db.add(PartPurchase(purchase_no="GROUP", purchase_type="配件采购(已知供应商)",
+                        related_order_no="1234567890123456789", payment_status="paid",
+                        alipay_flow_no="flow", total_amount=Decimal("220")))
+    # A verified line still cannot clear future cash before it is paid.
+    line = PartPurchase(purchase_no="LINE", purchase_type="岩板纸单逐单已付",
+                        related_order_no="1234567890123456789", payment_status="unpaid",
+                        alipay_flow_no="flow", total_amount=Decimal("220"))
+    db.add(line)
+    db.flush()
+    pending, _ = cash_flow_service._factory_estimate_split(db, set(), set())
+    assert pending["rock_slab"] == Decimal("220")
+
+    line.payment_status = "paid"
+    db.flush()
+    after, _ = cash_flow_service._factory_estimate_split(db, set(), set())
+    assert after["rock_slab"] == Decimal("0")
+    assert after["wood"] == before["wood"]
+    assert after["other_parts"] == before["other_parts"]
+    assert before["_total"] - after["_total"] == Decimal("220")
 
 
 def test_total_profit_excludes_refill_and_flags_missing_cost(db_session):
