@@ -58,8 +58,8 @@ def test_recent_shipdate_not_flagged(db_session):
     assert not _excs(db_session, "G-SHIP1")
 
 
-def test_checker_closes_recently_signed(db_session):
-    """复核器同口径: 客户未确认收货，已有异常应销账。"""
+def test_checker_reclassifies_missing_confirmation_as_pending(db_session):
+    """旧财务警告转为提示；保留待核记录，不谎称已经收款。"""
     o = _order(db_session, "G-NEW2", ship_date=date.today() - timedelta(days=40))
     db_session.flush()
     db_session.add(FieldChange(table_name="orders", row_pk="G-NEW2", field="status",
@@ -69,8 +69,19 @@ def test_checker_closes_recently_signed(db_session):
                         description="订单 G-NEW2 已成交却无任何收款凭据", status="open")
     db_session.add(exc); db_session.commit()
     assert er.recheck(db_session, exc) is None
-    assert er.bulk_close_resolved(db_session, types=["order_missing_alipay"]) == {
-        "order_missing_alipay": 1,
+    assert er.bulk_close_resolved(db_session, types=["order_missing_alipay"]) == {}
+    assert exc.status == "open"
+    assert exc.exception_type == "order_payment_pending_confirmation"
+    assert exc.severity == "info"
+    assert "不判定为缺支付宝收款流水" in exc.description
+
+    o.customer_confirmed_date = date.today() - timedelta(days=4)
+    db_session.commit()
+    dq.scan_order_missing_alipay(db_session)
+    db_session.commit()
+    assert _excs(db_session, "G-NEW2")
+    assert er.bulk_close_resolved(db_session, types=["order_payment_pending_confirmation"]) == {
+        "order_payment_pending_confirmation": 1,
     }
     assert exc.status == "resolved"
 
@@ -91,6 +102,24 @@ def test_old_logistics_signoff_without_customer_confirmation_not_flagged(db_sess
     dq.scan_order_missing_alipay(db_session)
     db_session.commit()
     assert not _excs(db_session, "G-LOGISTICS-OLD")
+
+
+def test_existing_payment_evidence_closes_warning_instead_of_pending(db_session):
+    order = _order(db_session, "G-PAID", shop_received_amount=D("980"))
+    db_session.flush()
+    exc = DataException(
+        source_table="orders", source_pk=str(order.id),
+        exception_type="order_missing_alipay", severity="warning",
+        description="订单 G-PAID 缺收款凭据", status="open",
+    )
+    db_session.add(exc)
+    db_session.commit()
+
+    assert er.bulk_close_resolved(db_session, types=["order_missing_alipay"]) == {
+        "order_missing_alipay": 1,
+    }
+    assert exc.status == "resolved"
+    assert exc.exception_type == "order_missing_alipay"
 
 
 def test_zero_paid_full_refund_not_flagged_and_rechecker_closes(db_session):
