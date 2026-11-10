@@ -323,6 +323,7 @@ export const updatePackingBill = (
   patch: {
     customer_name?: string;
     packing_fee?: number | null;
+    row_date?: string | null;     // 具体日期 YYYY-MM-DD；null=清空
     matched_order_no?: string;   // 手动指定订单号; 空串=清空配单
     excluded?: boolean;
     note?: string;

@@ -51,6 +51,7 @@ export default function PackingBillsPage() {
   const [eFee, setEFee] = useState<number | null>(null);
   const [eOrder, setEOrder] = useState('');
   const [eNote, setENote] = useState('');             // 备注 (用户 2026-06-29)
+  const [eRowDate, setERowDate] = useState('');        // 具体日期 YYYY-MM-DD
   const [eBillMonth, setEBillMonth] = useState('');   // 改账期 YYYY-MM (错填月份时挪正确账期)
   const [savingEdit, setSavingEdit] = useState(false);
   const [cands, setCands] = useState<PackingCandidate[]>([]);
@@ -73,6 +74,7 @@ export default function PackingBillsPage() {
     setEFee(r.packing_fee ?? null);
     setEOrder(r.matched_order_no ?? r.order_no ?? '');
     setENote(r.note ?? '');
+    setERowDate(r.row_date ?? '');
     setEBillMonth(r.bill_month ?? '');
     setCands([]);
     loadCands(r.id);   // 进来就按客户名列候选订单(下拉自选)
@@ -86,6 +88,7 @@ export default function PackingBillsPage() {
       // 填了订单号=人工配到该单; 留空=清空配单。不再自动按名乱配(用户反馈会配错/配到多单)。
       const patch: Parameters<typeof updatePackingBill>[1] =
         { customer_name: eName, packing_fee: eFee, matched_order_no: o, note: eNote };
+      if (eRowDate !== (editRow.row_date ?? '')) patch.row_date = eRowDate || null;
       const bm = eBillMonth.trim();
       if (bm && bm !== (editRow.bill_month ?? '')) patch.bill_month = bm;  // 改了账期才传
       await updatePackingBill(editRow.id, patch);
@@ -532,6 +535,15 @@ export default function PackingBillsPage() {
             </Space.Compact>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               候选按客户名相似度排序取前 5；选中即填入上面订单号，保存后人工配到该单。改了客户名点「按客户名找候选」刷新候选。
+            </Typography.Text>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>具体日期</div>
+            <DatePicker style={{ width: '100%' }} placeholder="补录实际日期"
+              value={eRowDate ? dayjs(eRowDate) : null}
+              onChange={(d) => setERowDate(d ? d.format('YYYY-MM-DD') : '')} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              按手写账单或原始凭据填写到日；未修改时保留原值，清空后保存会清除日期。
             </Typography.Text>
           </div>
           <div>

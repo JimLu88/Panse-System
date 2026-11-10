@@ -123,3 +123,21 @@ def test_update_row_bill_month_blank_keeps_old(db_session):
     svc.update_row(db_session, pb.id, bill_month="")
     db_session.refresh(pb)
     assert pb.bill_month == "2026-05"
+
+
+def test_update_row_changes_and_clears_specific_date(db_session):
+    """编辑弹窗可补录到日，也可显式清空；未传字段时不影响账期。"""
+    svc.commit_packing_parsed(db_session, [
+        {"customer_name": "孟三", "packing_fee": 20},
+    ], bill_month="2026-08")
+    pb = db_session.query(PackingBill).filter_by(customer_name="孟三").first()
+
+    svc.update_row(db_session, pb.id, row_date="2026-08-17")
+    db_session.refresh(pb)
+    assert pb.row_date == date(2026, 8, 17)
+    assert pb.bill_month == "2026-08"
+
+    svc.update_row(db_session, pb.id, row_date=None)
+    db_session.refresh(pb)
+    assert pb.row_date is None
+    assert pb.bill_month == "2026-08"

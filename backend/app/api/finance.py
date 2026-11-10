@@ -1846,6 +1846,7 @@ def remove_packing_payment_allocation(
 class PackingBillPatch(BaseModel):
     customer_name: Optional[str] = None
     packing_fee: Optional[Decimal] = None
+    row_date: Optional[date] = None            # 具体日期 YYYY-MM-DD；显式 null 可清空
     matched_order_no: Optional[str] = None   # 手动指定订单号; 空串 = 清空配单
     excluded: Optional[bool] = None
     note: Optional[str] = None
@@ -1855,7 +1856,7 @@ class PackingBillPatch(BaseModel):
 
 @router.patch("/packing-bills/{bill_id}", response_model=PackingBillOut)
 def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = Depends(get_db)):
-    """手动编辑一行打包费账单: 改客户名/打包费/手动配单 (用户 2026-06-24)。只更新请求里出现的字段。"""
+    """手动编辑打包费账单行；具体日期与账期分别保存，只更新请求里出现的字段。"""
     from app.services import packing_bill_service
     existing = db.get(PackingBill, bill_id)
     old_match = existing.matched_order_no if existing else None
