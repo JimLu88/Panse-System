@@ -206,7 +206,9 @@ export const parsePackingBill = (file: File) => {
   return api
     .post<PackingParseResp>('/api/screenshots/packing-bill/parse', fd, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
+      // 整页手写账单视觉识别实测可能超过 3 分钟；服务端一次识别最长 240 秒，
+      // 坏 JSON 还会自动重试一次。只放宽本接口，不影响其它上传请求。
+      timeout: 600000,
     })
     .then((r) => r.data);
 };

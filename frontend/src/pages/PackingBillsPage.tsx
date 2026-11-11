@@ -209,6 +209,7 @@ export default function PackingBillsPage() {
 
   const handleParse = async (file: File) => {
     setParsing(true);
+    message.info('图片已上传，AI 正在识别；复杂手写账单可能需要 3–8 分钟，请勿重复上传');
     try {
       const r = await parsePackingBill(file);
       setRows(r.rows || []);
@@ -216,7 +217,10 @@ export default function PackingBillsPage() {
       setOcrWarnings(r.ocr_warnings || []);
       message.success(`识别到 ${r.rows?.length ?? 0} 行，请逐行复核姓名/金额后再入库`);
     } catch (e: any) {
-      message.error(e?.response?.data?.detail ?? '识别失败（OCR 主用+本地兜底都不可用？）');
+      const timedOut = e?.code === 'ECONNABORTED' || /timeout/i.test(String(e?.message ?? ''));
+      message.error(timedOut
+        ? '识别超过 10 分钟仍未返回，请稍后再试；不要连续重复上传'
+        : (e?.response?.data?.detail ?? '识别失败，请检查图片清晰度或稍后重试'));
     } finally {
       setParsing(false);
     }
@@ -367,8 +371,10 @@ export default function PackingBillsPage() {
         message="手写中文姓名识别准确率约 60–80%，识别后请务必逐行核对姓名与金额再入库。"
         description="本子上标了「改客户/不计入/作废」的行会自动勾上「不计入」并从应付总额里剔除；可手动改。配单按订单号优先、否则客户名唯一匹配（自动排除关闭单）。" />
 
-      <Upload accept="image/*" showUploadList={false} beforeUpload={handleParse}>
-        <Button type="primary" icon={<InboxOutlined />} loading={parsing}>上传手写账单照片识别</Button>
+      <Upload accept="image/*" showUploadList={false} beforeUpload={handleParse} disabled={parsing}>
+        <Button type="primary" icon={<InboxOutlined />} loading={parsing} disabled={parsing}>
+          上传手写账单照片识别
+        </Button>
       </Upload>
 
       {ocrWarnings.length > 0 && (
