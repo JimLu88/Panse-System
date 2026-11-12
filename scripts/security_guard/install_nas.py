@@ -5,13 +5,15 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import sys
+import base64
 
 BASE = Path('/volume1/docker/panse/security-guard')
 LOCK = Path('/volume1/docker/panse/.panse-release-lock')
 
 
 def command(*args):
-    p = subprocess.run(list(args), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=100)
+    p = subprocess.run(list(args), cwd=str(BASE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=100)
     if p.returncode:
         raise RuntimeError('command_failed: ' + str(args[:3]) + ' ' + p.stdout[-1000:])
     return p.stdout
@@ -22,6 +24,19 @@ def main():
     LOCK.mkdir()  # Existing owner is never removed or overridden.
     (LOCK/'owner').write_text(owner)
     try:
+        if '--payload' in sys.argv:
+            payload = json.load(sys.stdin)
+            assert set(payload) == {'common.py','nas_guard.py','test_guard.py','install_nas.py','README.md'}
+            BASE.mkdir(mode=0o700, exist_ok=True)
+            BASE.chmod(0o700)
+            for name, content in payload.items():
+                data = base64.b64decode(content, validate=True)
+                compile(data.decode('utf-8-sig'), name, 'exec') if name.endswith('.py') else None
+                dest = BASE/name
+                if dest.exists() and dest.read_bytes() != data:
+                    (BASE/(name+'.before-%d' % time.time())).write_bytes(dest.read_bytes())
+                dest.write_bytes(data)
+                dest.chmod(0o600)
         units = {}
         for mode, schedule in [('hourly', '*-*-* *:05:00'), ('daily', '*-*-* 08:20:00')]:
             name = 'panse-security-' + mode
