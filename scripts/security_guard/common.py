@@ -120,6 +120,6 @@ class Journal:
         return {'sent': True, 'message_id': message_id, 'events': len(selected), 'batch': batch}
 
     def summary(self):
-        return {'active': self.db.execute('SELECT COUNT(*) FROM issues WHERE active=1').fetchone()[0],
+        return {'active': self.db.execute("SELECT COUNT(*) FROM issues WHERE active=1 AND scope!='commission'").fetchone()[0],
                 'pending': self.db.execute("SELECT COUNT(*) FROM events WHERE status='pending'").fetchone()[0],
                 'unknown': self.db.execute("SELECT COUNT(*) FROM events WHERE status='unknown'").fetchone()[0]}

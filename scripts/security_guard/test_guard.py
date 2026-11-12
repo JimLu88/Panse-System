@@ -75,6 +75,11 @@ class Alerts(unittest.TestCase):
         self.j.observe('availability', [], DAY + 1)
         self.assertEqual(1, self.j.summary()['active'])
 
+    def test_commission_notice_is_not_an_active_fault(self):
+        self.j.observe('commission', [finding('ready', 'enabled', 'x')], DAY)
+        self.assertEqual(0, self.j.summary()['active'])
+        self.assertTrue(self.j.dispatch(self.sender, DAY)['sent'])
+
 
 @unittest.skipIf(os.name == 'nt', 'NAS collector uses Linux fcntl')
 class BoundedCollector(unittest.TestCase):
