@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 
 from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
@@ -5,6 +6,7 @@ from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts
 from app.services import cash_flow_service
+from app.services import settings_service
 
 
 def _add_balance(db, name, year, month, closing):
@@ -126,6 +128,31 @@ def test_paid_audited_rock_slip_clears_only_future_cash_estimate(db_session):
     assert after["wood"] == before["wood"]
     assert after["other_parts"] == before["other_parts"]
     assert before["_total"] - after["_total"] == Decimal("220")
+
+
+def test_closed_packing_month_is_removed_from_future_cash_only(db_session):
+    db = db_session
+    db.add_all([
+        Order(platform="淘宝", order_no="PACK-JUL", status="paid",
+              order_date=date(2026, 7, 31), paid_amount=Decimal("2000"),
+              theoretical_cost=Decimal("1000"), est_packing=Decimal("100")),
+        Order(platform="淘宝", order_no="PACK-AUG", status="paid",
+              order_date=date(2026, 8, 1), paid_amount=Decimal("2000"),
+              theoretical_cost=Decimal("1000"), est_packing=Decimal("200")),
+    ])
+    db.flush()
+
+    before, _ = cash_flow_service._factory_estimate_split(db, set(), set())
+    assert before["packing"] == Decimal("300")
+    assert before["_total"] == Decimal("2000")
+
+    settings_service.set_value(
+        db, cash_flow_service.SETTING_PACKING_CLOSED_THROUGH, "2026-07",
+    )
+    after, _ = cash_flow_service._factory_estimate_split(db, set(), set())
+    assert after["packing"] == Decimal("200")
+    assert after["_total"] == Decimal("1900")
+    assert sum(v for k, v in after.items() if not k.startswith("_")) == after["_total"]
 
 
 def test_total_profit_excludes_refill_and_flags_missing_cost(db_session):

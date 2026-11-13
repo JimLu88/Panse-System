@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import re
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -45,6 +46,9 @@ SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
 SETTING_TOTAL_INVESTMENT = "cashflow_total_investment"
 # 税费按季度缴(每季一次); 已缴季度存 JSON 列表如 ["2026-Q1"] → 不再计入减项。当季恒计(未缴)。
 SETTING_TAX_PAID_QUARTERS = "cashflow_tax_paid_quarters"
+# 打包费按订单月份关闭预测的水位线。例: 2026-07 表示 2026-07 及以前的订单
+# 已完成打包月结，不再作为未来现金支出重复预估。只影响现金流预测，不改订单历史成本。
+SETTING_PACKING_CLOSED_THROUGH = "cashflow_packing_closed_through"
 DEFAULT_TOTAL_INVESTMENT = Decimal("669871")
 DEFAULT_SHOP_DEPOSIT = Decimal("0")
 
@@ -73,6 +77,14 @@ def _get_setting_decimal(db: Session, key: str, default: Decimal) -> Decimal:
         return Decimal(str(raw))
     except Exception:
         return default
+
+
+def _packing_closed_through(db: Session) -> Optional[str]:
+    """Return a validated YYYY-MM packing settlement cutoff, if configured."""
+    raw = (settings_service.get(
+        db, SETTING_PACKING_CLOSED_THROUGH, env_fallback=False,
+    ) or "").strip()
+    return raw if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", raw) else None
 
 
 # ── 账户余额：取每个账户最新一期的期末余额，按账户名归类 ──────────
@@ -281,6 +293,7 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
            ("wood", "rock_slab", "hardware", "glass", "electric_rail",
             "other_parts", "packing", "logi_inst")}
     paid_rock_by_order = _paid_rock_slip_allocations(db)
+    packing_closed_through = _packing_closed_through(db)
     total = Decimal("0")
     counted = 0
     for o in orders:
@@ -293,7 +306,18 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
         counted += 1
         total += f
         agg["wood"] += _d(o.actual_cost) if _d(o.actual_cost) > 0 else _d(getattr(o, "wood_cost_est", None))
-        agg["packing"] += pb["packing"]
+        packing = _d(pb["packing"])
+        packing_is_closed = bool(
+            packing_closed_through
+            and o.order_date
+            and o.order_date.strftime("%Y-%m") <= packing_closed_through
+        )
+        if packing_is_closed:
+            # 已月结打包费属于历史实付，不再是未来现金支出。总预测同步扣减，
+            # 避免该金额从“预估打包”转移到“封顶兜底调整”继续重复出现。
+            total -= min(max(packing, Decimal("0")), f)
+        else:
+            agg["packing"] += packing
         comp = pb["logistics_component"] + pb["install_component"]
         agg["logi_inst"] += comp if comp > 0 else _d(o.est_logistics) + _d(o.est_install)
         ep = _d(getattr(o, "est_parts", None))
@@ -530,6 +554,7 @@ def compute_summary(db: Session) -> dict:
     factory_sample, factory_billed, _billed_nos, _billed_ids = _classify_unpaid_factory_bills(db)
     # 未开账单预估按类拆行 (用户 2026-07-14 "把配件拆解修改进减项落库"): 九项之和=原单行, 剩余流水不变
     fe_split, fe_counted = _factory_estimate_split(db, _billed_nos, _billed_ids)
+    packing_closed_through = _packing_closed_through(db)
     refill_commission = _refill_unpaid_commission(db)
     tax_q = _quarterly_tax(db)   # 待缴税费(季度): 当季必扣 + 上季未标已缴的
 
@@ -566,7 +591,8 @@ def compute_summary(db: Session) -> dict:
         {"key": "factory_estimate_other_parts", "label": "未开账单·预估其他配件", "amount": fe_split["other_parts"], "manual": False,
          "source": "灯带/背板/脚/软包/雕刻等 + 无明细行的单"},
         {"key": "factory_estimate_packing", "label": "未开账单·预估打包", "amount": fe_split["packing"], "manual": False,
-         "source": "同月度经营口径"},
+         "source": (f"同月度经营口径；订单月已结算至 {packing_closed_through} 的不再预测"
+                    if packing_closed_through else "同月度经营口径")},
         {"key": "factory_estimate_logi", "label": "未开账单·预估物流安装", "amount": fe_split["logi_inst"], "manual": False,
          "source": "同月度经营口径"},
         {"key": "factory_estimate_cap", "label": "未开账单·封顶兜底调整", "amount": fe_split["cap_adjust"], "manual": False,
