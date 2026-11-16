@@ -1,4 +1,4 @@
-"""Explicit Feishu platform selection. Login only; never dispatch business tasks."""
+"""Explicit Feishu platform selection. Login selection with a scoped existing-order continuation."""
 from __future__ import annotations
 
 import hashlib
@@ -16,7 +16,7 @@ CHOICES = {"店铺后台扫码": "shop", "支付宝扫码": "alipay"}
 LOGIN_TASKS = {"shop": "taobao_orders", "alipay": "alipay_main"}
 LOGIN_KEYS = {"shop": "taobao", "alipay": "alipay_main"}
 ACTIVE_KEY = "feishu_platform_login_active"
-MENU = "请选择扫码平台：\n1. 店铺后台扫码\n2. 支付宝扫码\n\n请回复完整文字「店铺后台扫码」或「支付宝扫码」。\n只登录所选平台，不自动拉单或运行其他待处理任务。"
+MENU = "请选择扫码平台：\n1. 店铺后台扫码\n2. 支付宝扫码\n\n请回复完整文字「店铺后台扫码」或「支付宝扫码」。\n仅登录所选平台；若本次已有订单因登录失效暂停，店铺登录成功后续跑原订单流程。其他任务不启动。"
 
 
 def selection(value: str) -> str | None:
@@ -31,7 +31,7 @@ def status_text(db) -> str:
               "failed": "登录流程未完成", "unknown": "结果待核对，请勿重复启动"}
     if not value:
         return "尚无本入口的扫码记录。回复「扫码」选择平台。"
-    return names.get(value.get("platform"), "平台") + "：" + states.get(value.get("state"), "结果待核对") + "。本入口不自动拉单。"
+    return names.get(value.get("platform"), "平台") + "：" + states.get(value.get("state"), "结果待核对") + "。仅本次已有的待登录订单可续跑。"
 
 
 def _load(db, key):
@@ -78,6 +78,8 @@ def start_login(db, platform: str, *, request_id: str) -> dict:
         ingest._scan_lock.release()
         return {"started": False, "reason": "已有取数任务进行中，请结束后再扫码。"}
     try:
+        from app.services.platform_order_resume_service import pending_order
+        expected_order = pending_order(db, platform)
         key, reason = _claim(db, request_id, platform)
         if not key:
             ingest._orch_lock.release()
@@ -122,16 +124,23 @@ def start_login(db, platform: str, *, request_id: str) -> dict:
         finally:
             try:
                 _record(d, key, platform, state, job)
-                if state in {"success", "failed"}:
-                    web_agent_service.request_stop(d, reason="selected_platform_login_finished")
             finally:
-                d.close()
                 ingest._orch_lock.release()
                 ingest._scan_lock.release()
+                try:
+                    queued = False
+                    if state == "success":
+                        from app.services.platform_order_resume_service import queue_existing_order
+                        queued = queue_existing_order(d, platform=platform, key=key,
+                                                      job=job, expected=expected_order)
+                    if state in {"success", "failed"} and not queued:
+                        web_agent_service.request_stop(d, reason="selected_platform_login_finished")
+                finally:
+                    d.close()
     try:
         threading.Thread(target=run, name="feishu-platform-login", daemon=True).start()
     except Exception:
         ingest._orch_lock.release()
         ingest._scan_lock.release()
         raise
-    return {"started": True, "platform": platform, "login_only": True}
+    return {"started": True, "platform": platform, "login_only": expected_order is None}

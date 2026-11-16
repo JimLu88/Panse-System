@@ -1766,6 +1766,27 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
     if not getattr(o, "sku_code", None) and not getattr(o, "sku", None):
         return {"ok": False, "error": "该单SKU还没回填(取数报表没赶上), 图/尺寸都出不来 —— "
                                       "等每小时取数回填后会自动补推; 急的话先重拉订单再推"}
+    # Migrated orders belong to the child delivery ledger. Never allocate a
+    # parent number or delete its archive before the legacy sender skips them.
+    child_rows = db.execute(select(OrderDetail).where(
+        OrderDetail.order_no == order_no, OrderDetail.source == "import",
+        OrderDetail.factory_delivery_required.is_(True),
+    )).scalars().all()
+    if child_rows:
+        from app.services import order_line_delivery_service as line_delivery
+        if any(not line.sub_order_no for line in child_rows):
+            return {"ok": False, "error": "子订单身份缺失，未分配主单号或发送"}
+        subs = {str(line.sub_order_no) for line in child_rows}
+        sent = line_delivery.sent_line_evidence(db)
+        pending = subs - set(sent)
+        if not pending:
+            return {"ok": True, "pushed": 0, "failed": [],
+                    "skipped": "child_orders_already_delivered", "delivery_scope": "child",
+                    "factory_nos": [line.factory_no for line in child_rows]}
+        push = reconcile_order_line_delivery(db, limit=len(pending), only_sub_order_nos=pending)
+        return {**push, "ok": push.get("pushed", 0) > 0, "delivery_scope": "child",
+                "factory_nos": [line.factory_no for line in child_rows],
+                "error": None if push.get("pushed", 0) else "子单未送达，请查看子单送达状态；未重建主单图"}
     # 正式单没工厂号 → 顺排一个(否则下单图是"未能匹配工厂订单号")
     if getattr(o, "factory_no", None) is None:
         o.factory_no = _next_factory_no(db)

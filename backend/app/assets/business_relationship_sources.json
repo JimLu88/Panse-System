@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "78d340663ebb23b8ff1faec048f42c69dce8b9e9ae867c3c31218ac34a31ed39",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "991ed1129a4950cb8465a273913d48f18bdb99c464aa61e343568fc33fa9970d",
+    "backend/app/services/business_relationship_catalog.py": "7d285386563a3fa823fe6fefb2f5945db5dd7e061ec325a3fdd38a176bb91e9f",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -82,7 +82,7 @@
     "backend/app/services/order_financials.py": "ff460d87453a492e843924fc6c16626c99ac926f1bd73ff94192fa68919d8518",
     "backend/app/services/order_line_delivery_service.py": "03e92248f69f020eb7f3c207debdfe43c6a8998995de6581365c97e54c123b06",
     "backend/app/services/order_purchase_facts.py": "f0420fc5a60e22f365924755c8c74ff77df0b84bd37a06fff3ea9b254de44ae3",
-    "backend/app/services/order_sheet_archive_service.py": "d6cadb83ff15564ded6e2194c14576ca90417c865d5b54b42e3f745993950aac",
+    "backend/app/services/order_sheet_archive_service.py": "d4fa2e14be5abb18ba13b25c516ba091398377914c1a6e851c0b86f311fd6af5",
     "backend/app/services/order_sync_service.py": "eb3c8a522c045b5e3b70f87f506e91e336c16d518f536d14f750a894a0a68882",
     "backend/app/services/pricing_bom_sync_service.py": "1c50fb1355f51a2abfd131b7e944092b21b948eba1f244f177592667b5cef1c5",
     "backend/app/services/pricing_calc_service.py": "0ceb2f7bec7142febf381e2bf34a61b114de743f8057dd330d4ecf8e2be905b7",
@@ -99,7 +99,7 @@
     "backend/app/services/taobao_order_import.py": "17db313b467b2714a5def173498152241486b2ba3f6b8289fb9726bc7d2b69de",
     "backend/app/services/web_agent_service.py": "0287c38fb94fe14791753ef1d6d9461374ba9db9f0f97c5c15393b81d21f002a",
     "backend/app/api/orders.py": "8fde21d43828bbcf2e24ff9804714834a0b80ab4bca063675b4551f52ed196d2",
-    "backend/app/services/platform_scan_service.py": "685aa94cf27b7e3d44a27ec6c1a086d8c7cf82d90213a36d885a598fa3b3914f",
+    "backend/app/services/platform_scan_service.py": "f62656f2a831377445b7268ee7c5597035f16cac666211ff044dcca1a17c3021",
     "backend/app/services/customer_refund_remark.py": "6b997d88aca48fa4035f3ffd98bda38c796f2d9f44849cd3c40a51f97cefb624",
     "backend/app/services/aftersales_payment_link_service.py": "69ef5a04973955e5f571b4259c757ab37b0b55e3e4f40426ea80991970426bcf",
     "backend/app/services/smart_matching_service.py": "ab030114256c43e90bdab309751b2d2c301d34856da18f9f66b8b9f17d48a09b",
@@ -120,6 +120,17 @@
     "backend/app/isolated_store_import.py": "8c58b031490438b97da4c93ae6f6796430ec7c68ec659b34b6110b5a27820bb0",
     "backend/app/isolated_store_setup.py": "ae769c7d11499b4fea952829b44d86b6d26e89c15dede8e11ea5cb237e61690e",
     "backend/app/isolated_store_account.py": "d3dd13eb85d3e6288817d14ffc5b11b76c688039aec6a9d567f9d5deb9f73dd7",
-    "backend/app/services/alipay_collection_audit.py": "99846ac94019086e27ef85f74c48b7b18ea226be230746b86d5f98f073e0b38a"
+    "backend/app/services/alipay_collection_audit.py": "99846ac94019086e27ef85f74c48b7b18ea226be230746b86d5f98f073e0b38a",
+    "backend/app/services/platform_order_resume_service.py": "202f9cdb9cd453af1aa6628fff02bf55d3357b4e3461e83af1a6f2682255863b"
+  },
+  "scoped_review_20261116": {
+    "paths": [
+      "backend/app/services/platform_scan_service.py",
+      "backend/app/services/platform_order_resume_service.py",
+      "backend/app/services/order_sheet_archive_service.py",
+      "backend/app/services/business_relationship_catalog.py"
+    ],
+    "reason": "same pending order after selected shop login and child delivery routing",
+    "external_business_verified": false
   }
 }
