@@ -98,6 +98,8 @@ def test_postgres_upgrade_ddl(monkeypatch):
     output = StringIO()
     context = MigrationContext.configure(dialect_name='postgresql', opts={'as_sql': True, 'output_buffer': output})
     monkeypatch.setattr(migration, 'op', Operations(context))
+    monkeypatch.setattr(migration, '_detach_views', lambda: [])
+    monkeypatch.setattr(migration, '_restore_views', lambda views: None)
     migration.upgrade()
     for table in ('orders', 'order_details', 'factory_orders'):
         assert f'ALTER TABLE {table} ALTER COLUMN product_name TYPE TEXT' in output.getvalue()
