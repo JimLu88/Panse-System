@@ -979,9 +979,11 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     isolated_resolution = historical_resolution or bool(active_batch and resolved_batch and active_batch != resolved_batch)
     current_artifacts = (agent_ingest_service.order_pull_artifact_names(resolved_evidence)
                          or agent_ingest_service.latest_order_pull_artifact_names(db))
+    if not resolved_artifacts and 'scope_artifacts' in r:
+        current_artifacts = r['scope_artifacts']
     current_pending = agent_ingest_service.pending_shipping_password_files(
         db,
-        artifact_names=current_artifacts or None,
+        artifact_names=current_artifacts if 'scope_artifacts' in r else current_artifacts or None,
         all_dates=bool(resolved_evidence),
     )
     latest_pending = agent_ingest_service.pending_shipping_password_files(
@@ -990,7 +992,7 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     pending_files = (
         current_pending
         if r.get("imported")
-        else (current_pending or latest_pending)
+        else (current_pending if current_artifacts or 'scope_artifacts' in r else latest_pending)
     )
     r["pending_files"] = pending_files
     if pending_files:

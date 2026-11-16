@@ -1346,7 +1346,21 @@ def reingest_pending_shipping(db: Session) -> dict:
         out["note"] = f"共享目录不存在: {OUTPUT_DIR}"
         return out
     from app.services import taobao_order_import
+    # A current manifest (even an incomplete one) owns password processing.
+    # Never test its password against unrelated historical encrypted files.
+    scope = latest_order_pull_evidence(db)
+    if not scope:
+        # A password received after midnight still belongs to the last pull,
+        # not to every old encrypted workbook left in the share.
+        current = _load_json(db, KEY_ORCH_STATE)
+        if order_pull_batch_id(current):
+            scope = current
+    allowed_names = set(order_pull_artifact_names(scope))
+    if scope:
+        out['scope_artifacts'] = sorted(allowed_names)
     for path in sorted(OUTPUT_DIR.rglob("*")):
+        if scope and path.name not in allowed_names:
+            continue
         if not path.is_file() or path.name.startswith("_"):
             continue
         if path.suffix.lower() not in (".xlsx", ".xls"):

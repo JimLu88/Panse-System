@@ -101,3 +101,26 @@ def test_postgres_upgrade_ddl(monkeypatch):
     migration.upgrade()
     for table in ('orders', 'order_details', 'factory_orders'):
         assert f'ALTER TABLE {table} ALTER COLUMN product_name TYPE TEXT' in output.getvalue()
+
+
+def test_password_does_not_test_unrelated_historical_file(db_session, monkeypatch, tmp_path):
+    folder = tmp_path / '2026-11-16' / 'taobao'
+    folder.mkdir(parents=True)
+    (folder / 'old.xlsx').write_bytes(ingest._OOXML_ENCRYPTED_MAGIC + b'x' * 120)
+    monkeypatch.setattr(ingest, 'OUTPUT_DIR', tmp_path)
+    monkeypatch.setattr(ingest, '_latest_shipping_password', lambda db: 'fixture-only')
+    monkeypatch.setattr(ingest, 'latest_order_pull_evidence', lambda db: {'order_batch_id': 'current', 'artifacts': ['orders.xlsx', 'items.xlsx']})
+    result = ingest.reingest_pending_shipping(db_session)
+    assert result['tried'] == 0 and result['files'] == []
+
+
+def test_incomplete_current_manifest_does_not_blame_old_password(db_session, monkeypatch):
+    from app.services import feishu_bot_service as bot
+    monkeypatch.setattr(ingest, 'reingest_pending_shipping', lambda db: {'tried': 0, 'imported': 0, 'files': []})
+    monkeypatch.setattr(ingest, 'latest_order_pull_artifact_names', lambda db: ['orders.xlsx', 'items.xlsx'])
+    monkeypatch.setattr(ingest, 'latest_order_pull_batch_id', lambda db: 'current-batch')
+    monkeypatch.setattr(ingest, 'pending_shipping_password_files',
+                        lambda db, **kw: [] if kw.get('artifact_names') else ['old.xlsx'])
+    result = bot.apply_shipping_password(db_session, 'fixture-only')
+    assert result['pending_files'] == []
+    assert ingest.get_shipping_password_result(db_session)['status'] == 'no_pending_file'
