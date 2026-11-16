@@ -50,5 +50,5 @@ def test_execution_rechecks_original_wait(db_session,monkeypatch):
     expected,key,job=captured[0]
     monkeypatch.setattr(scheduler,'_job_pull_catchup',lambda db:{'original_entry':True})
     assert resume._continue_original(db_session,expected,key,job)=={'original_entry':True}
-    state=pipeline._load(db_session);state['pipelines']['order_delivery']['run_key']='new-run';pipeline._save(db_session,state);db_session.commit()
+    state=pipeline._load(db_session);state['pipelines']['order_delivery']['active_run_key']='new-run';pipeline._save(db_session,state);db_session.commit()
     assert resume._continue_original(db_session,expected,key,job)['skipped']=='original_login_wait_changed'

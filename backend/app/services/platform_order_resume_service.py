@@ -1,5 +1,6 @@
 """Resume only the order pipeline already waiting when shop login was selected."""
 import json
+from datetime import datetime
 from sqlalchemy import select
 from app.models.settings import SystemSetting
 from app.services import automation_pipeline_service as pipeline, settings_service
@@ -13,7 +14,19 @@ def pending_order(db, platform):
             or not state.get("last_attempt_at")
             or pipeline.classify_failure(state.get("last_error") or "")["reason"] != "login_required"):
         return None
-    return {key: state.get(key) for key in ("date", "run_key", "last_attempt_at")}
+    stage = state.get("last_stage") or {}
+    if stage.get("at"):
+        try:
+            stage_at = datetime.fromisoformat(stage["at"])
+            attempt_at = datetime.fromisoformat(state["last_attempt_at"])
+            # Do not guess when historical timestamps mix aware/naive forms.
+            if (stage_at.tzinfo is None) != (attempt_at.tzinfo is None):
+                return None
+            if stage_at > attempt_at:
+                return None
+        except (TypeError, ValueError):
+            return None
+    return {key: state.get(key) for key in ("date", "active_run_key", "last_attempt_at", "last_stage")}
 
 
 def queue_existing_order(db, *, platform, key, job, expected):

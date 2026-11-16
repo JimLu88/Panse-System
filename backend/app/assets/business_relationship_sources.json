@@ -27,7 +27,7 @@
     "backend/app/models/marketing.py": "863288888d70e9b5ce08db3dff152b33b7f5ee5658799dba899b9fcea0cfe309",
     "backend/app/models/material.py": "36867733704d7ad1a2e70817dee868888af25d40e8873acf1f07542508963c08",
     "backend/app/models/npd.py": "148d1af9bc3585ff119e2ed846f3905b9e1f62443a1777e40799788eef78b146",
-    "backend/app/models/order.py": "3f7626a3a36237ef5af72de3c562b49f7f15500abfdc505e193a8275072e3106",
+    "backend/app/models/order.py": "b663fa26d60484a0e034f89787b0dca5b33a1d40f48ea3785f3df788e408131c",
     "backend/app/models/pricing.py": "0fa8b8d06a51ba248c601ca815920c370780e6afebedef30e880b1b434810b8d",
     "backend/app/models/pricing_formula.py": "b90d16defb85a04633b0aac775d6674d3558dd7a965a5a22ce614c483438adc9",
     "backend/app/models/procurement.py": "6326d3e013e9a23501cc3c0e0952eb7c3967256b31ec6c3b07bcf3b22f0308a9",
@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "78d340663ebb23b8ff1faec048f42c69dce8b9e9ae867c3c31218ac34a31ed39",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "7d285386563a3fa823fe6fefb2f5945db5dd7e061ec325a3fdd38a176bb91e9f",
+    "backend/app/services/business_relationship_catalog.py": "95cc832a37212c39ad3dfcd7bb145737d63c0724db996e406d42ad9a57e18da2",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -93,7 +93,7 @@
     "backend/app/services/remote_report_service.py": "6fba28eea67a6b4e5e53e2330e6b92e4256a53229dd3efa317a11725f4b52d3e",
     "backend/app/services/sales_analytics.py": "2886b733e4eecc5f8d3362d715c79b41f5cc152f251a0e66d90d499205c6f0cf",
     "backend/app/services/sales_rollup_service.py": "a71e84e81bb685eae5d3445e2d519ffe84d33f7e68cafecf0e5cfd962cb1ec40",
-    "backend/app/services/scheduler.py": "a593b4349d26ef4d54013d6a07c057a572ec39e7a9457c5c87235bcf69d4c07c",
+    "backend/app/services/scheduler.py": "02845700b80b4a09adb5d575720cfa43bd602aaaacfdab6e9a9a7529496544a7",
     "backend/app/services/shipment_service.py": "0ece15887653479dc5aba6d181cf474dbf6c766258f75d260883dedcf522391a",
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "17db313b467b2714a5def173498152241486b2ba3f6b8289fb9726bc7d2b69de",
@@ -121,7 +121,7 @@
     "backend/app/isolated_store_setup.py": "ae769c7d11499b4fea952829b44d86b6d26e89c15dede8e11ea5cb237e61690e",
     "backend/app/isolated_store_account.py": "d3dd13eb85d3e6288817d14ffc5b11b76c688039aec6a9d567f9d5deb9f73dd7",
     "backend/app/services/alipay_collection_audit.py": "99846ac94019086e27ef85f74c48b7b18ea226be230746b86d5f98f073e0b38a",
-    "backend/app/services/platform_order_resume_service.py": "202f9cdb9cd453af1aa6628fff02bf55d3357b4e3461e83af1a6f2682255863b"
+    "backend/app/services/platform_order_resume_service.py": "41182def4a4a04cd8bc89e522ebe5c2fa9ab9838952893b205a38f675f37ea72"
   },
   "scoped_review_20261116": {
     "paths": [

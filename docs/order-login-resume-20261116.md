@@ -7,3 +7,14 @@
 关系审查覆盖登录→订单新鲜度→原编排→子单生成→飞书回执。仅锁定本次4个已审查来源，既有其他来源过期不重锁。本次不改活动链、订单数据、金额或库存。
 
 测试与生产部署分开：本地124项订单/平台登录/制单回归通过；额外支付宝旧测试因_DummyDb不支持context manager失败，涉及的agent_ingest_service/alipay_collection_audit及测试文件与基线HEAD相同，未扩大修改。部署须等待01当前取数终态并按NAS发布锁执行。不得用新版本回放今天已经成功的840号子单。
+
+
+## 本轮新增阻塞修复
+
+0157将orders/order_details/factory_orders.product_name升为TEXT，原导入器完整保留标题，不切255字符。降级发现任何长标题则拒绝。真实原报表仅本地解析：1779订单、2条标题超过255、最长541；不输出客户内容、不写生产。PostgreSQL离线DDL验证通过，尚无真实PostgreSQL迁移验证。
+
+扫码等待快照改用active_run_key；last_stage晚于last_attempt_at时拒绝旧登录等待，按实际时间比较带时区时间，混合或坏格式不猜。同日实际新取数使用独立run_key，已有编排运行则不覆盖pipeline。旧终态登录错误不会吞掉本轮身份歧义失败。
+
+本轮63项回归通过（expanded XML），既有支付宝DummyDb上下文失败仍单独排除未修。TEXT迁移尚未上线；Docker待用户正常启动，不改发布方式。
+
+独立发货恢复程序在outputs/order-login-resume-20261116/collect_reviewed_shipping_once.py，由01执行。它不修改原attempt、不改通用identity guard，不自动入库或推单。原未知提交仍未知，独立下载/口令/内容验证分开记账。

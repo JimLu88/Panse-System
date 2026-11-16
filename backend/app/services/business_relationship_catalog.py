@@ -76,7 +76,7 @@ NODES = [
     node('campaign.files','模板与价格文件','campaign','campaign_workflow_service','services/campaign_workflow_service.py'),
     node('campaign.receipt','官方报名终态','campaign','CampaignSignup','models/campaign_signup.py','', '已成功/未知结果不重传；不把上传成功当报名成功'),
     node('order.file','原报表与批次','order','ImportedFile / ImportJob','models/import_file.py'),
-    node('order.parent','母订单','order','Order.order_no','models/order.py','class Order('),
+    node('order.parent','母订单','order','Order.order_no','models/order.py','class Order(',note='product_name使用Text完整保留多商品串联标题；0157同步母单、子单、工厂单，禁止截断回滚；订单身份、金额及送达不变'),
     node('order.child','全部导入子订单','order','OrderDetail.sub_order_no / source','models/order.py','class OrderDetail'),
     node('order.qty','原购买数量','order','OrderDetail.qty','models/order.py','class OrderDetail','原始交易事实，不能被成品数量覆盖'),
     node('order.refund','子单关闭与退款','order','OrderDetail.line_status / refund_status','services/order_line_delivery_service.py'),

@@ -853,10 +853,13 @@ def _job_web_agent_daily(db: Session) -> dict:
     # rejecting a genuinely fresh manual run solely because it is daytime.
     # At and after 18:00 the production safety gate remains exactly 18:00.
     order_freshness_hour = _order_pull_freshness_hour()
+    if agent_ingest_service.is_running():
+        return {"skipped": "orchestrate_running", "_run_status": "skipped"}
+    from uuid import uuid4
     automation_pipeline_service.begin_run(
         db,
         "order_delivery",
-        run_key=f"scheduled-order-pull:{run_date.isoformat()}:18:00",
+        run_key=f"order-pull:{run_date.isoformat()}:{uuid4().hex}",
     )
     automation_pipeline_service.record_stage(
         db, "order_delivery", "started", detail="18:00订单取数与送达链路开始"
