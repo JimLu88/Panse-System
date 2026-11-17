@@ -294,6 +294,19 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
 
+    # 明确的小配件另行成交单不归主单：本单收款按 85% 计成本，不能因为备注
+    # 含「追加」而被下面的定制追加规则清零。保留平台费、税在 cost_breakdown 单列。
+    _small_addon_note = (getattr(o, "remark", None) or "")
+    if ("追加小配件" in _small_addon_note and "85%" in _small_addon_note
+            and not bool(getattr(o, "is_refill", False))):
+        _small_cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+        return {"factory_wood": Decimal("0"), "estimate_part": _small_cost,
+                "packing": Decimal("0"), "precap_total": _small_cost,
+                "cap_mode": "追加小配件85", "logistics_component": Decimal("0"),
+                "install_component": Decimal("0"),
+                "cap_label": "人工确认追加小配件→本单实付扣退款后按85%计成本",
+                "final": _small_cost}
+
     # 定制追加归主单 (用户拍板 2026-07-14): 备注含「追加」定制语义(纯插座追加除外, 那走插座成本)
     # + 同客户另有更大的主订单 → 本单是定制补拍链接, 成本随主单工厂账单走, 本单归零。
     # 案例 …35486210「追加上柜定制」¥2480: 主单 …43486210 账单¥7600 已含上柜, 本单曾被配件阶梯

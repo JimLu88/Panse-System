@@ -51,3 +51,18 @@ def test_no_db_keeps_old_behavior(db_session):
     addon = _pair(db_session)
     pb = ofin.physical_cost_breakdown(addon)   # 不传 db
     assert pb["cap_mode"] != "定制追加归主单"
+
+
+def test_confirmed_small_accessory_addon_keeps_own_cost_and_fees(db_session):
+    addon = _pair(db_session, addon_remark="用户确认：追加小配件，按实付85%计配件成本", addon_paid="20")
+    addon.est_packing = Decimal("170")  # inherited full-product estimate must not leak
+    addon.est_logistics = Decimal("350")
+    addon.est_install = Decimal("90")
+    db_session.commit()
+    pb = ofin.physical_cost_breakdown(addon, db_session)
+    assert pb["final"] == Decimal("17.00")
+    assert pb["packing"] == Decimal("0")
+    b = ofin.cost_breakdown(addon, ofin.load_coefficients(db_session), Decimal("0"), db=db_session)
+    assert b["physical"] == Decimal("17.00")
+    assert b["platform"] > 0
+    assert b["tax"] > 0
