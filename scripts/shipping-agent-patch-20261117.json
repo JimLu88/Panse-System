@@ -1,0 +1,178 @@
+{
+  "schema": "hash-bound-source-patch-v1",
+  "files": [
+    {
+      "path": "app/engine/orchestrator.py",
+      "before_sha256": "46035a4e77b8f0307aecce41463e524189525b164ad2824f2c27474b774fca93",
+      "after_sha256": "983bae1ac34128d654493b51401fcdde36d58a6bcff2654ded679d71bf918e76",
+      "changes": [
+        {
+          "start": 369,
+          "end": 370,
+          "before": [
+            "    from .order_report_identity import export_id, select"
+          ],
+          "after": [
+            "    from .order_report_identity import export_id, select, row_scope"
+          ]
+        },
+        {
+          "start": 396,
+          "end": 396,
+          "before": [],
+          "after": [
+            "                candidate_text = await candidate.inner_text()"
+          ]
+        },
+        {
+          "start": 397,
+          "end": 398,
+          "before": [
+            "                                   'applied_at': _report_applied_at(await candidate.inner_text())})"
+          ],
+          "after": [
+            "                                   'scope': row_scope(candidate_text),",
+            "                                   'applied_at': _report_applied_at(candidate_text)})"
+          ]
+        },
+        {
+          "start": 401,
+          "end": 402,
+          "before": [
+            "                    baseline=variables.get('_report_baseline_ids'))"
+          ],
+          "after": [
+            "                    baseline=variables.get('_report_baseline_ids'), report=report)"
+          ]
+        },
+        {
+          "start": 478,
+          "end": 479,
+          "before": [
+            "                    delivery = await _request_shipping_password_delivery(page, row)"
+          ],
+          "after": [
+            "                    # Persist the downloaded artifact in the original receipt",
+            "                    # even if registration fails; never submit another export.",
+            "                    from .order_run_receipt import checkpoint_report",
+            "                    checkpoint_report({'report': report, 'ok': True, 'downloads': [str(destination)],",
+            "                                       'export_identity': (variables or {}).get('_export_identity')})",
+            "                    from .shipping_target import register",
+            "                    try:",
+            "                        registered = await asyncio.to_thread(register, destination,",
+            "                            export_id=export_id(href), applied_at=applied_at, variables=variables or {})",
+            "                    except Exception as exc:",
+            "                        raise FreshReportUnavailable('shipping_registration_failed_file_retained_no_password_request') from exc",
+            "                    delivery = (await _request_shipping_password_delivery(page, row)",
+            "                                if registered.get('password_request_allowed') is True else",
+            "                                {'attempted': False, 'sent': False, 'reason': 'previous_request_not_replayed'})"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "app/engine/order_report_identity.py",
+      "before_sha256": "eaebe3fb395875472e8fb4536d7cc28fe9aa8d75f46a6511a39b2153108beba9",
+      "after_sha256": "9c4310a76416ef12e99a17c3e43430799b82dc2419c424b932f6408a4cb724ca",
+      "changes": [
+        {
+          "start": 8,
+          "end": 9,
+          "before": [
+            "def select(candidates, *, triggered_at, expected_id=None, baseline=None):"
+          ],
+          "after": [
+            "def row_scope(text):",
+            "    \"\"\"Allowlisted displayed filters, never instructions or private download URLs.\"\"\"",
+            "    labels = ('成交时间', '订单状态', '物流服务', '售后服务', '评价状态', '宝贝名称', '买家昵称')",
+            "    values = {}",
+            "    for label in labels:",
+            "        match = re.search(re.escape(label) + r'[:：][ \\u3000]*([^\\t\\n]*)', text or '')",
+            "        if match:",
+            "            values[label] = match.group(1).strip()",
+            "    return values",
+            "",
+            "",
+            "def select(candidates, *, triggered_at, expected_id=None, baseline=None, report=None):"
+          ]
+        },
+        {
+          "start": 23,
+          "end": 23,
+          "before": [],
+          "after": [
+            "    if report == '发货报表' and len(eligible) == 2 and not expected_id:",
+            "        # One official shipping submission produces physical + virtual scopes.",
+            "        # Accept only the observed exact pair, same second and same full filters.",
+            "        scopes = [x.get('scope') or {} for x in eligible]",
+            "        if ({s.get('订单状态') for s in scopes} == {'全部', '买家已付款'}",
+            "                and eligible[0]['applied_at'] == eligible[1]['applied_at']",
+            "                and len({x['export_id'] for x in eligible}) == 2",
+            "                and all(set(s) == {'成交时间', '订单状态', '物流服务', '售后服务', '评价状态', '宝贝名称', '买家昵称'} for s in scopes)",
+            "                and {k: v for k, v in scopes[0].items() if k != '订单状态'} == {k: v for k, v in scopes[1].items() if k != '订单状态'}):",
+            "            eligible = [x for x in eligible if x['scope']['订单状态'] == '买家已付款']"
+          ]
+        },
+        {
+          "start": 25,
+          "end": 25,
+          "before": [],
+          "after": [
+            "    if eligible and report == '发货报表' and (eligible[0].get('scope') or {}).get('订单状态') != '买家已付款':",
+            "        raise ValueError('shipping_physical_scope_unverified')"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "app/engine/shipping_target.py",
+      "before_sha256": null,
+      "after_sha256": "4f5a47acbd405299358e360b39eb15a72bffa9114a4bd7dd6a5340284de5a6a3",
+      "changes": [
+        {
+          "start": 0,
+          "end": 0,
+          "before": [],
+          "after": [
+            "\"\"\"Register exact shared artifact before requesting its platform password once.\"\"\"",
+            "import hashlib",
+            "import json",
+            "import urllib.request",
+            "from datetime import timedelta, timezone",
+            "from pathlib import Path",
+            "",
+            "from app import config",
+            "",
+            "",
+            "def register(path, *, export_id, applied_at, variables):",
+            "    from app.engine.erp_notify import ERP_URL",
+            "    from app.vault.store import get_or_create_api_token",
+            "    artifact = Path(path).resolve()",
+            "    relative = artifact.relative_to(config.OUTPUT_DIR.resolve()).as_posix()",
+            "    if applied_at.tzinfo is None:",
+            "        applied_at = applied_at.replace(tzinfo=timezone(timedelta(hours=8)))",
+            "    recovery = variables.get('_shipping_recovery') or {}",
+            "    manifest = {'path': relative, 'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest(),",
+            "                'export_id': export_id, 'generated_at': applied_at.isoformat(),",
+            "                'business_date': variables.get('order_business_date'),",
+            "                'order_batch_id': variables.get('order_batch_id'),",
+            "                'mode': 'independent' if recovery else 'original',",
+            "                'source_file_ids': recovery.get('source_file_ids', []),",
+            "                'sub_order_nos': recovery.get('sub_order_nos', [])}",
+            "    if not manifest['business_date'] or not manifest['order_batch_id']:",
+            "        raise ValueError('shipping_registration_business_identity_missing')",
+            "    req = urllib.request.Request(ERP_URL + '/api/web-agent/shipping-target',",
+            "            data=json.dumps(manifest).encode(), headers={'Content-Type': 'application/json',",
+            "            'X-API-Key': get_or_create_api_token()})",
+            "    # No retry: an unknown registration may already have claimed password send.",
+            "    with urllib.request.urlopen(req, timeout=30) as response:",
+            "        result = json.loads(response.read())",
+            "    if result.get('ok') is not True:",
+            "        raise ValueError('shipping_registration_not_confirmed')",
+            "    return result"
+          ]
+        }
+      ]
+    }
+  ]
+}

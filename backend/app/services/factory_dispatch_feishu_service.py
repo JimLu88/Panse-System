@@ -438,8 +438,8 @@ def _production_projection(db, order, line=None):
             '生产事实状态':'当前事实读取失败，请勿据此新增生产'}}
     confirmed = getattr(sheet, 'quantity_confirmation', None)
     qty_unknown = (not confirmed and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
-        w.code == 'production_quantity_unverified' for w in sheet.warnings)
-    blockers = [w.code for w in sheet.warnings if w.code == 'production_quantity_unverified']
+        w.code in {'production_quantity_unverified', 'sales_detail_missing'} for w in sheet.warnings)
+    blockers = [w.code for w in sheet.warnings if w.code in {'production_quantity_unverified', 'sales_detail_missing'}]
     size_unverified = not sheet.size_info or any(w.code in (
         'variant_size_unverified', 'size_unverified', 'custom_size_in_remark') for w in sheet.warnings)
     if qty_unknown and 'production_quantity_unverified' not in blockers:

@@ -504,8 +504,8 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
-    if any(getattr(w, 'code', '') == 'production_quantity_unverified' for w in getattr(sheet, 'warnings', [])):
-        raise ValueError('定制拍下数量不是已核成品件数，停止自动生产发送，待核对实物数量')
+    if any(getattr(w, 'code', '') in {'production_quantity_unverified', 'sales_detail_missing'} for w in getattr(sheet, 'warnings', [])):
+        raise ValueError('缺真实销售明细或已核成品件数，停止自动生产发送，待补齐来源或确认数量')
     return _html_to_png(render_html(sheet), width=1684)
 
 

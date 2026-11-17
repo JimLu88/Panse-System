@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,23 @@ from app.services import agent_ingest_service as ingest
 from app.services import settings_service, web_agent_service, web_agent_wake_service
 
 router = APIRouter(prefix="/api/web-agent", tags=["web-agent"])
+
+
+def _shipping_target_principal(x_api_key: str | None = Header(None), db: Session = Depends(get_db)):
+    from app.dependencies import machine_identity_for_key
+    if machine_identity_for_key(x_api_key, db, path='/api/web-agent/shipping-target') not in (
+            'machine:web-agent-shipping-target', 'machine:ingest_api_token'):
+        raise HTTPException(403, '需要本订单采集程序令牌')
+
+
+@router.post('/shipping-target', dependencies=[Depends(_shipping_target_principal)])
+def register_shipping_target(payload: dict, db: Session = Depends(get_db)):
+    from app.services.shipping_recovery_service import register
+    try:
+        return register(db, payload)
+    except (ValueError, KeyError, TypeError) as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 def _freshness(state: dict, category: str, interval_days: int) -> dict:

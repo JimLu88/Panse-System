@@ -54,6 +54,29 @@ def ask(f):
     return q.request_quantity(f.db,line_id=f.line.id)
 
 
+def test_changed_notes_renew_held_card_and_reject_old_reply(flow, monkeypatch):
+    f=flow; ask(f)
+    f.order.remark='新的生产备注'; f.db.commit()
+    assert q.handle_reply(f.db,f.event)['state']=='held'
+    monkeypatch.setattr(q.feishu_client,'send_card', lambda *a: {'message_id':'CARD2'})
+    assert ask(f)['card_message_id']=='CARD2'
+    saved=q._read(q._row(f.db,q.PREFIX+str(f.line.id)))
+    assert saved['revision']==2 and saved['superseded'][0]['card_message_id']=='CARD'
+    assert 'reply_message_id' not in saved and not f.calls['images']
+    assert q.handle_reply(f.db,f.event)['state']=='message_unverified'
+    assert ask(f)['card_message_id']=='CARD2'
+
+
+def test_unknown_card_send_never_retried_even_after_notes_change(flow, monkeypatch):
+    f=flow
+    def unknown(*a): raise TimeoutError('unknown')
+    monkeypatch.setattr(q.feishu_client,'send_card',unknown)
+    assert ask(f)['state']=='ask_uncertain'
+    f.order.remark='new';f.db.commit()
+    monkeypatch.setattr(q.feishu_client,'send_card',lambda *a: pytest.fail('unknown replay'))
+    assert ask(f)['state']=='ask_uncertain'
+
+
 def test_question_is_once_non_production_and_bound(flow):
     f=flow
     assert ask(f)['state']=='awaiting_reply'

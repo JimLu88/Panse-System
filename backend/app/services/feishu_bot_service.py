@@ -959,9 +959,28 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     db.commit()
     try:
         from app.services import agent_ingest_service
-        r = agent_ingest_service.reingest_pending_shipping(db)
+        from app.services import shipping_recovery_service
+        r = shipping_recovery_service.apply_password(db, pwd)
+        if r is not None and (r.get('independent') or r.get('duplicate') or r.get('status') != 'imported'):
+            settings_service.set_value(db, agent_ingest_service.KEY_SHIPPING_PASSWORD_RESULT,
+                json.dumps({'status': r.get('status'), 'at': datetime.now(timezone.utc).isoformat(),
+                            'target_id': r.get('target_id'), 'pending_files': r.get('pending_files', []),
+                            'reason': r.get('failure_reason')}, ensure_ascii=False))
+            db.commit()
+            return r
+        if r is None:
+            r = agent_ingest_service.reingest_pending_shipping(db)
+        if r.get('status') == 'target_missing':
+            r['failure_reason'] = r['note']
+            settings_service.set_value(db, agent_ingest_service.KEY_SHIPPING_PASSWORD_RESULT,
+                json.dumps({'status': 'target_missing', 'at': datetime.now(timezone.utc).isoformat(),
+                            'pending_files': [], 'reason': r['note']}, ensure_ascii=False))
+            db.commit()
+            return r
     except Exception:  # noqa: BLE001
-        return {"imported": 0, "tried": 0}
+        db.rollback()
+        return {"imported": 0, "tried": 0, "status": "needs_review",
+                "failure_reason": "当前报表处理异常，未尝试其他历史文件；请核对本次恢复回执"}
     # A password may arrive after midnight for yesterday's report.  Prefer the
     # current batch; only when today's batch is absent do we continue the most
     # recent unresolved batch.  Historical one-password-per-report leftovers
@@ -1208,15 +1227,18 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
     r = apply_shipping_password(db, pwd)
     imported = r.get("imported") or 0
     failure_reasons: list[str] = []
+    processing_reasons: list[str] = []
     if imported:
         body = (f"已用口令自动解密并导入 {imported} 份发货报表 (更新订单 {r.get('updated') or 0} 单)。")
     elif r.get("failure_reason"):
-        failure_reasons.append(str(r["failure_reason"]))
-        body = f"本机未解密成功：{r['failure_reason']}"
+        (processing_reasons if r.get('status') in {'target_missing', 'needs_review', 'import_failed', 'processing'}
+         else failure_reasons).append(str(r['failure_reason']))
+        body = str(r['failure_reason'])
     elif r.get("tried"):
         body = "口令已存, 但本机待解密的发货报表用它仍打不开 (一报一密)。"
     else:
         body = "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。"
+    body += _shipping_recovery_note(r)
     # 根治飞书↔报表分离: 把口令转发给报表所在的生产机
     relay = _relay_shipping_password(db, pwd)
     if relay is not None:
@@ -1227,14 +1249,20 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
             # 生产机持有正式报表和生产库；它成功即为最终结果，本机没有对应
             # 文件不应把整张回执误标成失败。
             failure_reasons = []
+            processing_reasons = []
+            body = f"生产机已解密并导入 {ri} 份发货报表（更新 {relay.get('updated') or 0} 单）。" + _shipping_recovery_note(relay)
         elif relay.get("failure_reason"):
-            failure_reasons.append(str(relay["failure_reason"]))
-            body += f" 生产机未解密成功：{relay['failure_reason']}"
+            (processing_reasons if relay.get('status') in {'target_missing', 'needs_review', 'import_failed', 'processing'}
+             else failure_reasons).append(str(relay['failure_reason']))
+            body += f" 生产机：{relay['failure_reason']}"
         elif relay.get("tried"):
             body += " 已同步生产机，但口令未能解密待处理报表。"
         else:
             body += " 已同步生产机(暂无可解报表)。"
-    if failure_reasons:
+    if processing_reasons:
+        body += ' 这是文件登记或处理问题，不代表口令错误；请核对本次文件及恢复回执。'
+        title, color = '发货报表处理待核对', 'orange'
+    elif failure_reasons:
         body += " 请转发上述报表对应的正确口令；无新口令前系统已暂停无效重试。"
         title, color = "口令未匹配发货报表", "orange"
     else:
@@ -1243,6 +1271,20 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
     return {"message_id": message_id, "kind": "shipping_password",
             "captured": True, "imported": imported,
             "failure_reason": "；".join(dict.fromkeys(failure_reasons)) or None}
+
+
+def _shipping_recovery_note(result):
+    recovery = result.get('recovery') or {}
+    if not recovery:
+        return ''
+    failures = (recovery.get('delivery') or {}).get('failures') or []
+    addresses = sum(f.get('deferred') == 'address_masked' for f in failures)
+    quantities = sum(bool(f.get('quantity_question')) for f in failures)
+    held = len(recovery.get('held') or [])
+    sent = len(recovery.get('receipts') or [])
+    return (f' 口令已验证，无需重发。限定子单送达 {sent} 条；'
+            f'地址待补 {addresses} 条，成品数量待确认 {quantities} 条，来源明细或身份待核对 {held} 条。'
+            + (' 还有未完成项，请查看恢复回执。' if recovery.get('status') != 'done' else ''))
 
 
 # ── 飞书「售后」关键词多步录入 (2026-06-12) ──

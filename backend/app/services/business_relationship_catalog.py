@@ -27,6 +27,8 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','先验证共享相对路径、hash、export_id、业务日和真实生成日，再准许一次请求口令；同登记及未知不重放。'),
+    node('order.shipping_only','仅发货资料的不完整订单','order','Order.platform_field_state.shipping_only','services/taobao_order_import.py','def _commit_shipping','保留真实母单和SKU文字，不造子单、不默认1件、不覆盖购买数量或财务；真实销售子单及明确数量才解除。'),
     node('finance.main_completeness','主力号采集后完整性核对','finance','AlipayFlow + ImportedFile / alipay_main_completeness_latest_v1','services/alipay_collection_audit.py','def after_collection','采集/入账后独立会话只读核对原始账单时间覆盖与逐笔金额日期；零交易日不当缺失。不自动补拉或改账。新异常先持久化发送意图，仅飞书提醒群通知，未知不重发，正常静默。'),
     {'id':'governance.fuge_isolation','label':'孚格独立运行与恢复边界','domain':'governance',
      'field':'store_id / instance_id / store.sqlite / independent media root',
@@ -151,6 +153,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('sync.shipping_target','sync.password','口令只处理登记文件','同路径/hash/export_id已核对','没有目标不扫描旧文件；处理问题不误报口令错误','services/shipping_recovery_service.py','def apply_password'),
+    edge('sync.shipping_target','factory.receipt','独立恢复精确子单续推','原两份已入库报表hash/角色/业务批次与限定子单相符','真实归档日期可跨午夜；不改原attempt，不重导已入库文件，不重发sent/unknown','services/order_scoped_resume_service.py','def resume'),
+    edge('order.shipping_only','factory.sheet','阻止不完整资料进入生产','缺真实子单或明确购买数量','不删除真实订单，不用默认1件填补，不覆盖已发回执','services/factory_sheet.py','def build',kind='protect'),
     edge('factory.size_retry','factory.receipt','精确清单重核后复用原发送器','旧缺尺寸失败且无发送证据','数量/地址/退款/身份硬门不放宽，保留工厂号与原备注','services/factory_size_delivery_service.py','def apply_manifest'),
     edge('factory.receipt','factory.forward','图片下方关联独立操作卡','仅已取得图片消息ID','发送未知不重发，改图重置待转发，旧卡不能覆盖新状态','services/factory_forward_service.py','def attach_card'),
     edge('factory.forward','sync.factory','单向同步转发状态','ERP提交后异步投影','失败最多五次；不更改数量、生产状态或手工列','services/factory_forward_service.py','def sync_pending'),
@@ -221,7 +226,7 @@ EDGES = [
     edge('order.parent','order.child','关联全部购买行','存在source=import','不得只取第一件；全过滤后不退回母单','services/order_line_delivery_service.py'),
     edge('order.child','order.qty','保留逐子单购买数','原始购买明细','缺失/0不是1','models/order.py','class OrderDetail'),
     edge('order.qty','quantity.card','需要时询问成品数','未知购买数或定制多计价单位','普通有效数量不强制询问','services/factory_quantity_request_service.py','def request_quantity'),
-    edge('quantity.card','quantity.reply','等待真人回复','回复对应卡且来自正确群','群里孤立数字不能确认','services/factory_quantity_request_service.py','def handle_reply'),
+    edge('quantity.card','quantity.reply','等待真人回复或新身份重新确认','回复当前卡且来自正确群；旧卡身份变化后失效','群里孤立数字不能确认；旧证据保留、unknown发送不重试','services/factory_quantity_request_service.py','def handle_reply'),
     edge('quantity.reply','quantity.physical','记录确认依据','真实消息读回且身份未变化','确认人/回复/精确子单齐全，冲突不覆盖','services/factory_production_evidence.py','def confirm_quantity'),
     edge('order.notes','quantity.physical','使旧确认失效','备注/购买数/SKU身份发生变化','不能沿用旧卡默认为已确认','services/factory_production_evidence.py','def _identity'),
     edge('quantity.physical','factory.sheet','取成品量制单','确认记录与当前身份相符','购买量仍原值；材料按成品量','services/factory_sheet.py','def build_for_order_line'),

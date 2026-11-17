@@ -1330,88 +1330,17 @@ def _alipay_bill_error_reason(result: dict) -> str:
 
 
 def reingest_pending_shipping(db: Session) -> dict:
-    """收到新发货口令后调用: 用最新口令重试 OUTPUT_DIR 里所有加密发货报表。
-
-    修复 (2026-06-15) —— 以前的死结: 加密报表无口令时标 pending_password 但**照样归档**
-    (file_hash 记录), 等口令到了, 下次 run_ingest 又按"已知文件"跳过 → 永远不会解密
-    (用户每次都得叫我手动导)。此函数绕过 hash 去重, 直接对所有加密淘宝报表用最新口令重试:
-    import 是 upsert 幂等 (重复导无副作用); 一报一密, 口令不匹配的那份自然解密失败、保持
-    待解密, 不影响其它份。由飞书口令入站处理器调用, 实现"发口令→自动入库"。"""
-    out: dict = {"tried": 0, "imported": 0, "failed": 0, "updated": 0, "files": []}
+    """Compatibility entry: only a registered exact target can consume a password."""
+    from app.services.shipping_recovery_service import apply_password
     pwd = _latest_shipping_password(db)
+    out = {"tried": 0, "imported": 0, "failed": 0, "updated": 0, "files": [], "scope_artifacts": []}
     if not pwd:
-        out["note"] = "尚未收到发货报表口令 (请发送『发货密码 xxx』)"
-        return out
-    if not OUTPUT_DIR.exists():
-        out["note"] = f"共享目录不存在: {OUTPUT_DIR}"
-        return out
-    from app.services import taobao_order_import
-    # A current manifest (even an incomplete one) owns password processing.
-    # Never test its password against unrelated historical encrypted files.
-    scope = latest_order_pull_evidence(db)
-    if not scope:
-        # A password received after midnight still belongs to the last pull,
-        # not to every old encrypted workbook left in the share.
-        current = _load_json(db, KEY_ORCH_STATE)
-        if order_pull_batch_id(current):
-            scope = current
-    allowed_names = set(order_pull_artifact_names(scope))
-    if scope:
-        out['scope_artifacts'] = sorted(allowed_names)
-    for path in sorted(OUTPUT_DIR.rglob("*")):
-        if scope and path.name not in allowed_names:
-            continue
-        if not path.is_file() or path.name.startswith("_"):
-            continue
-        if path.suffix.lower() not in (".xlsx", ".xls"):
-            continue
-        if _classify(path.relative_to(OUTPUT_DIR)) != "taobao_report":
-            continue
-        raw = path.read_bytes()
-        if raw[:8] != _OOXML_ENCRYPTED_MAGIC:
-            continue   # 只重试加密发货报表; 明文报表归 run_ingest 常规流程
-        out["tried"] += 1
-        try:
-            rep = taobao_order_import.import_taobao_orders(
-                db, path.name, raw, password=pwd,
-                source_observed_at=_order_source_time(db, path, raw), source_kind='agent_download')
-            errs = getattr(rep, "errors", None)
-            if errs:
-                out["failed"] += 1
-                out["files"].append({"file": path.name, "status": "pending",
-                                     "note": str(errs[0])[:120]})
-                continue
-            d = _report_to_dict(rep)
-            d["agent_status"] = "imported"
-            d["agent_report_role"] = "shipping"
-            prior = _hash_exists(db, hashlib.sha256(raw).hexdigest())
-            prior_summary = (
-                prior.row_summary
-                if prior is not None and isinstance(prior.row_summary, dict)
-                else {}
-            )
-            for key in (
-                "automation_batch_id",
-                "agent_report_role_expected",
-                "agent_report_role_detected",
-                "agent_report_role_source",
-            ):
-                if prior_summary.get(key) is not None:
-                    d[key] = prior_summary[key]
-            import_storage.archive(db, content=raw, original_name=path.name,
-                                   kind="taobao", source="api", row_summary=d)
-            db.commit()
-            out["imported"] += 1
-            out["updated"] += int(d.get("updated") or 0)
-            out["files"].append({"file": path.name, "status": "imported",
-                                 "updated": d.get("updated"),
-                                 "inserted": d.get("inserted")})
-        except Exception as e:  # noqa: BLE001 - 单文件失败不阻断
-            db.rollback()
-            out["failed"] += 1
-            out["files"].append({"file": path.name, "status": "error",
-                                 "note": f"{type(e).__name__}: {e}"})
-    return out
+        return {**out, "status": "password_missing", "note": "尚未收到发货报表口令"}
+    result = apply_password(db, pwd)
+    if result is not None:
+        return result
+    return {**out, "status": "target_missing",
+            "note": "未登记当前发货报表的精确路径和校验值，未尝试历史文件；请先登记本次文件"}
 
 
 def _ingest_candidates(only_paths: Optional[list[str]] = None) -> list[Path]:

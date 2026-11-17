@@ -472,6 +472,10 @@ def detect_report_role(filename: str, raw: bytes) -> str | None:
         "买家实付金额", "打款商家金额", "买家应付邮费",
     }
     has_order_no = bool({"订单编号", "订单号", "主订单编号"} & header)
+    if (has_order_no and len(shipping_keys & header) >= 2
+            and '子订单编号' not in header and not ({'购买数量', '数量'} & header)
+            and '商品属性SKU' in header):
+        return 'shipping'
     if has_order_no and len(shipping_keys & header) >= 2 and not (sales_keys & header):
         return "shipping"
     if {"子订单编号", "主订单编号"}.issubset(header):
@@ -727,7 +731,8 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
         o.lines.append({
             "sub_order_no": _clean(gv(row, "子订单编号")) or no,
             "product_name": gv(row, "商品标题", "标题", "商品名称"),
-            "sku": extract_sku(gv(row, "商品属性")),
+            "sku": extract_sku(gv(row, "商品属性", "商品属性SKU", "SKU名称", "规格属性")),
+            "explicit_child": bool(_clean(gv(row, "子订单编号"))),
             "sku_code": _clean(merchant),
             "product_code": product_code_from_merchant(merchant),
             "sku_id": _clean(gv(row, "skuId", "sku id", "SKU ID", "sku_id")),
@@ -1260,6 +1265,39 @@ def maybe_decrypt(raw: bytes, password: Optional[str]) -> bytes:
 
 
 # ── 对外统一入口 ──────────────────────────────────────────────────────────────
+def _commit_shipping(db, orders, platform, rep):
+    """Shipping is a private-field supplement, never a purchase-line authority."""
+    for no, parsed in orders.items():
+        if not no or parsed.order_no_bad:
+            rep.skipped_invalid += 1
+            continue
+        order = db.scalar(select(Order).where(Order.order_no == no))
+        if order is None:
+            first = next(iter(parsed.lines), {})
+            status, recognized = _resolve_status(parsed.status_text)
+            order = Order(platform=platform, order_no=no, order_date=_to_date(parsed.order_date),
+                          status=status if recognized else 'pending_payment', qty=0,
+                          product_name=_clean(first.get('product_name')), sku=_clean(first.get('sku')),
+                          buyer_message=_clean(parsed.buyer_message), seller_memo=_clean(parsed.seller_memo),
+                          platform_field_state={'shipping_only': {'state': 'missing_sales_detail'}})
+            db.add(order)
+            rep.inserted += 1
+            rep.warnings.append(f'{no}: 仅发货资料，缺真实子单及购买数量，未生成生产明细')
+        else:
+            rep.updated += 1
+        for field, value in [('customer_name', parsed.customer_name),
+                             ('customer_phone', parsed.customer_phone),
+                             ('customer_address', parsed.customer_address)]:
+            # A literal null in the platform address is missing source data,
+            # not a token we may remove to invent a complete delivery address.
+            if field == 'customer_address' and re.search(r'null', str(value or ''), re.I):
+                rep.warnings.append(f'{no}: 地址含null占位，待补完整地址')
+                continue
+            setattr(order, field, _prefer_clear_private_value(getattr(order, field), value,
+                                                              phone=field == 'customer_phone'))
+    db.commit()
+
+
 def import_taobao_orders(db: Session, filename: str, raw: bytes,
                          platform: str = "淘宝",
                          force_format: Optional[str] = None,
@@ -1268,6 +1306,7 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
                          source_kind: Optional[str] = None) -> TaobaoImportReport:
     """自动识别格式并导入。force_format 可强制指定; password 用于解密加密发货报表。"""
     rep = TaobaoImportReport()
+    shipping_only = detect_report_role(filename, raw) == 'shipping'
     if is_encrypted_ooxml(raw):
         try:
             raw = maybe_decrypt(raw, password)
@@ -1278,7 +1317,9 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     rep.detected_format = fmt
 
     ship_info: dict = {}
-    if fmt == "qianniu_multi":
+    if shipping_only:
+        orders = _parse_sales_detail(filename, raw, rep)
+    elif fmt == "qianniu_multi":
         orders, ship_info = _parse_qianniu_multi(raw, rep)
     elif fmt == "sales_detail":
         orders = _parse_sales_detail(filename, raw, rep)
@@ -1307,7 +1348,18 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     for parsed in orders.values():
         parsed.source_observed_at = source_observed_at
         parsed.source_kind = source_kind
+    if shipping_only:
+        _commit_shipping(db, orders, platform, rep)
+        return rep
     _commit_orders(db, orders, platform, rep)
+    # Only an actual sales-detail child with quantity can release shipping-only
+    # parents. A later master summary/default quantity cannot release this gate.
+    for no, parsed in orders.items():
+        if parsed.lines and all(x.get('explicit_child') and _to_int(x.get('qty'), 0) > 0 for x in parsed.lines):
+            parent = db.scalar(select(Order).where(Order.order_no == no))
+            if parent and (parent.platform_field_state or {}).get('shipping_only'):
+                parent.platform_field_state = {k: v for k, v in parent.platform_field_state.items() if k != 'shipping_only'}
+    db.commit()
     if apply_refill_flags(db):   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
         db.commit()
 

@@ -381,6 +381,10 @@ def machine_identity_for_key(
     if not x_api_key:
         return None
     candidate = x_api_key.strip()
+    if path == '/api/web-agent/shipping-target':
+        expected = settings_service.get(db, 'web_agent_token', env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return 'machine:web-agent-shipping-target'
     # Preserve the existing agents' behavior; this procurement change must not
     # change their routes or credentials.
     for key_name in ("ingest_api_token", "cs_api_key"):

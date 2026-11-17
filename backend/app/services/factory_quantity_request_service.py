@@ -78,12 +78,19 @@ def request_quantity(db, *, line_id):
     if not _eligible(db, line, order):
         db.rollback()
         return {'state': 'ineligible'}
-    old = _row(db, PREFIX + str(line_id))
+    old = _row(db, PREFIX + str(line_id), lock=True)
+    history = []
     if old:
         record = _read(old)
-        db.rollback()
-        return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
-    if line.factory_delivery_message_id or line.factory_delivery_state not in (None, '', 'failed'):
+        # Same identity and uncertain sends are never replayed. A changed
+        # identity needs a new question, not the old answer or an inert held card.
+        if (record.get('identity') == facts._identity(order, line)
+                or record['state'] in ('asking', 'ask_uncertain', 'sent')):
+            db.rollback()
+            return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
+        history = list(record.get('superseded') or [])
+        history.append({k: v for k, v in record.items() if k != 'superseded'})
+    if line.factory_delivery_message_id or line.factory_delivery_sent_at or line.factory_delivery_state not in (None, '', 'failed'):
         db.rollback()
         return {'state': 'delivery_claimed'}
     sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
@@ -100,9 +107,11 @@ def request_quantity(db, *, line_id):
               'sku': (line.sku_name or order.sku or line.sku_code or '')[:160],
               'notes': '\n'.join(str(x) for x in [order.buyer_message, order.remark,
                           order.seller_memo, getattr(order, 'production_note', None)] if x)[:600],
-              'chat_id': chat, 'created_at': _now()}
-    row = SystemSetting(key=PREFIX + str(line_id), value_plain=json.dumps(record, ensure_ascii=False),
-                        is_secret=False, description='生产数量待确认及飞书回复回执')
+              'chat_id': chat, 'created_at': _now(), 'revision': len(history) + 1,
+              'superseded': history}
+    row = old or SystemSetting(key=PREFIX + str(line_id), is_secret=False,
+                               description='生产数量待确认及飞书回复回执')
+    row.value_plain = json.dumps(record, ensure_ascii=False)
     db.add(row)
     db.commit()
     try:
@@ -119,6 +128,10 @@ def request_quantity(db, *, line_id):
         record.update(state='ask_uncertain', error_type=type(exc).__name__)
         _save(db, row, record)
         log.exception('数量确认卡发送未完成 line=%s', line_id)
+    if history and record['state'] == 'awaiting_reply':
+        prior_mid = history[-1].get('card_message_id')
+        if prior_mid:
+            _notice_once(db, prior_mid, '订单资料已变化，此旧数量卡已失效。请回复新数量卡重新确认，旧回复不会沿用。')
     return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
 
 
@@ -213,7 +226,7 @@ def handle_reply(db, event):
     line = db.scalar(select(OrderDetail).where(OrderDetail.id == line_id).with_for_update().execution_options(populate_existing=True))
     order = db.scalar(select(Order).where(Order.order_no == line.order_no).with_for_update().execution_options(populate_existing=True)) if line else None
     if (not _eligible(db, line, order) or facts._identity(order, line) != record['identity']
-            or line.factory_delivery_message_id or line.factory_delivery_state not in (None, '', 'failed')):
+            or line.factory_delivery_message_id or line.factory_delivery_sent_at or line.factory_delivery_state not in (None, '', 'failed')):
         record.update(state='held', reason='订单变化、关闭或已有发送占用，旧卡片不能确认')
         _save(db, row, record)
         _notice_once(db, mid, '订单状态、规格、购买数量或备注已有变化，或者已经进入发送。此次未确认，请核对最新订单；不要重复回复旧卡片。')

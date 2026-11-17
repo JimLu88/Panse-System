@@ -43,6 +43,8 @@ def physical_lines(
 def line_is_factory_eligible(db: Session, line: OrderDetail, order: Order | None) -> bool:
     if order is None or order.is_refill or (order.status or "") not in {"paid", "production"}:
         return False
+    if (order.platform_field_state or {}).get('shipping_only'):
+        return False
     if line_is_refunded(line):
         return False
     if is_master_summary_line(db, line):

@@ -242,6 +242,9 @@ def build(
         factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
         order_is_custom=bool(getattr(order, "is_custom", False)),   # 订单级定制标记 → 定制敲章
     )
+    if (order.platform_field_state or {}).get('shipping_only'):
+        sheet.warnings.append(FactorySheetWarning(code='sales_detail_missing', severity='error',
+            message='仅有发货资料，缺真实子单及购买数量，禁止据此生产'))
     if address_pending_for_production:
         sheet.ship_date = None
         sheet.ship_eta_auto = False
@@ -316,6 +319,9 @@ def build_for_order_line(
     )
     sheet.purchase_qty = detail.qty
     sheet.quantity_confirmation = confirmed
+    if (order.platform_field_state or {}).get('shipping_only'):
+        sheet.warnings.append(FactorySheetWarning(code='sales_detail_missing', severity='error',
+            message='仅有发货资料，缺真实子单及购买数量，禁止据此生产'))
     if not confirmed and (detail.qty is None or detail.qty <= 0):
         # The builder's display fallback is not evidence for a production count.
         if not any(w.code == 'production_quantity_unverified' for w in sheet.warnings):

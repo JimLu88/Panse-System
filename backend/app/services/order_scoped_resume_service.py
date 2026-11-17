@@ -23,7 +23,7 @@ from app.services import order_sheet_archive_service as sheets
 from app.services import taobao_order_import as importer
 
 
-def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tuple[dict, dict, list[dict]]:
+def _read_evidence(db: Session, business_date: str, file_ids: list[int], shipping_target_id=None) -> tuple[dict, dict, list[dict]]:
     day = date.fromisoformat(business_date)
     today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
     if not today - timedelta(days=1) <= day <= today:
@@ -31,6 +31,12 @@ def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tupl
     if len(file_ids) != 3 or len(set(file_ids)) != 3:
         raise ValueError("必须指定三份不同的已导入报表")
     roles, evidence = {}, []
+    target = None
+    if shipping_target_id:
+        saved = db.scalar(select(SystemSetting).where(SystemSetting.key == shipping_target_id))
+        target = json.loads(saved.value_plain) if saved else None
+        if not target or target['manifest']['business_date'] != business_date or target['manifest']['mode'] != 'independent':
+            raise ValueError('独立发货恢复登记不符')
     for fid in file_ids:
         rec = db.get(ImportedFile, fid)
         st = (rec.row_summary or {}) if rec else {}
@@ -38,7 +44,11 @@ def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tupl
         stamp = rec.created_at if rec else None
         if stamp and stamp.tzinfo:
             stamp = stamp.astimezone(ZoneInfo("Asia/Shanghai"))
-        if (rec is None or rec.kind != "taobao" or not stamp or stamp.date() != day
+        registered_shipping = bool(target and rec and role == 'shipping'
+            and rec.file_hash == target['manifest']['sha256'])
+        registered_source = bool(target and rec and any(
+            s['file_id'] == fid and s['sha256'] == rec.file_hash and s['role'] == role for s in target['sources']))
+        if (rec is None or rec.kind != "taobao" or not stamp or (stamp.date() != day and not (registered_shipping or registered_source))
                 or st.get("agent_status") != "imported" or st.get("errors")
                 or role not in {"orders", "sales_detail", "shipping"} or role in roles):
             raise ValueError(f"归档{fid}日期/角色/入库状态不符合本次续推")
@@ -46,7 +56,13 @@ def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tupl
         if not rec.file_hash or sha256(raw).hexdigest() != rec.file_hash:
             raise ValueError(f"归档{fid}文件校验不通过")
         roles[role] = (rec, raw)
-        evidence.append({"file_id": fid, "role": role, "sha256": rec.file_hash})
+        evidence.append({"file_id": fid, "role": role, "sha256": rec.file_hash,
+                         "archived_at": stamp.isoformat(), "business_date": business_date})
+        if target and role != 'shipping' and not any(
+                s['file_id'] == fid and s['sha256'] == rec.file_hash and s['role'] == role for s in target['sources']):
+            raise ValueError('恢复来源与登记不符')
+        if target and role == 'shipping' and not registered_shipping:
+            raise ValueError('发货文件与登记不符')
     if set(roles) != {"orders", "sales_detail", "shipping"}:
         raise ValueError("三种报表角色不全")
     parsed = {}
@@ -55,7 +71,7 @@ def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tupl
         if importer.detect_report_role(rec.original_filename, raw) != role:
             raise ValueError(f"归档{rec.id}实际角色不符")
         report = importer.TaobaoImportReport()
-        parsed[role] = (importer._parse_qianniu_multi(raw, report)
+        parsed[role] = (importer._parse_qianniu_multi(raw, report)[0]
                        if importer.detect_format(rec.original_filename, raw) == "qianniu_multi"
                        else importer._parse_sales_detail(rec.original_filename, raw, report))
         if report.errors:
@@ -66,6 +82,7 @@ def _read_evidence(db: Session, business_date: str, file_ids: list[int]) -> tupl
 def resume(
     db: Session, *, business_date: str, order_batch_id: str,
     file_ids: list[int], sub_order_nos: list[str], request_id: str, dry_run: bool = True,
+    shipping_target_id: str | None = None,
 ) -> dict:
     if not re.fullmatch(r"[0-9a-f]{32}", request_id):
         raise ValueError("request_id必须是32位唯一请求标识")
@@ -84,7 +101,12 @@ def resume(
         if saved["scope"] != scope:
             raise ValueError("同一请求标识不能更换范围")
         return {**saved, "replayed": False, "existing_request": True}
-    masters, details, evidence = _read_evidence(db, business_date, file_ids)
+    if shipping_target_id:
+        target = db.scalar(select(SystemSetting).where(SystemSetting.key == shipping_target_id))
+        manifest = json.loads(target.value_plain)['manifest'] if target else {}
+        if (manifest.get('order_batch_id') != order_batch_id or manifest.get('sub_order_nos') != sorted(sub_order_nos)):
+            raise ValueError('续推范围与独立恢复登记不符')
+    masters, details, evidence = _read_evidence(db, business_date, file_ids, shipping_target_id)
     detail_index = {}
     for parent, item in details.items():
         for raw_line in item.lines:
