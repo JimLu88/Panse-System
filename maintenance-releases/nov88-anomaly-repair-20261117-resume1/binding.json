@@ -1,0 +1,69 @@
+{
+  "schema": "nov88-original-attempt-continuation-v1",
+  "request_sha256": "5e123039a4bec1a66f0331d98bf4aa01c8e80b9caf97eb52a1b7fe3bfd2e9620",
+  "original_release": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\release.json",
+    "sha256": "f77bbb9fcf7da73369428fedec99e025c43e55b4e48a1541724f3892b862f856"
+  },
+  "original_host": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\host-before.py",
+    "sha256": "f8ce36815a0d9ac084f8e27d34a2749645ceb484e33c0a0aee6af7d5798d7392"
+  },
+  "confirmed_first": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\confirmed-first.json",
+    "sha256": "35eb933a5d17ebf3c906dd5328c5585d420a0480c422dc9513a9ee4d727ba716"
+  },
+  "remaining_items": [
+    "1038087212258",
+    "717418169535",
+    "717434309002",
+    "717809819543",
+    "793202812082",
+    "918340407291"
+  ],
+  "remaining_triggers": 13,
+  "evidence": [
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\intent.json",
+      "sha256": "7b1d9fbd73852067319852c3c83f7683484f628b64347be9c23f9bdc658350d6"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\terminal.json",
+      "sha256": "068b81bc385983355bc03cdd11dbc0767834e73cb25f478b66edd83e97e16350"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\final-inventory\\result.json",
+      "sha256": "3eb37d9645eac56795d806e3fee427bd8efec81cfed1d421f951758c0654c12e"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\1036273574687\\original\\write-intent.json",
+      "sha256": "959a458a10011e045f12aa6dcf8b03bce783e776ef947f586e1c441302764858"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\1036273574687\\original\\submission-claimed.json",
+      "sha256": "600e3bdbd76ca93bb1f32363576b0a9cfd40b79dc8e3e93b0c6832094808aa70"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\1036273574687\\original\\final-submit-claimed.json",
+      "sha256": "0bb93f4176895f9a9cd2cdd5f308125cbf85701ebc9245a8d6e69e5d857df6df"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\1036273574687\\original\\before\\editor.json",
+      "sha256": "9cf82d6a813aa609c5e7cebc97bfa6c9dfa309e3716b873efbf1c0f986fb339d"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\apply\\1036273574687\\original\\readback\\row.json",
+      "sha256": "a796ea86440b9f367c5725ebc29da8b142d584ad5b74d685ab2e59bda4bd8227"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\diagnose\\terminal.json",
+      "sha256": "1916ad37ae392fc197370ee590fe7e5f7f4a6005ee10b4ce11f60a7580607573"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\diagnose\\shape.json",
+      "sha256": "495bed83faf43a2cb37e1f1169714cb154be4ac94fb9a56d9b426491df948dea"
+    }
+  ],
+  "first_item_write_forbidden": true,
+  "old_attempts_preserved": true
+}

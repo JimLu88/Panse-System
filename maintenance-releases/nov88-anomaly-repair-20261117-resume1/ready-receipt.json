@@ -1,0 +1,61 @@
+{
+  "schema": "nov88-resume1-ready-v1",
+  "observed_at": "2026-11-17T14:11:45.189918+00:00",
+  "state": "ready_not_started",
+  "verify": {
+    "ok": true,
+    "ready": true,
+    "remaining_items": [
+      "1038087212258",
+      "717418169535",
+      "717434309002",
+      "717809819543",
+      "793202812082",
+      "918340407291"
+    ],
+    "inherited_completed_items": [
+      "1036273574687"
+    ],
+    "release": {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\release.json",
+      "sha256": "6beda10919cffc36ae31b3bf4a0a95474caaf636a20d6f0607d1eca77f01b0d0"
+    },
+    "platform_write": false
+  },
+  "runtime": {
+    "ok": true,
+    "active": false,
+    "terminal": null,
+    "started": false,
+    "platform_write": false
+  },
+  "first_confirmed": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\confirmed-first.json",
+    "sha256": "35eb933a5d17ebf3c906dd5328c5585d420a0480c422dc9513a9ee4d727ba716"
+  },
+  "inspection": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\inspect\\terminal.json",
+    "sha256": "aaa36e2d8eb2f56607886d7cfa257cb83f52ccf7677dc667b2d948c709ff2a96"
+  },
+  "binding": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\binding.json",
+    "sha256": "304333279ec2700eef09ea04c436c51dda26b97c5e888da1b7ce85ebcde28504"
+  },
+  "release": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\release.json",
+    "sha256": "6beda10919cffc36ae31b3bf4a0a95474caaf636a20d6f0607d1eca77f01b0d0"
+  },
+  "tests_passed": 18,
+  "browser_restarted": false,
+  "normal_enrollment_changed": false,
+  "platform_write": false,
+  "remaining_items": [
+    "1038087212258",
+    "717418169535",
+    "717434309002",
+    "717809819543",
+    "793202812082",
+    "918340407291"
+  ],
+  "remaining_triggers": 13
+}

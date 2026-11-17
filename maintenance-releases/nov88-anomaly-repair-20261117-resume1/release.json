@@ -1,0 +1,32 @@
+{
+  "schema": "nov88-resume1-release-v1",
+  "request_sha256": "5e123039a4bec1a66f0331d98bf4aa01c8e80b9caf97eb52a1b7fe3bfd2e9620",
+  "binding": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\binding.json",
+    "sha256": "304333279ec2700eef09ea04c436c51dda26b97c5e888da1b7ce85ebcde28504"
+  },
+  "files": [
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\program\\repair_resume.py",
+      "sha256": "abe045e4fdf1afecc71c8c5489ac7824f1de0e9dce8bde41d15d3bcab34a9e00"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\program\\resume.py",
+      "sha256": "2ce3df6394d071e7f245f890601aae721408c627e4f34b53776e497791306b8c"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\engine\\campaign_nov88_anomaly.py",
+      "sha256": "c919a2eeada8258d9a590a81950c9133c9ca292c2e88935a91ef0ed8dc46b901"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\browser\\campaign_edge_actions.py",
+      "sha256": "32b6dcf17919a07e5957c3bee08dd4a02492912481b61f39f0a79c8070503415"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-1\\host-before.py",
+      "sha256": "f8ce36815a0d9ac084f8e27d34a2749645ceb484e33c0a0aee6af7d5798d7392"
+    }
+  ],
+  "normal_enrollment_changed": false,
+  "platform_write": false
+}
