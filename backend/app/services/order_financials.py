@@ -307,6 +307,21 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 "cap_label": "人工确认纯增加材料费用→本单实付扣退款后按80%计材料成本",
                 "final": _material_cost}
 
+    # 人工确认的混合补差价单：只新增一个 Xpower 插座，其他定制成本已归主单。
+    # 其收款不一定是纯插座零售价 100 的倍数，不能被下方“追加归主单”清零；
+    # 历史 actual_cost=55 是插座而非木作，故不按工厂木作重复入账。
+    _socket_note = (getattr(o, "remark", None) or "")
+    if ("仅追加1个插座" in _socket_note and "插座成本55元" in _socket_note
+            and "快递8元" in _socket_note and not bool(getattr(o, "is_refill", False))):
+        _socket_cost = Decimal("55")
+        _socket_freight = Decimal("8")
+        return {"factory_wood": Decimal("0"), "estimate_part": _socket_cost + _socket_freight,
+                "packing": Decimal("0"), "precap_total": _socket_cost + _socket_freight,
+                "cap_mode": "确认插座补差价", "logistics_component": _socket_freight,
+                "install_component": Decimal("0"),
+                "cap_label": "人工确认本单仅插座55元与独立快递8元；其余定制成本归主单",
+                "final": _socket_cost + _socket_freight}
+
     # 非产品单(官方服务/专链/邮费/补拍/安装/送货)整单成本归零 (用户 2026-06-26; 复用系统权威检测器
     # zero_cost_reason — 不含样块/样品[另按实际¥13], 不含差价[走片段规则])。否则残留 配件/物流 估值。
     # 例外 — 专链/补拍单里「备注追加插座」的(2026-07-02 修, 用户拍板): 定制单常年用「差价邮费补拍专链」

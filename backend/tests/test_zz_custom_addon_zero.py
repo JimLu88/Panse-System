@@ -83,3 +83,21 @@ def test_confirmed_material_topup_uses_80_percent_and_retains_fees(db_session):
     b = ofin.cost_breakdown(o, ofin.load_coefficients(db_session), Decimal("0"), db=db_session)
     assert b["physical"] == Decimal("43.65")
     assert b["platform"] > 0 and b["tax"] > 0
+
+
+def test_confirmed_socket_in_mixed_topup_keeps_only_socket_and_postage(db_session):
+    addon = _pair(db_session,
+                  addon_remark="用户确认本¥150追加单仅追加1个插座；插座成本55元、独立快递8元，其余归主单",
+                  addon_paid="150")
+    addon.actual_cost = Decimal("55")  # historic socket cost mislabelled as factory wood
+    addon.est_packing = Decimal("170")
+    addon.est_logistics = Decimal("350")
+    db_session.commit()
+    pb = ofin.physical_cost_breakdown(addon, db_session)
+    assert pb["cap_mode"] == "确认插座补差价"
+    assert pb["factory_wood"] == Decimal("0")
+    assert pb["final"] == Decimal("63")
+    assert pb["logistics_component"] == Decimal("8")
+    b = ofin.cost_breakdown(addon, ofin.load_coefficients(db_session), Decimal("0"), db=db_session)
+    assert b["physical"] == Decimal("63")
+    assert b["platform"] > 0 and b["tax"] > 0
