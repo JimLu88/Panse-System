@@ -1,0 +1,12 @@
+{
+  "state": "real_sid_verification_passed",
+  "observed_at": "2026-11-17T09:17:49.638864+00:00",
+  "tests_passed": 10,
+  "task_state": "Running",
+  "account_enabled": false,
+  "hard_permission_isolation": false,
+  "platform_write": false,
+  "command_id": "35df2b511b4c4a78b7ae66482fff53f6",
+  "acl_migration_repeated": false,
+  "prior_test_suites_repeated": false
+}
