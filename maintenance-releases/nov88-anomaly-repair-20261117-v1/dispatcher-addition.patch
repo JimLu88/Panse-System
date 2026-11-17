@@ -1,0 +1,6 @@
+Only add after the existing session_owned guard in app/browser/campaign_edge_actions.py:
+
+    if operation.startswith('program_nov88_anomaly_'):
+        import importlib
+        module=importlib.reload(importlib.import_module('app.engine.campaign_nov88_anomaly'))
+        return await module.handle(session,operation,options)
