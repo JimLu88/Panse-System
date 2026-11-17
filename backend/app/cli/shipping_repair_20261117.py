@@ -49,7 +49,7 @@ def repair(db, *, apply=False):
         if not sku or order.sku:raise ValueError('sku_conflict')
         changes.append({'order_no':no,'line_id':line.id,'before':{'qty':1,'source':'import','sku':None,
                         'factory_delivery_required':line.factory_delivery_required},
-                        'after':{'qty':0,'source':'shipping_placeholder','sku':sku,'factory_delivery_required':False}})
+                        'after':{'qty':0,'source':'shipping_only','sku':sku,'factory_delivery_required':False}})
         targets.append((order,line,sku))
     result={'source_file_id':SOURCE_ID,'source_sha256':SOURCE_HASH,'changes':changes,
             'protected_sent':PROTECTED,'applied':apply,'imported':False,'sent':False,'deleted':False}
@@ -59,7 +59,7 @@ def repair(db, *, apply=False):
         order.qty=0;order.sku=sku
         order.platform_field_state={**(order.platform_field_state or {}),
             'shipping_only':{'state':'missing_sales_detail','source_file_id':SOURCE_ID,'sha256':SOURCE_HASH}}
-        line.qty=0;line.sku_name=sku;line.source='shipping_placeholder';line.factory_delivery_required=False
+        line.qty=0;line.sku_name=sku;line.source='shipping_only';line.factory_delivery_required=False
         line.factory_delivery_error='仅发货资料，缺真实子单及购买数量；禁止据此生产'
     db.add(SystemSetting(key=KEY,value_plain=json.dumps(result,ensure_ascii=False),is_secret=False))
     db.commit()

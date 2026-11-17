@@ -232,6 +232,9 @@ def test_bounded_existing_placeholder_repair_preserves_sent_and_never_imports(db
     assert not repair.repair(db)['applied']
     result=repair.repair(db,apply=True)
     assert result['applied'] and not result['imported'] and not result['sent'] and not result['deleted']
+    for change in result['changes']:
+        assert change['after']['source']=='shipping_only'
+        assert len(change['after']['source'])<=OrderDetail.__table__.c.source.type.length
     assert all(o.qty==0 and o.platform_field_state['shipping_only'] for o in db.scalars(select(Order)))
     assert len(list(db.scalars(select(OrderDetail))))==7
     assert repair.repair(db,apply=True)['existing']
