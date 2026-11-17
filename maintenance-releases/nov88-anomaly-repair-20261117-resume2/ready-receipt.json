@@ -1,0 +1,44 @@
+{
+  "schema": "nov88-resume2-ready-v1",
+  "state": "ready_not_started",
+  "observed_at": "2026-11-17T14:29:47.822167+00:00",
+  "verify": {
+    "ok": true,
+    "ready": true,
+    "remaining_items": [
+      "918340407291",
+      "1038087212258",
+      "793202812082"
+    ],
+    "inherited_successes": [
+      "1036273574687",
+      "717418169535",
+      "717434309002",
+      "717809819543"
+    ],
+    "release": {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-2\\release.json",
+      "sha256": "b4f87294cdea940129d026f2d9cda3f01c7db4776194e750c171337b6d585ae5"
+    },
+    "platform_write": false
+  },
+  "runtime": {
+    "ok": true,
+    "active": false,
+    "started": false,
+    "terminal": null
+  },
+  "tests_passed": 16,
+  "normal_enrollment_changed": false,
+  "browser_restarted": false,
+  "platform_write": false,
+  "inspection": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-2\\inspect\\terminal.json",
+    "sha256": "54ff8498a2240b9ed67f0b8e7c776ba6628c16d5ace8e6816f9973eaa9c5829c"
+  },
+  "lift_pending": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-2\\diagnose\\lift\\pending.json",
+    "sha256": "2d5ff7f37a4fddfe22ab31786eedde7097ef52b2efcbbdaa3dc9824265f8ef64"
+  },
+  "original_record_replay": false
+}

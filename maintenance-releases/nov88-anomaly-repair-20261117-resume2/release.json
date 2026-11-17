@@ -1,0 +1,40 @@
+{
+  "schema": "nov88-resume2-release-v1",
+  "request_sha256": "5e123039a4bec1a66f0331d98bf4aa01c8e80b9caf97eb52a1b7fe3bfd2e9620",
+  "binding": {
+    "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\resume-2\\binding.json",
+    "sha256": "ca0e35f1904ecf189e7552902af77f087b684f7cdfacea78b86626612b6db1fb"
+  },
+  "files": [
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\program\\repair_remaining.py",
+      "sha256": "e6b65add6b41f8b7dd5c6b309b1e3548abae4644a2cf1d81f7c46cc307badecb"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\program\\remaining_submit.py",
+      "sha256": "69b74c710a8dc2a885505710df86cb786f87c1844a75984d017aefe2dc78dbd2"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\outputs\\campaign-nov88-anomaly-repair-20261117\\program\\remaining.py",
+      "sha256": "13c1d0e5bee9de750d6a11a5db0dbeabe9c9bcde8fb746be514e83650b0b1f59"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\engine\\campaign_nov88_anomaly.py",
+      "sha256": "27afce17fac1223375c2c7fd8893cc72617a8029d53fb31416378a7cc8d75327"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\browser\\campaign_edge_actions.py",
+      "sha256": "32b6dcf17919a07e5957c3bee08dd4a02492912481b61f39f0a79c8070503415"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\engine\\campaign_preupload_notice.py",
+      "sha256": "e63bfec2cbef3cf371f7683abf7c1d574694b72762207858a84cc93f5919fefe"
+    },
+    {
+      "path": "D:\\AI\\畔色ERP系统\\Web-Agent程序\\app\\engine\\campaign_readonly_editor_click.py",
+      "sha256": "cfbde280d1f00e84900b49cbf8a62e6165e7882d52aa5f1feaa162043dbdcfb9"
+    }
+  ],
+  "normal_enrollment_changed": false,
+  "platform_write": false
+}
