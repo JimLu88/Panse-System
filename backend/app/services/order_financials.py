@@ -204,6 +204,38 @@ def aftersales_avg(db: Session) -> Decimal:
     return (total / cnt).quantize(Decimal("0.01")) if cnt else Decimal("0")
 
 
+def returned_refund_clause():
+    """Fully refunded products with confirmed physical return still incur expenses."""
+    from sqlalchemy import and_, exists
+    from app.models.marketing import AfterSales
+    return and_(Order.paid_amount > 0, Order.refund_amount >= Order.paid_amount,
+                Order.is_refill == False,
+                exists(select(AfterSales.id).where(
+                    AfterSales.platform_order_no == Order.order_no,
+                    AfterSales.second_inbound_confirmed == "已确认")))
+
+
+def accounting_order_clause():
+    from sqlalchemy import or_
+    from app.services.sales_analytics import settled_sale_clause
+    return or_(settled_sale_clause(), returned_refund_clause())
+
+
+def is_returned_refund(o: Order, db) -> bool:
+    if db is None or _d(o.paid_amount) <= 0 or _d(o.refund_amount) < _d(o.paid_amount):
+        return False
+    return db.execute(select(Order.id).where(Order.id == o.id, returned_refund_clause())).first() is not None
+
+
+def returned_expenses(o: Order) -> dict:
+    # Recovered goods are not expensed again. Original outbound services are sunk costs.
+    packing = _d(getattr(o, "actual_packing", None))
+    freight = _d(o.actual_logistics if o.actual_logistics is not None else o.actual_freight)
+    install = (_d(o.actual_install) if o.actual_install is not None
+               else _d(o.install_fee) + _d(o.upstairs_fee))
+    return {"packing": packing, "freight": freight, "install": install}
+
+
 def physical_cost_breakdown(o: Order, db=None) -> dict:
     """物理产品成本(商品成本)的加法拆解 + 封顶 —— 供逐单核对导出逐项公式回推。physical_cost() 复用本函数。
 
@@ -219,6 +251,12 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     口径同历史(2026-06-20/25): 工厂账单只含木作→非木作按定价表补; 定制单缺配件→至少实付×85%;
     推演成本>实付→实付×85%; 定金/分期/差价片段(实付<成本×50%)→实付×85%。
     """
+    if is_returned_refund(o, db):
+        packing = returned_expenses(o)["packing"]
+        return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"),
+                "packing": packing, "precap_total": packing, "final": packing,
+                "cap_mode": "退货已入库", "cap_label": "退回商品不重复计损；原打包、物流、安装及售后分别计费",
+                "logistics_component": Decimal("0"), "install_component": Decimal("0")}
     from app.services import sku_utils
     nz = lambda a, e: _d(a) if a is not None else _d(e)   # 实际优先, 否则预估
     # 封顶/兜底基数 = 真实收入(实付−退款) (用户 2026-07-14: 一单两件退一件, 兜底85曾按毛实付
@@ -554,6 +592,17 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
     """会计总成本逐项明细 (供页面"说明里列明细")。
     aftersales 显式传入(按订单归属, 退款外额外售后)时直接用它; 否则回退 本单冗余列→人均均摊(旧)。
     db 传入: 商品成本走"定制套常规款"口径(第二阶段); db=None 保持旧口径。"""
+    if is_returned_refund(o, db):
+        expenses = returned_expenses(o)
+        extra = (_d(aftersales) if aftersales is not None
+                 else _d(extra_aftersales_by_order(db).get(o.order_no, 0)))
+        platform = platform_deduction(o, coef)
+        tax = order_tax(o, coef)
+        return {"physical": expenses["packing"], "freight": expenses["freight"],
+                "install_upstairs": expenses["install"], "aftersales": extra,
+                "aftersales_estimated": False, "platform": platform, "tax": tax,
+                "total": sum(expenses.values()) + extra + platform + tax,
+                "paid": _d(o.paid_amount)}
     from app.services import sku_utils
     paid = _d(o.paid_amount)
     phys = physical_cost(o, db)
@@ -695,7 +744,7 @@ def accounting_summary(db: Session, start: date, end: date) -> dict:
     orders = db.execute(
         select(Order).where(
             Order.order_date >= start, Order.order_date <= end,
-            sales_analytics.settled_sale_clause(), Order.is_refill == False)  # noqa: E712
+            accounting_order_clause(), Order.is_refill == False)  # noqa: E712
     ).scalars().all()
     revenue = refund = goods = freight = install = platform = tax = aftersales = Decimal("0")
     goods_est = False
@@ -704,7 +753,8 @@ def accounting_summary(db: Session, start: date, end: date) -> dict:
         rf = _d(o.refund_amount)
         revenue += _d(o.paid_amount) - rf
         refund += rf
-        b = cost_breakdown(o, coef, Decimal("0"))   # as_avg=0: 不用人均均摊, 售后改按订单
+        # Preserve the existing sold-order valuation; returned orders need DB return evidence.
+        b = cost_breakdown(o, coef, Decimal("0"), db=db if is_returned_refund(o, db) else None)
         goods += b["physical"]; freight += b["freight"]; install += b["install_upstairs"]
         platform += b["platform"]; tax += b["tax"]
         _as = _d(as_by_order.get(o.order_no, 0))
@@ -725,7 +775,9 @@ def accounting_summary(db: Session, start: date, end: date) -> dict:
     period_cost = promo + outsourcing + fixed + rc["total"]
     net = revenue - order_cost - period_cost
     return {
-        "count": len(orders), "revenue": revenue, "refund": refund,
+        "count": sum(sales_analytics.is_settled_sale(o) for o in orders),
+        "returned_count": sum(is_returned_refund(o, db) for o in orders),
+        "revenue": revenue, "refund": refund,
         "goods": goods, "goods_estimated": goods_est,
         "freight": freight, "install": install, "platform": platform,
         "tax": tax, "aftersales": aftersales, "aftersales_count": as_count, "order_cost": order_cost,

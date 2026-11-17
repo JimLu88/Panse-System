@@ -92,7 +92,9 @@ export default function PerOrderReconcilePage() {
     // 单列物流/安装 = 物流列+安装列 里没折进商品成本的部分(样块运费5/纯账单单的实报运费安装)
     const liExtra = Math.round(((r.cost_freight ?? 0) + (r.cost_install ?? 0) - li) * 100) / 100;
     let body: JSX.Element;
-    if (cap.endsWith('85')) {
+    if (cap === '退货已入库') {
+      body = <div>退货已确认入库，退回商品不重复计损。<br />原打包：{yuan2(k)}<br />原发货物流：{yuan2(r.cost_freight)}<br />原安装：{yuan2(r.cost_install)}<br />售后：{yuan2(r.cost_aftersales)}<br />以上费用分别计入成本合计。</div>;
+    } else if (cap.endsWith('85')) {
       body = <div>{cap}: 按「实付 × 85%」= <b>{yuan(v)}</b>(下方分段仅供参考)</div>;
     } else {
       body = (
@@ -127,6 +129,7 @@ export default function PerOrderReconcilePage() {
         <Space size={2}>
           <Text copyable={{ text: v }} style={{ fontSize: 11 }}>{v.length > 14 ? v.slice(0, 14) + '…' : v}</Text>
           {r.is_custom && <Tag color="purple" style={{ marginInlineEnd: 0, padding: '0 3px', fontSize: 10 }}>定制</Tag>}
+          {r.cost_cap_mode === '退货已入库' && <Tag color="orange">退货退款</Tag>}
         </Space>
       ) },
     { title: '产品', dataIndex: 'product_name', width: 130, ellipsis: true,
@@ -148,7 +151,7 @@ export default function PerOrderReconcilePage() {
     { title: '净利', dataIndex: 'net_profit', width: 90, align: 'right',
       render: (v: number) => <Text strong type={v >= 0 ? 'success' : 'danger'}>{yuan(v)}</Text> },
     { title: '净利率', dataIndex: 'net_margin', width: 70, align: 'right',
-      render: (v: number) => <span style={{ color: v >= 15 ? '#52c41a' : v >= 0 ? '#fa8c16' : '#ff4d4f' }}>{Number(v).toFixed(1)}%</span> },
+      render: (v: number, r) => r.revenue === 0 ? '—' : <span style={{ color: v >= 15 ? '#52c41a' : v >= 0 ? '#fa8c16' : '#ff4d4f' }}>{Number(v).toFixed(1)}%</span> },
     { title: '支付宝', dataIndex: 'alipay_covered', width: 75, align: 'center',
       render: (v: boolean) => v
         ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已覆盖</Tag>

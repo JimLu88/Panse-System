@@ -261,6 +261,7 @@ EDGES = [
     edge('after.case','after.return','售后处理与补件','人工确认补发/退货','不得变成重复原单生产','models/order.py',evidence='review'),
     edge('after.return','stock.inbound','退回二次入库','签收且入库确认','物流签收和库存记账分开','services/inventory_lock_service.py','def return_in_product'),
     edge('after.payment','finance.profit','售后费用归集','真实赔付记录','不由图触发支付','services/order_financials.py','def extra_aftersales'),
+    edge('after.return','finance.profit','全退已入库订单保留费用','全额退款且售后二次入库已确认，非补单','原打包、物流、安装、售后各计一次；不计成交数量，不写库存或付款','services/order_financials.py','def returned_refund_clause'),
     edge('settlement.payment','settlement.reverse','按原支付记录冲销','明确反结算动作','不删除真实交易事实','services/factory_settlement_service.py','def reverse_settlement'),
     edge('settlement.period','finance.profit','期间口径','月/期间边界','锁定期间不能因结构分析重算','services/accounting_period_service.py',evidence='review'),
     edge('settlement.expense','finance.profit','期间费用归集','费用类型和日期','未分配费用不编造单件成本','services/order_financials.py','def accounting_summary',evidence='review'),

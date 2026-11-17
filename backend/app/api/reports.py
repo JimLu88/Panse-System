@@ -793,7 +793,7 @@ def per_order_reconcile(
 
     _stmt = select(Order).where(
         Order.order_date >= start, Order.order_date <= end,
-        sales_analytics.settled_sale_clause(), Order.is_refill == False,  # noqa: E712
+        _ofin.accounting_order_clause(), Order.is_refill == False,  # noqa: E712
     )
     if product_search and product_search.strip():
         _pq = f"%{product_search.strip()}%"
