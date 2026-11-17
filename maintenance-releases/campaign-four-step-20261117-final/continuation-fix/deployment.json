@@ -1,0 +1,46 @@
+{
+  "state": "installed_and_loaded",
+  "package_sha256": "914ff4bf096fecf2aed49a32ce4905eedcca541171f9a48c3b2cc35049886a43",
+  "files": 8,
+  "changed_files": 8,
+  "old_edge_pid": 31316,
+  "edge_browser_open": false,
+  "capabilities": {
+    "schema": "campaign-same-task-takeover-v1",
+    "implemented_steps": [
+      "discount",
+      "discount_readback",
+      "feedback",
+      "final_inventory",
+      "product_export",
+      "signup",
+      "template"
+    ],
+    "operations": [
+      "acquire",
+      "status",
+      "inspect",
+      "click",
+      "reload",
+      "baseline",
+      "upload",
+      "collect",
+      "release"
+    ],
+    "single_owner_active": false,
+    "platform_acceptance": false,
+    "hard_permission_isolation": false,
+    "source_sha256": {
+      "campaign_takeover.py": "1a5898071130d1e354d75ec4a6bf8081cc0c082dd9cfefcf6b764fe40de4f47d",
+      "campaign_takeover_operations.py": "71b3fe2ddb23665293aafcff69e05d31830b78e7a90e585b33ae39a5918b62ee",
+      "campaign_takeover_return.py": "f580f05e3700e3ac5e8dec1693abc15ab75fc92c8c9db4a1e9ef289aa2dab840"
+    },
+    "platform_write": false
+  },
+  "api_8500": "stopped_will_load_routes_on_next_normal_wake",
+  "nas_images_changed": false,
+  "platform_write": false,
+  "platform_acceptance": false,
+  "hard_permission_isolation": false,
+  "backup": "D:\\AI\\畔色ERP系统\\outputs\\campaign-four-step-maintenance-20261117\\continuation-fix\\installed-backup\\02-campaign-four-step-08fe56870d36487fbac088131d8e74e9"
+}

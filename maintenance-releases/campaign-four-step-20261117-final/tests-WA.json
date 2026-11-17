@@ -1,0 +1,27 @@
+{
+  "suite": "WA",
+  "command": [
+    "D:\\AI\\畔色ERP系统\\Web-Agent程序\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_campaign_takeover.py",
+    "tests/test_campaign_takeover_operations.py",
+    "tests/test_campaign_editor_fields.py",
+    "tests/test_campaign_shared_price.py",
+    "tests/test_campaign_bound_transfers.py",
+    "tests/test_campaign_operator.py",
+    "tests/test_campaign_submission_checklist.py",
+    "tests/test_campaign_checklist_timing.py",
+    "tests/test_campaign_final_inventory.py",
+    "tests/test_campaign_product_export.py",
+    "tests/test_campaign_local_terminal_wait.py",
+    "tests/test_campaign_page_io.py",
+    "-q"
+  ],
+  "exit_code": 0,
+  "seconds": 52.41,
+  "stdout": "........................................................................ [ 57%]\n......................................................                   [100%]\n126 passed in 51.51s\n",
+  "stderr": "",
+  "platform_write": false,
+  "live_platform_acceptance": false
+}

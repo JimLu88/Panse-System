@@ -1,0 +1,17 @@
+{
+  "schema": "panse-restricted-installed-v1",
+  "files": [
+    {
+      "name": "campaign_broker.py",
+      "sha256": "0145cfe5052a015974fb39235d2f4cfc0103e615bde8ccdc18a0ab90194acdd2"
+    },
+    {
+      "name": "Invoke-Campaign.ps1",
+      "sha256": "4db37fe0db98902f9e5db86e9e898cd48ea4b58deb301d369d71ab140625c268"
+    },
+    {
+      "name": "Activate-RestrictedAccount.ps1",
+      "sha256": "ea779fae1ebf968cb155a95b45a31ff9966ccfad1bf0e64a16318a0babcc73ee"
+    }
+  ]
+}

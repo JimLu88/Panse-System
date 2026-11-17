@@ -1,0 +1,6 @@
+{
+  "state": "blocked_before_activation",
+  "reason": "administrator_UAC_cancelled_broker_verification_not_started",
+  "account_enabled": false,
+  "original_chat_switched": false
+}

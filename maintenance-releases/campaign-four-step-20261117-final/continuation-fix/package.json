@@ -1,0 +1,284 @@
+{
+  "files": [
+    {
+      "after_sha256": "1a5898071130d1e354d75ec4a6bf8081cc0c082dd9cfefcf6b764fe40de4f47d",
+      "before_sha256": "f724ceab4115fecf5bc0a7cb3ffef4eb566ba0c48b9a429ffa3e64b7ac8389ec",
+      "edits": [
+        {
+          "end": 15,
+          "lines": [
+            "MAX_SIGNUP_READS = 3\n"
+          ],
+          "start": 15
+        },
+        {
+          "end": 248,
+          "lines": [
+            "        attempts=db.execute('SELECT state,result FROM campaign_ui_commands WHERE job_id=? AND operation=? ORDER BY sequence',(jid,name)).fetchall()\n",
+            "        if attempts:\n",
+            "            last_state,last_raw=attempts[-1];last=json.loads(last_raw or '{}')\n",
+            "            continuation=(name=='collect' and packet['operation']=='signup'\n",
+            "                and current['state']=='write_unknown' and len(attempts)<MAX_SIGNUP_READS\n",
+            "                and last_state=='finished' and last.get('state')=='original_batch_pending'\n",
+            "                and last.get('read_only_continuation') is True)\n",
+            "            if not continuation:raise SurfaceError('takeover_operation_already_attempted')\n"
+          ],
+          "start": 246
+        }
+      ],
+      "newline": "\n",
+      "path": "app/engine/campaign_takeover.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "71b3fe2ddb23665293aafcff69e05d31830b78e7a90e585b33ae39a5918b62ee",
+      "before_sha256": "1ea7eb5470ad13029aa3a862926a09a92bd66d3652b05a9903ceff48237f2dee",
+      "edits": [
+        {
+          "end": 242,
+          "lines": [
+            "        # Only a completed read with a known pending result can continue. Keep\n",
+            "        # the original causal baseline, claim and any observed batch immutable.\n",
+            "        from .campaign_transfer_jobs import fingerprint\n",
+            "        binding=dict(baseline_sha256=hashlib.sha256(baseline.read_bytes()).hexdigest(),claim_sha256=fingerprint(claim))\n",
+            "        journal=folder/'signup-read-binding.json'\n",
+            "        saved=read(journal) if journal.exists() else dict(binding,batch=None)\n",
+            "        if any(saved.get(k)!=v for k,v in binding.items()):raise SurfaceError('takeover_original_read_binding_changed')\n",
+            "        if not journal.exists():write_evidence(journal,saved)\n",
+            "        batch_journal=folder/'signup-read-batch.json'\n",
+            "        if batch_journal.exists():saved['batch']=read(batch_journal)['batch']\n"
+          ],
+          "start": 242
+        },
+        {
+          "end": 245,
+          "lines": [
+            "            expected_count=len(claim['items']),timeout=60,expected_batch=saved['batch'])\n",
+            "        if saved['batch'] and terminal.get('batch')!=saved['batch']:raise SurfaceError('takeover_original_batch_changed')\n",
+            "        if terminal.get('batch') and not saved['batch']:\n",
+            "            saved['batch']=terminal['batch'];write_evidence(batch_journal,{'batch':saved['batch']})\n",
+            "        if terminal.get('state')=='unknown' and terminal.get('reason')=='official_terminal_not_available_within_180_seconds':\n",
+            "            write_evidence(output/'official-pending.json',terminal)\n",
+            "            return dict(state='original_batch_pending',batch=saved['batch'],read_only_continuation=True,\n",
+            "                platform_write=False,automatic_retry=False,binding=binding)\n"
+          ],
+          "start": 244
+        }
+      ],
+      "newline": "\n",
+      "path": "app/engine/campaign_takeover_operations.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "ac8eb8df96692172e1ecd9a5a73dde0cab74132cc46ceb291e42e91d0ff3c6a6",
+      "before_sha256": "fc0e8e29e00f37ab6f4251b4530bb9c36cee9a021715656e5cf3aefb5a37874c",
+      "edits": [
+        {
+          "end": 1524,
+          "lines": [
+            "    async def await_upload_terminal(self, *, before, filename, expected_count, timeout=180, expected_batch=None):\n"
+          ],
+          "start": 1523
+        },
+        {
+          "end": 1529,
+          "lines": [
+            "        if expected_batch is not None and not str(expected_batch).isdigit():raise SurfaceError('original_batch_identity_invalid')\n",
+            "        bound = expected_batch\n"
+          ],
+          "start": 1528
+        }
+      ],
+      "newline": "\n",
+      "path": "app/engine/campaign_page_io.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "f7029a15b0670b7bb12c3f5ed712a80aa34e9f41ca6e1a4dc0f65af551c60416",
+      "before_sha256": "18ea801e25be2bb34d70cfeccdc119808069ae05c29efea9631ffd447d870a94",
+      "edits": [
+        {
+          "end": 63,
+          "lines": [
+            "    return dict(rule_version=validation.get('rule_version',RULE_VERSION), evidence_sha256=validation['evidence_sha256'],\n"
+          ],
+          "start": 62
+        },
+        {
+          "end": 370,
+          "lines": [
+            "    rule_version='submission-checklist-shared-price-v3' if shared_price else RULE_VERSION\n"
+          ],
+          "start": 370
+        },
+        {
+          "end": 372,
+          "lines": [
+            "        'rule_version': rule_version, 'identity': identity, 'file': file_info,\n"
+          ],
+          "start": 371
+        },
+        {
+          "end": 375,
+          "lines": [
+            "    return {'state': 'validated', 'rule_version': rule_version, 'tool': tool, 'pair_count': len(expected),\n"
+          ],
+          "start": 374
+        }
+      ],
+      "newline": "\n",
+      "path": "app/engine/campaign_submission_checklist.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "2b74b66a07637c5da3399e5e5effb8722152307988a6a192474009036d17de75",
+      "before_sha256": "c41c8d530c9fbd18702920853a2fa51a90ca9a7aada7bf10ec5f493735db65be",
+      "edits": [
+        {
+          "end": 52,
+          "lines": [
+            "\n",
+            "\n",
+            "@pytest.mark.asyncio\n",
+            "@pytest.mark.parametrize('mode',['complete','pending_limit','batch_changed','baseline_changed'])\n",
+            "async def test_signup_pending_continues_same_batch_without_second_upload(case,monkeypatch,mode):\n",
+            "    c=case;packet=await lease.acquire(c.worker,dict(request_id=c.rid,job_id=c.jid))\n",
+            "    claim=dict(claim_id='c'*32,file={'path':'original.xlsx'},items=['1'])\n",
+            "    packet.update(operation='signup',claim=claim,write_allowed=True)\n",
+            "    db=c.worker.jobs.db\n",
+            "    db.execute('UPDATE campaign_ui_takeovers SET packet=?',(json.dumps(packet),))\n",
+            "    source=c.worker.output/c.jid;source.mkdir(parents=True)\n",
+            "    baseline=source/'before.json';baseline.write_text('[]')\n",
+            "    monkeypatch.setattr(ops,'guard',AsyncMock())\n",
+            "    from app.engine import campaign_bound_transfers as bound\n",
+            "    verify=AsyncMock(return_value=claim);monkeypatch.setattr(bound,'verified_erp_claim',verify)\n",
+            "    pending=dict(state='unknown',batch='123',reason='official_terminal_not_available_within_180_seconds')\n",
+            "    terminal=dict(state='terminal',batch='123',counts={'total':1,'success':1,'failed':0,'pending':0})\n",
+            "    if mode=='batch_changed':terminal['batch']='456'\n",
+            "    reads=[];writes=[]\n",
+            "    class Driver:\n",
+            "        def __init__(self,*a,**k):pass\n",
+            "        async def await_upload_terminal(self,**kwargs):\n",
+            "            reads.append(kwargs)\n",
+            "            return pending if len(reads)==1 or mode=='pending_limit' else terminal\n",
+            "    monkeypatch.setattr(ops,'CampaignPageIO',Driver)\n",
+            "    async def perform(worker,packet,operation,options,seq):\n",
+            "        if operation=='upload':\n",
+            "            writes.append('original_upload');return dict(state='write_unknown')\n",
+            "        result=await ops.perform_on_page(worker,packet,operation,options,seq,object())\n",
+            "        if 'original_result' in result:return lease.finish_transfer(worker,packet,result['original_result'])\n",
+            "        return result\n",
+            "    monkeypatch.setattr(ops,'perform',perform)\n",
+            "    async def command(name):\n",
+            "        current=lease.status(c.worker,c.jid)\n",
+            "        await lease.handle(c.session,'program_takeover_'+name,dict(job_id=c.jid,sequence=current['sequence']+1))\n",
+            "        await c.session.campaign_takeover_task\n",
+            "        return lease.status(c.worker,c.jid)\n",
+            "    await command('upload')\n",
+            "    first=await command('collect')\n",
+            "    assert first['command']['result'].get('state')=='original_batch_pending',first['command']\n",
+            "    if mode=='baseline_changed':baseline.write_text('[{\"changed\":true}]')\n",
+            "    second=await command('collect')\n",
+            "    assert writes==['original_upload']\n",
+            "    assert verify.await_args.kwargs=={'existing_job':c.jid}\n",
+            "    assert reads[0]['expected_batch'] is None\n",
+            "    if mode=='complete':\n",
+            "        assert second['state']=='returned' and reads[1]['expected_batch']=='123'\n",
+            "        assert reads[0]['before']==reads[1]['before']==[]\n",
+            "        assert c.worker.jobs.status(c.jid)['result']['batch']=='123'\n",
+            "    elif mode=='pending_limit':\n",
+            "        await command('collect')\n",
+            "        with pytest.raises(SurfaceError,match='already_attempted'):await command('collect')\n",
+            "        assert len(reads)==3\n",
+            "    else:\n",
+            "        assert second['command']['state']=='failed' and second['state']=='write_unknown'\n",
+            "        assert 'changed' in second['command']['result']['reason']\n",
+            "        with pytest.raises(SurfaceError,match='already_attempted'):await command('collect')\n",
+            "    with pytest.raises(SurfaceError):await command('upload')\n",
+            "\n",
+            "\n",
+            "@pytest.mark.asyncio\n",
+            "@pytest.mark.parametrize('operation',['template','product_export','final_inventory','discount'])\n",
+            "async def test_pending_does_not_unlock_other_collects(case,operation):\n",
+            "    c=case;packet=await lease.acquire(c.worker,dict(request_id=c.rid,job_id=c.jid))\n",
+            "    packet['operation']=operation;db=c.worker.jobs.db\n",
+            "    db.execute(\"UPDATE campaign_ui_takeovers SET state='write_unknown',packet=?\",(json.dumps(packet),))\n",
+            "    seq=lease.event(db,c.jid,'collect_intent',{})\n",
+            "    db.execute('INSERT INTO campaign_ui_commands VALUES(?,?,?,?,?)',(c.jid,seq,'collect','finished',json.dumps(dict(state='original_batch_pending',read_only_continuation=True))))\n",
+            "    with pytest.raises(SurfaceError,match='already_attempted'):\n",
+            "        await lease.handle(c.session,'program_takeover_collect',dict(job_id=c.jid,sequence=seq+1))\n"
+          ],
+          "start": 52
+        }
+      ],
+      "newline": "\n",
+      "path": "tests/test_campaign_takeover_operations.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "a1de16d752073bd2f65eb904118ac8f17fcecd00ea9eabdcb0f539594e788b0a",
+      "before_sha256": "700336375b0d8b00d83c4eb6dc7b9556c28d1b1a0eb34ad028679f16c8f60c57",
+      "edits": [
+        {
+          "end": 19,
+          "lines": [
+            "    result=validate_claim_submission_checklist(claim,IDENTITY)\n",
+            "    from app.engine.campaign_submission_checklist import ordered_report\n",
+            "    assert result['state']=='validated'\n",
+            "    assert result['rule_version']==ordered_report(result)['rule_version']=='submission-checklist-shared-price-v3'\n"
+          ],
+          "start": 18
+        }
+      ],
+      "newline": "\n",
+      "path": "tests/test_campaign_shared_price.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "499af06b731e83dbf09c08d29540023b8172f3e0a067a6d501799361bc1f4a62",
+      "before_sha256": "42b38a583c25ee8ae0cc571e5bbac830dd1180dcaa3abc89ca32d9c46694aabc",
+      "edits": [
+        {
+          "end": 30,
+          "lines": [
+            "\n",
+            "\n",
+            "@pytest.mark.asyncio\n",
+            "async def test_continuation_refuses_replacement_official_batch(tmp_path,monkeypatch):\n",
+            "    from unittest.mock import AsyncMock\n",
+            "    from app.engine import campaign_upload_causality\n",
+            "    driver=CampaignPageIO(None,IDENTITY,roots=[tmp_path],output=tmp_path)\n",
+            "    driver.upload_attempted=True\n",
+            "    driver.open_records=AsyncMock(return_value=object())\n",
+            "    driver.record_rows=AsyncMock(return_value=[])\n",
+            "    monkeypatch.setattr(campaign_upload_causality,'new_candidates',lambda *a:[{'历史记录ID':'456'}])\n",
+            "    with pytest.raises(SurfaceError,match='upload_batch_identity_changed'):\n",
+            "        await driver.await_upload_terminal(before=[],filename='same.xlsx',expected_count=1,timeout=0,expected_batch='123')\n"
+          ],
+          "start": 30
+        }
+      ],
+      "newline": "\n",
+      "path": "tests/test_campaign_page_io.py",
+      "project": "WA"
+    },
+    {
+      "after_sha256": "db4f2bdb875774b9d89f531c40e7090d77e0ed29ccc41328fa872888144fc54c",
+      "before_sha256": "6fb8e964aa98dc2ec2c513a3bccb5fb504ca1093820cfc9c5afba4d033bf200e",
+      "edits": [
+        {
+          "end": 19,
+          "lines": [
+            "动作序号是防重放键。每个接管最多24个动作；上传、刷新和基线各最多一次。仅signup回收明确返回original_batch_pending时，允许同claim、同基线及同已观察批次最多三次纯只读回收；未知中断、其他失败及其他种类回收不能重放。HTTP丢失只能先读status；重启后的在途命令保留未知，不能据此再次执行。独占租约同时阻挡普通浏览器dispatch和新的controller。独立后台任务持有原session锁，录屏或截图均在浏览器内部完成。\n"
+          ],
+          "start": 18
+        }
+      ],
+      "newline": "\n",
+      "path": "docs/campaign-four-step-runtime-20261117.md",
+      "project": "ERP"
+    }
+  ],
+  "schema": "panse-exact-source-patch-v1",
+  "scope": "Original signup pending read only; v3 report label"
+}

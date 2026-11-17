@@ -1,0 +1,26 @@
+{
+  "suite": "ERP",
+  "command": [
+    "D:\\AI\\畔色ERP系统\\Web-Agent程序\\.venv\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "scripts/tests/test_submission_checklist_contract.py",
+    "scripts/tests/test_submission_checklist_integration.py",
+    "scripts/tests/test_checklist_protocol_regression.py",
+    "scripts/tests/test_campaign_price_decision.py",
+    "scripts/tests/test_campaign_release_pin.py",
+    "scripts/tests/test_campaign_owned_execution.py",
+    "scripts/tests/test_campaign_sku_fact_store.py",
+    "scripts/tests/test_campaign_entry_guards.py",
+    "scripts/tests/test_campaign_read_checkpoint.py",
+    "scripts/tests/test_campaign_state_precedence.py",
+    "scripts/tests/test_campaign_final_audit_conflicts.py",
+    "-q"
+  ],
+  "exit_code": 0,
+  "seconds": 26.88,
+  "stdout": "........................................................................ [ 46%]\n.................................................................. [ 89%]\n.................                                                        [100%]\n155 passed, 6 subtests passed in 26.01s\n",
+  "stderr": "",
+  "platform_write": false,
+  "live_platform_acceptance": false
+}

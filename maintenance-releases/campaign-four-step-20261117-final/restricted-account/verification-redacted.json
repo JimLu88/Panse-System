@@ -1,0 +1,22 @@
+{
+  "state": "acl_verified_broker_verification_pending",
+  "actor": "new_local_execution_account",
+  "checks": [
+    "source_read_denied",
+    "source_write_denied",
+    "broker_write_denied",
+    "policy_read_denied",
+    "secret_fixture_read_denied",
+    "inbox_write_delete_ok",
+    "work_write_delete_ok",
+    "source_and_parent_replace_acl_denied",
+    "real_executor_sid_pipe_authorized"
+  ],
+  "fixed_business_read_allowed": null,
+  "maintenance_command_rejected": null,
+  "broker_state": "Ready",
+  "account_enabled": false,
+  "host_switched": false,
+  "platform_write": false,
+  "acl_objects_verified": 1040648
+}

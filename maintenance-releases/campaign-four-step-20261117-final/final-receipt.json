@@ -1,0 +1,280 @@
+{
+  "state": "acl_verified_broker_waiting_for_user_admin_action",
+  "observed_at": "2026-11-17T08:54:34.641506+00:00",
+  "installed_files": [
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_continuous_transport.py",
+      "sha256": "d1274362e7932c0254eeb8052ba4ab9d139f9d76cd70cde6857d2f90b2189c43",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_entry_authority.py",
+      "sha256": "5266979ef457a05369feb5288b18ea949e9905100b3e1deefed3acd51ea5c93f",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_execution_release.py",
+      "sha256": "b3d5df558981d7e0279a69302e6708a14d9b04f5547b81713a3b21d6e7831259",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_final_audit.py",
+      "sha256": "7f3c52a5b4432f916e5bb42ba51c06792d035c2754c12504df3b090604601c8d",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_owned_execution.py",
+      "sha256": "c8f601061a3e113e5931e1dd60572bcf123db86a26db00e9818e1a438b659c96",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_submission_checklist_contract.py",
+      "sha256": "c9595aab581cb6d12b9c856bd9bad29fadf1599fc2d5f6d259446029d4c03536",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_bound_transfers.py",
+      "sha256": "dca5c1b05cd8b38aa6c27e668273cd067f64e8f410330c017d077f8be1b3a81a",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_continuous_worker.py",
+      "sha256": "8fc7b9af4eb3754c2cb7fb9162c396d12f719bcf8abf1435a877fdb61e72c910",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_operator.py",
+      "sha256": "fad1c4456b250f4a7685f26f2f93ce1dbfe8b50409fcf0a31d5889decf86fd91",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_page_io.py",
+      "sha256": "ac8eb8df96692172e1ecd9a5a73dde0cab74132cc46ceb291e42e91d0ff3c6a6",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_submission_checklist.py",
+      "sha256": "f7029a15b0670b7bb12c3f5ed712a80aa34e9f41ca6e1a4dc0f65af551c60416",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_todo351_sku_off.py",
+      "sha256": "293ee67bc9091e2490a874bada8d0096fb25a24e0adadf79661e15422b8982e1",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_transfer_jobs.py",
+      "sha256": "c1419f812907e5e1d069608880cb22992bb1029339c67154de8c03fc9905d88d",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/browser/campaign_edge_actions.py",
+      "sha256": "80b26cc23540f886550af0baa51d135c6af3380b2625d055f6e6312a8db8ee9f",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/api/routes.py",
+      "sha256": "752d3c8b3ad6d2a15f10b9b101e31989dd3fed179a07aaca6a520fdf3ad0b25c",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_price_decision.py",
+      "sha256": "163ba486877f628634f2d068a2a93fc2a7f8dd7370269357e3d96b7ec6fe4ba0",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_read_checkpoint.py",
+      "sha256": "b5852f22ee29136cb544a4196f44643e61de8600edff9562925db5fb9d4a9788",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/campaign_permission_probe.py",
+      "sha256": "6daac0bfd3bddc4d492084ca2524911501c3970342c8bf661a09bfd2048f02f0",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/tests/test_campaign_price_decision.py",
+      "sha256": "cf9ff23cf689341190489c43a4a19f2df4828d5bbaacd1b9546963ad8c7cdfed",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/tests/test_campaign_release_pin.py",
+      "sha256": "614c10571a089c08a9a4f4071c697701d2b464ef6311287894ed30c56510303f",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/tests/test_campaign_read_checkpoint.py",
+      "sha256": "499149a6f8dc39307f30745ceb5d0d607086f85b1fb30fc782f52eff5fee57ee",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "scripts/tests/test_campaign_state_precedence.py",
+      "sha256": "6912b30c16129c490eb52888b12ff4dc8bd83b88ea4a4d79318aef6424ee1f9b",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_takeover.py",
+      "sha256": "1a5898071130d1e354d75ec4a6bf8081cc0c082dd9cfefcf6b764fe40de4f47d",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_takeover_operations.py",
+      "sha256": "71b3fe2ddb23665293aafcff69e05d31830b78e7a90e585b33ae39a5918b62ee",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_takeover_return.py",
+      "sha256": "f580f05e3700e3ac5e8dec1693abc15ab75fc92c8c9db4a1e9ef289aa2dab840",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "app/engine/campaign_editor_fields.py",
+      "sha256": "c1f255bd55b7ce5de09f57f3ae0063bb11dc9e537998ce60965c878e98d69caa",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "tests/test_campaign_editor_fields.py",
+      "sha256": "fa923b63412b441557d19624ff28179a3c72081643857bec9eb068ee6cda37c7",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "tests/test_campaign_takeover.py",
+      "sha256": "a47fe99391313e7a02c7dde71898c1cd4c25c419e17554976f0be250407b9ee9",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "tests/test_campaign_shared_price.py",
+      "sha256": "a1de16d752073bd2f65eb904118ac8f17fcecd00ea9eabdcb0f539594e788b0a",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "tests/test_campaign_takeover_operations.py",
+      "sha256": "2b74b66a07637c5da3399e5e5effb8722152307988a6a192474009036d17de75",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "current-state.md",
+      "sha256": "e999ac2a69c2bc12321168f763f03de07ee7ab0a6e46ff3f65b8fb6fcaba2213",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "current-state.md",
+      "sha256": "10548bd7fd772d95f56dc82405d5239d4f37668db055dca84509ee5c0919c60e",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "backend/app/services/business_relationship_catalog.py",
+      "sha256": "55a68b7cc85789843fcc6a368e8975950e835c9f735a762fa2e47e7efa9854a7",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "backend/app/services/business_relationship_service.py",
+      "sha256": "bdd69f4a266b51efbc306db967fc6b9e55f7c4270239bde52ac41fdab83e9369",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "backend/app/assets/business_relationship_sources.json",
+      "sha256": "97d061a151f471c725827c9c7be4764e40bce1c5b74b15a0983b6cf19ff24bfa",
+      "match": true
+    },
+    {
+      "project": "ERP",
+      "path": "docs/campaign-four-step-runtime-20261117.md",
+      "sha256": "db4f2bdb875774b9d89f531c40e7090d77e0ed29ccc41328fa872888144fc54c",
+      "match": true
+    },
+    {
+      "project": "WA",
+      "path": "tests/test_campaign_page_io.py",
+      "sha256": "499af06b731e83dbf09c08d29540023b8172f3e0a067a6d501799361bc1f4a62",
+      "match": true
+    }
+  ],
+  "installed_hashes_verified": true,
+  "tests": {
+    "initial_erp": 155,
+    "erp_subtests": 6,
+    "initial_wa": 126,
+    "continuation": 80,
+    "restricted_runtime": 32
+  },
+  "account": {
+    "name": "PanseCampaignExec",
+    "enabled": false,
+    "group": "Users",
+    "directory_acls_read_back": true,
+    "real_identity_probe_passed": true
+  },
+  "broker": {
+    "installed": true,
+    "running": false,
+    "fixed_business_read_allowed": null,
+    "maintenance_commands_rejected": null,
+    "installed_manifest": {
+      "schema": "panse-restricted-installed-v1",
+      "files": [
+        {
+          "name": "campaign_broker.py",
+          "sha256": "0145cfe5052a015974fb39235d2f4cfc0103e615bde8ccdc18a0ab90194acdd2"
+        },
+        {
+          "name": "Invoke-Campaign.ps1",
+          "sha256": "4db37fe0db98902f9e5db86e9e898cd48ea4b58deb301d369d71ab140625c268"
+        },
+        {
+          "name": "Activate-RestrictedAccount.ps1",
+          "sha256": "ea779fae1ebf968cb155a95b45a31ff9966ccfad1bf0e64a16318a0babcc73ee"
+        }
+      ]
+    },
+    "verified": false
+  },
+  "platform_write": false,
+  "platform_acceptance": false,
+  "hard_permission_isolation": false,
+  "notification_changed": false,
+  "nas_images_changed": false,
+  "remaining": [
+    "user runs Invoke-BrokerVerification.ps1 as administrator",
+    "user sets password locally",
+    "user switches business host to prepared Windows identity"
+  ],
+  "awaiting_user_uac": true,
+  "admin_prompt_open": false,
+  "last_uac_result": "cancelled_by_user"
+}
