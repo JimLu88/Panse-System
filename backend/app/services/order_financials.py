@@ -256,6 +256,19 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     est_pack = _d(getattr(o, "est_packing", None))
     cap_mode, cap_label = "none", ""
 
+    # 人工确认的纯增加材料费用虽通过差价/补拍链接收款，仍有本单材料成本。
+    # 只接受明确的 80% 备注且无工厂实账；平台扣点和税继续在 cost_breakdown 单列。
+    _material_note = (getattr(o, "remark", None) or "") + " " + (getattr(o, "seller_memo", None) or "")
+    if ("纯增加材料费用" in _material_note and "80%" in _material_note
+            and not bool(getattr(o, "is_refill", False)) and _d(o.actual_cost) <= 0):
+        _material_cost = (paid * Decimal("0.80")).quantize(Decimal("0.01"))
+        return {"factory_wood": Decimal("0"), "estimate_part": _material_cost,
+                "packing": Decimal("0"), "precap_total": _material_cost,
+                "cap_mode": "纯增加材料80", "logistics_component": Decimal("0"),
+                "install_component": Decimal("0"),
+                "cap_label": "人工确认纯增加材料费用→本单实付扣退款后按80%计材料成本",
+                "final": _material_cost}
+
     # 非产品单(官方服务/专链/邮费/补拍/安装/送货)整单成本归零 (用户 2026-06-26; 复用系统权威检测器
     # zero_cost_reason — 不含样块/样品[另按实际¥13], 不含差价[走片段规则])。否则残留 配件/物流 估值。
     # 例外 — 专链/补拍单里「备注追加插座」的(2026-07-02 修, 用户拍板): 定制单常年用「差价邮费补拍专链」

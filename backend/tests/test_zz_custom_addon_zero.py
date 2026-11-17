@@ -66,3 +66,20 @@ def test_confirmed_small_accessory_addon_keeps_own_cost_and_fees(db_session):
     assert b["physical"] == Decimal("17.00")
     assert b["platform"] > 0
     assert b["tax"] > 0
+
+
+def test_confirmed_material_topup_uses_80_percent_and_retains_fees(db_session):
+    o = Order(platform="淘宝", order_no="MATERIAL1", product_name="差价邮费补拍专链",
+              customer_phone="18400000000-3333", status="signed", is_custom=True,
+              paid_amount=Decimal("54.56"),
+              remark="纯增加材料费用，成本算支付费用的80%", actual_cost=None,
+              actual_packing=Decimal("0"), actual_logistics=Decimal("0"),
+              actual_install=Decimal("0"))
+    db_session.add(o)
+    db_session.commit()
+    pb = ofin.physical_cost_breakdown(o, db_session)
+    assert pb["cap_mode"] == "纯增加材料80"
+    assert pb["final"] == Decimal("43.65")
+    b = ofin.cost_breakdown(o, ofin.load_coefficients(db_session), Decimal("0"), db=db_session)
+    assert b["physical"] == Decimal("43.65")
+    assert b["platform"] > 0 and b["tax"] > 0
