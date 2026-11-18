@@ -588,7 +588,10 @@ def platform_deduction(o: Order, coef: dict) -> Decimal:
         # recv 视为退款后净额→扣退款只留纯平台费(防退款双扣: 收入侧已减过退款)。
         # 钳制(2026-06-26): 退款最多扣到 实付−实收, 防个别单 recv 非退款后净额(毛额)时把退款多扣→平台费虚低/转负落率算法。
         _gap = paid - recv
-        diff = _gap - min(_d(getattr(o, "refund_amount", 0)), _gap)
+        state = getattr(o, "platform_field_state", None) or {}
+        refund_in_receipt = (Decimal("0") if state.get("shop_received_basis") == "before_refund"
+                             else _d(getattr(o, "refund_amount", 0)))
+        diff = _gap - min(refund_in_receipt, _gap)
         if Decimal("0") <= diff <= paid * Decimal("0.08"):
             return diff
         # diff 远超合理扣点 → 分期/部分到账, 落到下面率算法, 不把未到账款当平台费
