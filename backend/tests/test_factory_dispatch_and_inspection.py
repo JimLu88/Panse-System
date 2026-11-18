@@ -402,6 +402,7 @@ def test_feishu_inspection_caption_parser():
 
 
 def test_order_delivery_chains_dispatch_sync(db_session, monkeypatch):
+    monkeypatch.setattr("app.services.order_post_push_audit.attach", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(
         dispatch,
         "sync_if_enabled",
@@ -425,6 +426,9 @@ def test_dispatch_failure_enters_order_retry_pipeline(db_session, monkeypatch):
 
 
 def test_deferred_dispatch_image_upload_does_not_fail_order_pipeline(db_session, monkeypatch):
+    # The projection retains retryable attachments; final export audit separately
+    # rejects missing attachments (see test_order_post_push_audit).
+    monkeypatch.setattr("app.services.order_post_push_audit.attach", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(
         dispatch,
         "sync_if_enabled",

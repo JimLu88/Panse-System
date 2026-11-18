@@ -109,6 +109,10 @@ def test_repair_wrong_role_reimports_once(db_session, monkeypatch, tmp_path):
 
 def test_confirmed_partial_refund_delivers_one_and_retries_table_without_resending(
         db_session, monkeypatch, _feishu):
+    # This unit isolates the image/table retry contract; export reconciliation
+    # has its own real-workbook integration tests.
+    monkeypatch.setattr("app.services.order_post_push_audit.attach",
+                        lambda *a, **k: {"ok": True})
     from app.services import settings_service, factory_production_evidence as facts
     from app.services import factory_sheet, order_sheet_archive_service as sheets
     from app.services.order_delivery_completion_service import complete_selected_order_delivery

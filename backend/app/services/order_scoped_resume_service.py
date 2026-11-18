@@ -191,6 +191,14 @@ def resume(
         unresolved = sorted(set(ready) - {r["sub_order_no"] for r in receipts})
         result.update(status="partial" if held or unresolved else "done", delivery=delivery,
                       receipts=receipts, unresolved_sub_order_nos=unresolved)
+        from app.services import order_post_push_audit
+        parents = {parent for parent, fact in detail_index.values()
+                   if str(fact.get("sub_order_no") or "") in sub_order_nos}
+        checked = order_post_push_audit.attach(db, result, batch_id=order_batch_id,
+                                             only_order_nos=parents, only_sub_order_nos=set(sub_order_nos),
+                                             file_ids=file_ids, limit=len(sub_order_nos))
+        if not checked["ok"]:
+            result["status"] = "partial"
     except Exception as exc:
         db.rollback()
         result.update(status="needs_review", error_type=type(exc).__name__)

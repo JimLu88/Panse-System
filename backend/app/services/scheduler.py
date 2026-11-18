@@ -1563,6 +1563,8 @@ def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
     首次失败直接并入 order_delivery 自动化失败原因，因此会按既有
     19:17 / 20:17 / 21:17 续跑并在飞书告知具体失败阶段。
     """
+    if "post_push_audit" in result and "factory_dispatch" in result:
+        return result
     from app.services import factory_dispatch_feishu_service
 
     synced = factory_dispatch_feishu_service.sync_if_enabled(db)
@@ -1574,6 +1576,8 @@ def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
         result["_error"] = (
             f"{previous}；" if previous else ""
         ) + f"飞书系统下单表同步失败: {detail or '未知原因'}"
+    from app.services import order_post_push_audit
+    order_post_push_audit.attach(db, result, batch_id=result.get("order_batch_id"))
     return result
 
 
@@ -1638,7 +1642,9 @@ def _job_order_sheets_daily(db: Session) -> dict:
             int(latest_changes.get(key) or 0)
             for key in ("inserted", "status_changed", "amount_changed")
         )
-        if business_change_count == 0 and int(result.get("images_pushed") or 0) == 0:
+        pushed_images = sum(int(result.get(key) or 0) for key in (
+            "images_pushed", "line_images_pushed", "post_push_added_image_count"))
+        if business_change_count == 0 and pushed_images == 0:
             result["update_complete_notice"] = order_sheet_archive_service.send_order_update_complete_notice(
                 db, on_date=date.today()
             )

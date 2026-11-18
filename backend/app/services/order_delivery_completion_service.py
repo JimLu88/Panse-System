@@ -40,10 +40,15 @@ def complete_selected_order_delivery(db: Session, *, sub_order_nos: list[str]) -
                              "message_id": row.factory_delivery_message_id})
         else:
             unresolved.append(row.sub_order_no)
-    return {"ok": not unresolved and bool(table.get("ok"))
+    result = {"ok": not unresolved and bool(table.get("ok"))
                   and not table.get("deferred_image_uploads"),
             "delivery": delivery, "factory_dispatch": table, "receipts": receipts,
             "unresolved_sub_order_nos": unresolved}
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.attach(db, result, only_order_nos=parents,
+                                         only_sub_order_nos=scope, limit=len(scope))
+    result["ok"] = result["ok"] and checked["ok"]
+    return result
 
 
 def _retry_slots(now: datetime | None = None) -> list[datetime]:
@@ -117,6 +122,12 @@ def complete_recovered_order_delivery(
     if not factory_dispatch.get("ok"):
         details = "; ".join(str(item) for item in (factory_dispatch.get("errors") or [])[:5])
         error = '; '.join(x for x in [error, f"飞书系统下单表同步失败: {details or '未知原因'}"] if x)
+
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.attach(db, result, batch_id=order_batch_id,
+                                         limit=ORDER_RECOVERY_PUSH_LIMIT)
+    if not checked["ok"]:
+        error = "; ".join(x for x in [error, result.get("_error")] if x)
 
     if error:
         result["_run_status"] = "fail"

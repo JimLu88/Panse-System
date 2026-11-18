@@ -2013,6 +2013,12 @@ def push_daily(db: Session) -> dict:
     # 日报、口令回调、人工恢复和晚间补跑必须共用同一收口逻辑；否则同一批
     # 数据会出现不同的成功口径。quiet=False 仅控制日报附加通知，不改变状态机。
     result = reconcile_pending_delivery(db, limit=20, quiet=False)
+    # Finish the source-report/table/image check before any success notification.
+    from app.services import agent_ingest_service, scheduler
+    result["order_batch_id"] = agent_ingest_service.latest_order_pull_batch_id(db)
+    scheduler._sync_factory_dispatch_after_orders(db, result)
+    image_count = sum(int(result.get(key) or 0) for key in (
+        "images_pushed", "line_images_pushed", "post_push_added_image_count"))
     generated = result.get("generated") or {}
     n = int(generated.get("generated") or 0)
     released = set(result.get("released_after_address_fill") or [])
@@ -2026,8 +2032,8 @@ def push_daily(db: Session) -> dict:
         return result
     if result.get("_run_status") == "fail":
         text = "下单图自动推送未完成：" + str(result.get("_error") or "未返回原因")
-    elif result["images_pushed"]:
-        head = f"今日推送 {result['images_pushed']} 张工厂下单图到工厂群"
+    elif image_count:
+        head = f"今日推送 {image_count} 张工厂下单图到工厂群，报表与飞书核对完成"
         if result["images_remaining"]:
             head += f" (仍有 {result['images_remaining']} 张待明确处理)"
         text = head + "。\n单号: " + "、".join(result["order_nos"][:10]) + ("…" if len(result["order_nos"]) > 10 else "")
