@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "8833e5acbadf7611ef494ce3c7079cf4eae905b9dd26095a19bd9e56b4cce462",
+    "backend/app/services/business_relationship_catalog.py": "c39aea16f9aae82986051a5703cc59313a516e6d2a515f1e0b864baa399038be",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -125,11 +125,14 @@
     "backend/app/services/order_scoped_resume_service.py": "a364c07144afffc64d2ab198afe74e3f1066170a7e699bd7ad7647967aa65360",
     "backend/app/services/shipping_recovery_service.py": "0b9f3c2eccfa4e02086da7a92f239493fb3ad8e575ba99965b648509b8e64bd3",
     "backend/app/services/fulfillment_deadlines.py": "da3460f686714eea3c0c991479e8812466d41603ae7297de18445bbd18768d18",
-    "backend/app/services/fulfillment_intake.py": "b7cba6a16b99e637de2623e21ff93001b2c9f5c73eabffd125becd191a1759d7",
+    "backend/app/services/fulfillment_intake.py": "11e20545dfd3fbe504b09113317b576596fedfc9c75f657f2c58b49df1f06ab6",
     "backend/app/services/taobao_shipping.py": "389589da2e5214720384d7703e20502223460f61c2b470b2e5b72a5495303b96",
     "backend/app/services/interaction_notice_service.py": "4afebf36e5bbffd24b2407dbf3c1098d67806a5b14f17d225abdef44a3463239",
     "backend/app/services/order_post_push_audit.py": "a744644c1de80d179cc3a1d2bb4898f6ed5c1c1a19ac333d3f81e62b2feec40b",
-    "backend/app/api/imports.py": "85a3d2d56ef2ad55febecba935f997a253a5158497d133fe727197b44b824fe8"
+    "backend/app/api/imports.py": "85a3d2d56ef2ad55febecba935f997a253a5158497d133fe727197b44b824fe8",
+    "backend/app/services/fulfillment_batch_service.py": "e66f2cdf3e18d0163d1774b67a55cc81d72d1cb077c6f7b37e22aa2d5ddd7012",
+    "backend/app/models/fulfillment_intake.py": "9ebad0d07d7b142ddce1212a72cedbf27c1e1b00d736d1e3984876ff0be7a3a1",
+    "backend/app/api/shipments.py": "c2d7cb06eaaaa7207868f1138127a04e6e7f7ae26a06ca11cef56ef059bb7082"
   },
   "scoped_review_20261116": {
     "paths": [

@@ -27,6 +27,10 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    {'id':'shipping.batch','label':'官方批量发货表','domain':'shipping',
+     'field':'FulfillmentBatch.rows/file_sha256 + FulfillmentIntake.batch_id/review_evidence/order_claim/parcel_claim',
+     'sources':[source('services/fulfillment_batch_service.py','def prepare'), source('models/fulfillment_intake.py','class FulfillmentBatch'), source('api/shipments.py','def prepare_batch')],
+     'note':'管理员或操作员确认整单交运后，保真填充官方三列模板；多子单逐项核对，退款/延期/资料变化阻止出表。同请求取原文件，已出表订单及运单不能另批重出；出表不代表淘宝发货，浏览器上传尚未接通。'},
     node('shipping.registration','飞书发货登记','shipping','FulfillmentIntake.message_id / order_claim / parcel_claim','services/fulfillment_intake.py','def register','同一条图文与已发原图核对，单包真实提交后只读核验。'),
     node('shipping.deadline','内部交期提醒','shipping','Order.order_date / ship_deadline / seller_memo','services/fulfillment_deadlines.py','def deadline','生产、发货和送达分别核对，汇总进入ERP通知中心。'),
     node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','先验证共享相对路径、hash、export_id、业务日和真实生成日，再准许一次请求口令；同登记及未知不重放。'),
@@ -160,6 +164,7 @@ EDGES = [
     edge('sync.password','sync.route','等待人工输入跨天去重','发送前持久占位；新报表、重启、跨日不重新提醒','只在对应真实恢复后解除；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
     edge('order.notes','shipping.deadline','提取内部工期','有下单锚点及明确的完成或发货期限','人工交期、延期及待确认条件优先','services/fulfillment_deadlines.py','def deadline'),
     edge('factory.receipt','shipping.registration','核对原图及主子单','单件单包、有真实子单及发送图归档','压缩图只提供候选，未知提交不重发','services/fulfillment_intake.py','def _match'),
+    edge('shipping.registration','shipping.batch','整单登记生成官方模板','原图精确匹配或ERP人工确认全部子单；同店铺、待发无退款且备注落实','快递与快运不混用；主单模板不支持部分交运；不写订单状态或库存','services/fulfillment_batch_service.py','def preview'),
     edge('shipping.registration','shipping.fulfilled','核对平台登记结果','平台回读子单、承运商、运单号一致','平台确认和买家签收独立，继续沿用订单报表更新ERP','services/taobao_shipping.py','def confirmed',kind='protect'),
     edge('sync.shipping_target','sync.password','口令只处理登记文件','同路径/hash/export_id已核对','没有目标不扫描旧文件；处理问题不误报口令错误','services/shipping_recovery_service.py','def apply_password'),
     edge('sync.shipping_target','factory.receipt','独立恢复精确子单续推','原两份已入库报表hash/角色/业务批次与限定子单相符','真实归档日期可跨午夜；不改原attempt，不重导已入库文件，不重发sent/unknown','services/order_scoped_resume_service.py','def resume'),

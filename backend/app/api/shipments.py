@@ -10,6 +10,9 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
+from uuid import UUID
+from pydantic import Field
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -47,7 +50,9 @@ class ShipmentOut(BaseModel):
 
 
 from app.dependencies import require_role
-from app.models.fulfillment_intake import FulfillmentIntake
+from app.models.fulfillment_intake import FulfillmentIntake, FulfillmentBatch
+from app.services import fulfillment_batch_service as batches
+from app.services.taobao_shipping import ShippingGate
 from sqlalchemy import select
 
 
@@ -55,7 +60,85 @@ from sqlalchemy import select
 def registrations(db: Session = Depends(get_db), _=Depends(require_role("admin", "operator"))):
     recent = db.scalars(select(FulfillmentIntake).order_by(FulfillmentIntake.created_at.desc()).limit(200))
     return [{key: getattr(row, key) for key in ("message_id", "created_at", "order_no", "sub_order_no",
-              "carrier", "tracking_no", "state", "detail")} for row in recent]
+              "carrier", "tracking_no", "state", "detail", "batch_id")} for row in recent]
+
+
+class ShippingPreview(BaseModel):
+    order_no: str = Field(min_length=10, max_length=24)
+    carrier: str = Field(min_length=1, max_length=64)
+    tracking_no: str = Field(min_length=6, max_length=64)
+
+
+class ManualShipping(ShippingPreview):
+    request_id: UUID
+    snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    all_goods_handed_over: bool
+    notes_fulfilled: bool = False
+
+
+class PrepareShipping(BaseModel):
+    request_id: UUID
+    message_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+@router.post('/batch-preview')
+def batch_preview(body: ShippingPreview, db: Session = Depends(get_db),
+                  _=Depends(require_role('admin', 'operator'))):
+    try:
+        return batches.preview(db, **body.model_dump())
+    except ShippingGate as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/registrations/manual')
+def register_manual(body: ManualShipping, db: Session = Depends(get_db),
+                    user=Depends(require_role('admin', 'operator'))):
+    values = body.model_dump()
+    values['request_id'] = str(body.request_id)
+    try:
+        row = batches.register_manual(db, actor=f'ERP:{user.id}', **values)
+        return {'message_id': row.message_id, 'state': row.state, 'detail': row.detail}
+    except ShippingGate as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+def _batch_info(row):
+    return {'id': row.id, 'created_at': row.created_at, 'state': row.state,
+            'count': len(row.rows), 'sha256': row.file_sha256,
+            'shop': row.rows[0].get('shop') if row.rows else None}
+
+
+@router.get('/batches')
+def shipping_batches(db: Session = Depends(get_db), _=Depends(require_role('admin', 'operator'))):
+    return [_batch_info(r) for r in db.scalars(select(FulfillmentBatch).order_by(
+        FulfillmentBatch.created_at.desc()).limit(100))]
+
+
+@router.post('/batches')
+def prepare_batch(body: PrepareShipping, db: Session = Depends(get_db),
+                  user=Depends(require_role('admin', 'operator'))):
+    try:
+        row = batches.prepare(db, request_id=str(body.request_id), actor=f'ERP:{user.id}',
+                              message_ids=body.message_ids)
+        return _batch_info(row)
+    except ShippingGate as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+@router.get('/batches/{batch_id}/file')
+def batch_file(batch_id: UUID, db: Session = Depends(get_db), _=Depends(require_role('admin', 'operator'))):
+    import hashlib
+    row = db.get(FulfillmentBatch, str(batch_id))
+    if not row:
+        raise HTTPException(404, '批次不存在')
+    if hashlib.sha256(row.file_bytes).hexdigest() != row.file_sha256:
+        raise HTTPException(409, '批次文件校验失败，不能下载')
+    return Response(content=row.file_bytes,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition': f'attachment; filename="taobao-shipping-{row.id}.xlsx"',
+                 'Cache-Control': 'no-store'})
 
 
 @router.get("", response_model=list[ShipmentOut])
