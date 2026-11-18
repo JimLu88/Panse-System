@@ -382,3 +382,28 @@ def test_wechat_inbound_admin_config_never_returns_secrets():
     finally:
         from app.main import app
         app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(("title", "level", "body"), [
+    (None, "plain", "今天日期：11月18日\n昨日销售额：1"),
+    ("畔色 ERP [销售周报]", "info", "上周销售"),
+    ("畔色ERP | 本周备货清单", "warn", "本周备货"),
+    ("畔色 ERP | 8 项数据待更新", "warn", "待更新"),
+    ("畔色 ERP [售后自动化日报]", "info", "待补原因"),
+    ("畔色 ERP [自动取数日报]", "info", "任务汇总"),
+    ("畔色 ERP | 发货报表处理结果", "info", "已成功"),
+])
+def test_erp_only_messages_do_not_call_feishu(db_session, monkeypatch, title, level, body):
+    monkeypatch.setattr(notify_service, "get_config", lambda db: {"route_mode": "feishu_split", "alert_chat_id": "test"})
+    with patch("app.services.feishu_client.send_text") as send:
+        assert notify_service.notify(db_session, body, title=title, level=level) == (False, "erp_only")
+        send.assert_not_called()
+
+
+def test_actionable_warning_still_reaches_alert_group_and_requires_receipt(db_session, monkeypatch):
+    monkeypatch.setattr(notify_service, "get_config", lambda db: {"route_mode": "feishu_split", "alert_chat_id": "test"})
+    with patch("app.services.feishu_client.send_text", side_effect=[{}, {"message_id": "om_example"}]) as send:
+        args = {"title": "畔色 ERP | 发货报表处理结果", "level": "warn", "require_receipt": True}
+        assert notify_service.notify(db_session, "暂停发送下单图", **args) == (False, "delivery_unknown")
+        assert notify_service.notify(db_session, "需要核对新批次", **args) == (True, "om_example")
+        assert send.call_count == 2

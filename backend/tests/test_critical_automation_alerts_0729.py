@@ -40,7 +40,7 @@ def _at(hour: int, minute: int = 0) -> datetime:
     return datetime(2026, 7, 29, hour, minute, tzinfo=TZ)
 
 
-def test_each_failure_notifies_next_retry_and_final_failure(db_session, monkeypatch):
+def test_four_attempts_share_one_group_notice(db_session, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
         pipeline,
@@ -86,11 +86,10 @@ def test_each_failure_notifies_next_retry_and_final_failure(db_session, monkeypa
     assert second["next_retry_at"].startswith("2026-07-29T11:00")
     assert third["next_retry_at"].startswith("2026-07-29T12:00")
     assert final["final"] is True
-    assert len(sent) == 4
-    assert "第1次执行失败" in sent[0]
-    assert "10:00" in sent[0]
+    assert len(sent) == 1
+    assert "账户余额自动拉取未完成" in sent[0]
     assert "12,345" not in sent[0]
-    assert "今日失败" in sent[-1]
+    assert pipeline.get_pipeline(db_session, "balance_pull", now=_at(12))["failures"] == 4
 
 
 def test_transient_timeout_routes_to_execution_and_keeps_bounded_retry(
@@ -120,7 +119,7 @@ def test_transient_timeout_routes_to_execution_and_keeps_bounded_retry(
         "retry_policy": "scheduled_retry",
     }
     assert result["next_retry_at"].startswith("2026-07-29T20:00")
-    assert "处理归属：执行端" in sent[0]
+    assert "等待平台响应超时" in sent[0]
     assert pipeline.needs_retry(
         db_session, "order_delivery", now=_at(19, 1)
     ) is True
@@ -153,8 +152,7 @@ def test_deterministic_program_error_stops_blind_retry_and_enters_maintenance_qu
     assert pipeline.needs_retry(
         db_session, "order_delivery", now=_at(19, 1)
     ) is False
-    assert "处理归属：程序修复" in sent[0]
-    assert "停止业务盲重试" in sent[0]
+    assert "取数程序出错，已登记程序维护" in sent[0]
 
     raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
     queue = json.loads(raw)["program_maintenance_queue"]
@@ -184,7 +182,7 @@ def test_deterministic_web_agent_download_failure_stops_blind_retry():
     assert result["retry_policy"] == "stop_and_review"
 
 
-def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, monkeypatch):
+def test_success_after_failure_closes_silently(db_session, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
         pipeline,
@@ -212,11 +210,11 @@ def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, mo
     assert pipeline.get_pipeline(
         db_session, "order_delivery", now=_at(19, 50),
     )["last_error"] is None
-    assert len(sent) == 2
-    assert "自动重试成功" in sent[-1]
+    assert len(sent) == 1
+    assert "无法连接取数电脑" in sent[0]
 
 
-def test_order_recovery_notification_distinguishes_no_new_orders(db_session, monkeypatch):
+def test_order_recovery_detail_is_preserved_in_erp(db_session, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
         pipeline,
@@ -239,8 +237,9 @@ def test_order_recovery_notification_distinguishes_no_new_orders(db_session, mon
         success_detail="没有新增订单",
     )
 
-    assert "自动重试成功" in sent[-1]
-    assert "结果：没有新增订单" in sent[-1]
+    assert len(sent) == 1
+    entry = pipeline.get_pipeline(db_session, "order_delivery", now=_at(19, 30))
+    assert entry["notifications"][-1]["result"] == "没有新增订单"
 
 
 def test_order_change_summary_ignores_unchanged_upserts():
@@ -319,69 +318,33 @@ def test_order_change_summary_keeps_changes_from_partial_attempt(db_session):
     assert changes["status_changed"] == 21
 
 
-def test_failed_feishu_send_is_persisted_and_retried(db_session, monkeypatch):
-    calls = {"count": 0}
-
-    def _send(db, text):
-        calls["count"] += 1
-        return (calls["count"] > 1, "network")
-
-    monkeypatch.setattr(pipeline, "_send_feishu", _send)
-    result = pipeline.record_failure(
-        db_session,
-        "flow_pull",
-        "网络异常",
-        retry_slots=[_at(22)],
-        now=_at(21),
-        max_failures=2,
-    )
-    assert result["notification"]["queued"] is True
-
-    retried = pipeline.retry_pending_notifications(
-        db_session, now=_at(21, 31)
-    )
-    assert retried == {"retried": 1, "sent": 1, "exhausted": 0}
-    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
-    queue = json.loads(raw)["notification_queue"]
-    assert queue[0]["sent_at"].startswith("2026-07-29T21:31")
+def test_unconfirmed_send_and_old_queue_are_not_replayed(db_session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(pipeline, "_send_feishu", lambda db, msg: (sent.append(msg) or False, "timeout"))
+    r = pipeline.record_failure(db_session, "flow_pull", "网络异常", retry_slots=[_at(22)], now=_at(21))
+    assert not r["notification"]["queued"]
+    pipeline.finalize_open_failures(db_session, now=_at(23))
+    assert len(sent) == 1
+    raw = pipeline._load(db_session)
+    raw["notification_queue"].append({"dedupe_key": "flow_pull:2026-07-29:failure-3"})
+    pipeline._save(db_session, raw)
+    assert pipeline.retry_pending_notifications(db_session, now=_at(23))["exhausted"] == 1
+    assert len(sent) == 1
 
 
-def test_recovery_supersedes_queued_failure_notification(db_session, monkeypatch):
-    delivered: list[str] = []
-    available = {"value": False}
+def test_finance_notice_translates_sources_and_omits_raw_data():
+    msg = pipeline.failure_summary("flow_pull", "wechat_bill流水未完成: settlement_export_unknown: raw-secret；"
+        "wanshifu流水未完成: 需扫码；alipay_main流水未完成: 需扫码；流水来源没有今日成功标记: alipay_main")
+    assert "微信账单：已点导出" in msg and "万师傅：等待扫码登录" in msg and "支付宝主力号：等待扫码登录" in msg
+    assert "raw-secret" not in msg and "alipay" not in msg
 
-    def _send(db, text):
-        if not available["value"]:
-            return False, "network"
-        delivered.append(text)
-        return True, "sent"
 
-    monkeypatch.setattr(pipeline, "_send_feishu", _send)
-    pipeline.record_failure(
-        db_session,
-        "flow_pull",
-        "网络异常",
-        retry_slots=[_at(22)],
-        now=_at(21),
-        max_failures=2,
-    )
-    available["value"] = True
-    recovered = pipeline.record_success(
-        db_session, "flow_pull", now=_at(21, 5)
-    )
-    assert recovered["superseded_notifications"] == 1
-    assert recovered["notification"]["detail"] == "sent"
-    assert len(delivered) == 1
-    assert "自动重试成功" in delivered[0]
-
-    retried = pipeline.retry_pending_notifications(
-        db_session, now=_at(21, 31)
-    )
-    assert retried == {"retried": 0, "sent": 0, "exhausted": 0}
-    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
-    queue = json.loads(raw)["notification_queue"]
-    assert queue[0]["exhausted"] is True
-    assert queue[0]["last_error"] == "pipeline_recovered_before_delivery"
+def test_next_business_day_can_notify_again(db_session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(pipeline, "_send_feishu", lambda db, msg: (sent.append(msg) or True, "om_test"))
+    for n in (0, 1):
+        pipeline.record_failure(db_session, "flow_pull", "超时", retry_slots=[], now=_at(21)+timedelta(days=n))
+    assert len(sent) == 2
 
 
 def test_repeated_success_still_cancels_an_old_unsent_failure(db_session, monkeypatch):

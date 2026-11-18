@@ -1,4 +1,4 @@
-"""关键自动化的逐次失败告警、有限重试状态和微信 Push 必达队列。
+"""关键自动化的失败记录、有限重试与一次性群提醒。
 
 只覆盖用户明确指定的三条链路：
 
@@ -6,8 +6,7 @@
 * 账户余额自动拉取
 * 收支流水自动拉取
 
-每个自然日独立计数。首次失败立即告知下一次重试时间；每次重试失败都再次
-告知；当天重试用尽后明确发送“今日失败”。失败后恢复成功只发一条收口通知。
+每个自然日独立计数。每项任务当天只发一次失败消息，后续尝试、收口和恢复均保留在 ERP。
 财务类通知不携带余额、收入、支出等金额。
 """
 from __future__ import annotations
@@ -25,7 +24,7 @@ from app.services import settings_service
 
 SETTING_KEY = "critical_automation_pipeline_state_v1"
 _DESCRIPTION = "关键自动化失败/重试/最终失败状态、程序维护分流及微信Push待发送队列"
-_MAX_NOTIFY_ATTEMPTS = 8
+
 
 _PROGRAM_FAILURE_PATTERNS = (
     "attributeerror",
@@ -250,65 +249,88 @@ def _send_feishu(db: Session, text: str) -> tuple[bool, str]:
             level="warn",
             title="畔色 ERP | 自动化状态",
             wechat_allowed=True,
-            enqueue_on_failure=False,
+            enqueue_on_failure=False, require_receipt=True,
         )
-    except Exception as exc:  # noqa: BLE001 - 失败进入持久队列
+    except Exception as exc:  # Delivery is uncertain; never replay this notice.
         return False, f"{type(exc).__name__}: {exc}"[:300]
 
 
-def _deliver_or_queue(
-    db: Session,
-    state: dict,
-    *,
-    dedupe_key: str,
-    text: str,
-    now: datetime,
-) -> dict:
-    queue = state.setdefault("notification_queue", [])
-    queue_prefix = ":".join(dedupe_key.split(":")[:2]) + ":"
-    earlier = [
-        item for item in queue
-        if str(item.get("dedupe_key") or "").startswith(queue_prefix)
-        and not item.get("sent_at")
-        and not item.get("exhausted")
-    ]
-    # 同一链路的失败、恢复通知必须按发生顺序抵达，不能先看到“恢复”再补收到旧失败。
-    if earlier:
-        next_times = [now]
-        for item in earlier:
-            try:
-                next_times.append(_now(datetime.fromisoformat(str(item.get("next_at") or ""))))
-            except (TypeError, ValueError):
-                pass
-        if not any(q.get("dedupe_key") == dedupe_key for q in queue):
-            queue.append({
-                "id": uuid4().hex,
-                "dedupe_key": dedupe_key,
-                "text": text,
-                "attempts": 0,
-                "next_at": max(next_times).isoformat(),
-                "created_at": now.isoformat(),
-                "last_error": "等待更早通知先发送",
-                "exhausted": False,
-            })
-        return {"sent": False, "queued": True, "detail": "ordered_after_pending"}
+def _short_cause(error: str) -> str:
+    """Translate confirmed symptoms only; never forward tracebacks or account data."""
+    low = error.lower()
+    if "export_unknown" in low or "已点击导出但无确证文件" in error:
+        return "已点导出，尚未拿到文件，请核对平台导出记录"
+    if any(x in error for x in ("授权失效", "需授权", "需要授权", "授权过期")):
+        return "需要重新授权"
+    if any(x in low for x in ("扫码", "session_expired", "登录失效", "登录已失效", "需人工登录", "需要重新登录")):
+        return "等待扫码登录"
+    if "口令" in error and any(x in error for x in ("不匹配", "解密失败", "无法解密")):
+        return "口令和当前报表不匹配，请按该报表的提示提供新口令"
+    if "口令" in error:
+        return "发货报表等待对应口令"
+    if "离线" in error or "connection refused" in low:
+        return "无法连接取数电脑，请检查取数程序"
+    if "timeout" in low or "超时" in error:
+        return "等待平台响应超时"
+    if "wechat_bill_table_missing" in low:
+        return "在微信账单页找不到要下载的账单表"
+    if "target page, context or browser has been closed" in low:
+        return "下载时浏览器页面已经关闭"
+    if classify_failure(error)["owner"] == "program_maintenance":
+        return "取数程序出错，已登记程序维护"
+    if "未核实" in error or "作为子订单" in error:
+        return "订单资料或工厂凭证需要核对"
+    if "未配置" in error:
+        return "对应账户尚未配置"
+    if "未更新" in error or "成功标记" in error:
+        return "还没有当天数据的更新记录"
+    return "未取得有效结果，具体原因待核查"
 
-    sent, detail = _send_feishu(db, text)
-    if sent or detail == "disabled":
-        return {"sent": sent, "queued": False, "detail": detail}
 
-    if not any(q.get("dedupe_key") == dedupe_key for q in queue):
-        queue.append({
-            "id": uuid4().hex,
-            "dedupe_key": dedupe_key,
-            "text": text,
-            "attempts": 1,
-            "next_at": (now + timedelta(minutes=30)).isoformat(),
-            "created_at": now.isoformat(),
-            "last_error": detail,
-            "exhausted": False,
-        })
-    return {"sent": False, "queued": True, "detail": detail}
+def failure_summary(pipeline: str, error: str) -> str:
+    sources = {"wechat_bill": "微信账单", "wanshifu": "万师傅", "alipay_main": "支付宝主力号",
+               "wanxiangtai": "万相台", "bal_alipay_main": "支付宝主力号", "bal_wanshifu": "万师傅",
+               "bal_ads": "推广账户", "bal_taobao_aggregate": "淘宝聚合账户"}
+    parts = []
+    for match in re.finditer(r"(\w+)流水未完成[:：]\s*([^；;]+)|\b(bal_[a-z_]+)\(([^)]*)\)", error):
+        key, detail = (match[1], match[2]) if match[1] else (match[3], match[4])
+        # Chinese prose is not an account identifier.
+        label = sources.get(key, "流水来源")
+        item = f"{label}：{_short_cause(detail)}"
+        if item not in parts:
+            parts.append(item)
+    if "企业号流水" in error:
+        parts.append("支付宝企业号：" + _short_cause(error.split("企业号流水", 1)[1].split("；")[0]))
+    reason = "；".join(parts) if parts else _short_cause(error)
+    action = " 请在提醒群回复“扫码”，选择对应平台。" if "等待扫码登录" in reason else ""
+    return f"{PIPELINE_LABELS[pipeline]}未完成。{reason}。{action}"
+
+
+def _claim_failure_notice(db: Session, pipeline: str, day: str) -> bool:
+    """One durable slot per pipeline. Commit the claim before the network call."""
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from app.models.settings import SystemSetting
+
+    bind = db.get_bind()
+    insert = pg_insert if bind.dialect.name == "postgresql" else sqlite_insert
+    statement = insert(SystemSetting).values(key="collection_notice_day:" + pipeline, value_plain=day,
+                                             is_secret=False)
+    statement = statement.on_conflict_do_update(index_elements=[SystemSetting.key],
+        set_={"value_plain": day}, where=SystemSetting.value_plain < day)
+    if bind.dialect.name == "sqlite":
+        # Local SQLite has a single writer. Keep test/in-memory writes in its transaction.
+        return db.execute(statement).rowcount == 1
+    with bind.begin() as conn:
+        return conn.execute(statement).rowcount == 1
+
+
+def _notify_failure_once(db, entry, pipeline, day, error):
+    # Honor receipts made before this policy was deployed, including ambiguous delivery.
+    if not _claim_failure_notice(db, pipeline, day) or entry.get("notifications"):
+        return {"sent": False, "queued": False, "detail": "already_reported"}
+    sent, detail = _send_feishu(db, failure_summary(pipeline, error))
+    return {"sent": sent, "queued": False, "detail": detail}
 
 
 def _entry_for_day(state: dict, pipeline: str, day: str) -> dict:
@@ -570,7 +592,7 @@ def record_failure(
     now: Optional[datetime] = None,
     max_failures: int = 4,
 ) -> dict:
-    """记录一次失败、确定处理归属并立即发微信 Push。
+    """记录每次失败、确定处理归属，当天第一次向提醒群说明原因。
 
     执行类故障保留既定有限重试；确定性程序故障停止业务盲重试，登记到
     ``program_maintenance_queue``，等待程序修复后再由正常调度/明确补跑恢复。
@@ -606,7 +628,6 @@ def record_failure(
         else None
     )
     final = program_failure or evidence_blocked or failures >= max_failures or next_retry is None
-    label = PIPELINE_LABELS[pipeline]
 
     maintenance_item = None
     if program_failure:
@@ -619,63 +640,10 @@ def record_failure(
             current=current,
         )
 
-    if program_failure:
-        text = (
-            f"❌ {day}【{label}】检测到程序问题\n"
-            f"原因：{safe_error}\n"
-            "处理归属：程序修复（已登记维护队列，停止业务盲重试）。\n"
-            "修复完成后再由正常计划或明确批准的补跑恢复。"
-        )
-        event = "program-maintenance"
-    elif evidence_blocked and routing["reason"] == "login_required":
-        _supersede_pending_failure_notifications(state, pipeline, day, current)
-        text = (
-            f"⚠️ {day}【{label}】等待扫码登录\n"
-            f"原因：{safe_error}\n"
-            "已暂停无效重试。请在飞书提醒群回复“扫码”，选择对应平台，在电脑窗口完成登录。\n"
-            + ("店铺登录成功后，当晚订单补跑任务会接续原批次；三份报表核验入库后仅推未发送订单。"
-               if pipeline == "order_delivery" else "登录完成后由原业务入口继续。")
-        )
-        event = "login-required"
-    elif evidence_blocked:
-        _supersede_pending_failure_notifications(state, pipeline, day, current)
-        text = (
-            f"⚠️ {day}【{label}】需要核对订单资料或历史凭证\n"
-            f"原因：{safe_error}\n"
-            "已停止对此问题按小时重试；已送达记录保留，不自动作废或整批重发。\n"
-            "核实缺项后仅补发确实未送达的子订单；历史凭证未核清不视为全部完成。"
-        )
-        event = "evidence-review"
-    elif final:
-        text = (
-            f"❌ {day}【{label}】今日失败\n"
-            f"已连续执行失败 {failures} 次，今天不再自动重试。\n"
-            f"最后原因：{safe_error}\n"
-            "处理归属：执行端（请检查平台、网络或交互门）；明天仍会按正常时间重新开始。"
-        )
-        event = "final"
-    else:
-        minutes = max(1, int((next_retry - current).total_seconds() // 60))
-        delay = (
-            f"{minutes // 60}小时"
-            if minutes >= 60 and minutes % 60 == 0
-            else f"{minutes}分钟"
-        )
-        text = (
-            f"⚠️ {day}【{label}】第{failures}次执行失败\n"
-            f"原因：{safe_error}\n"
-            f"处理归属：{routing['label']}。\n"
-            f"系统将在 {next_retry.strftime('%H:%M')}（约{delay}后）自动进行第{failures + 1}次尝试。"
-        )
-        event = f"failure-{failures}"
-
-    delivery = _deliver_or_queue(
-        db,
-        state,
-        dedupe_key=f"{pipeline}:{day}:{event}",
-        text=text,
-        now=current,
-    )
+    event = ("program-maintenance" if program_failure else
+             "login-required" if routing["reason"] == "login_required" else
+             "evidence-review" if evidence_blocked else "final" if final else f"failure-{failures}")
+    delivery = _notify_failure_once(db, entry, pipeline, day, error)
     entry.update({
         "failures": failures,
         "success": False,
@@ -696,6 +664,7 @@ def record_failure(
         "at": current.isoformat(),
         "sent": delivery["sent"],
         "queued": delivery["queued"],
+        "detail": delivery["detail"],
     })
     _save(db, state)
     return {
@@ -716,7 +685,7 @@ def record_success(
     now: Optional[datetime] = None,
     success_detail: str | None = None,
 ) -> dict:
-    """标记今日成功；只有此前失败过才发一条恢复通知。"""
+    """恢复结果留在 ERP，关闭此前的维护项与旧版待发通知。"""
     if pipeline not in PIPELINE_LABELS:
         raise ValueError(f"未知关键自动化: {pipeline}")
     current = _now(now)
@@ -758,20 +727,7 @@ def record_success(
     delivery = {"sent": False, "queued": False, "detail": "normal_success"}
     recovered = failures > 0
     if recovered:
-        label = PIPELINE_LABELS[pipeline]
-        text = (
-            f"✅ {day}【{label}】自动重试成功\n"
-            f"此前失败 {failures} 次，本次已恢复，今天不再重试。"
-        )
-        if success_detail:
-            text += f"\n结果：{_safe_error(success_detail)}"
-        delivery = _deliver_or_queue(
-            db,
-            state,
-            dedupe_key=f"{pipeline}:{day}:recovered",
-            text=text,
-            now=current,
-        )
+        delivery["detail"] = "recovered_in_erp"
 
     entry.update({
         "success": True,
@@ -788,6 +744,7 @@ def record_success(
     if recovered:
         entry.setdefault("notifications", []).append({
             "event": "recovered",
+            "result": _safe_error(success_detail) if success_detail else None,
             "at": current.isoformat(),
             "sent": delivery["sent"],
             "queued": delivery["queued"],
@@ -806,12 +763,12 @@ def record_success(
 def finalize_open_failures(
     db: Session, *, now: Optional[datetime] = None,
 ) -> dict:
-    """晚间兜底：若重试班次因重启等原因漏跑，仍发送“今日失败”收口。"""
+    """晚间关闭未完成链路；只在当天还未提醒时发出一次。"""
     current = _now(now)
     state = _load(db)
     day = current.date().isoformat()
     finalized: list[str] = []
-    for pipeline, label in PIPELINE_LABELS.items():
+    for pipeline in PIPELINE_LABELS:
         entry = _entry_for_day(state, pipeline, day)
         failures = int(entry.get("failures") or 0)
         if failures <= 0 or entry.get("success") or entry.get("final"):
@@ -820,19 +777,7 @@ def finalize_open_failures(
         safe_error = _safe_error(entry.get("last_error") or (
             last_stage.get("detail") if last_stage.get("status") == "fail" else None
         ) or "重试班次未能完成")
-        text = (
-            f"❌ {day}【{label}】今日失败\n"
-            f"今天已失败 {failures} 次，晚间重试窗口已经结束。\n"
-            f"最后原因：{safe_error}\n"
-            "处理归属：执行端（请检查平台、网络或交互门）；明天仍会按正常时间重新开始。"
-        )
-        delivery = _deliver_or_queue(
-            db,
-            state,
-            dedupe_key=f"{pipeline}:{day}:finalizer",
-            text=text,
-            now=current,
-        )
+        delivery = _notify_failure_once(db, entry, pipeline, day, safe_error)
         entry.update({
             "final": True,
             "next_retry_at": None,
@@ -855,39 +800,14 @@ def finalize_open_failures(
 def retry_pending_notifications(
     db: Session, *, now: Optional[datetime] = None,
 ) -> dict:
-    """重发飞书自身发送失败的关键告警，最多 8 次，避免无限循环。"""
-    current = _now(now)
+    """Retire unsent entries created by the old per-attempt policy, keeping their history."""
     state = _load(db)
-    queue = state.setdefault("notification_queue", [])
-    retried = sent = exhausted = 0
-    for item in queue:
-        if item.get("sent_at") or item.get("exhausted"):
-            continue
-        try:
-            next_at = datetime.fromisoformat(str(item.get("next_at") or ""))
-            next_at = _now(next_at)
-        except (TypeError, ValueError):
-            next_at = current
-        if next_at > current:
-            continue
-        attempts = int(item.get("attempts") or 0)
-        if attempts >= _MAX_NOTIFY_ATTEMPTS:
-            item["exhausted"] = True
-            exhausted += 1
-            continue
-        retried += 1
-        ok, detail = _send_feishu(db, str(item.get("text") or ""))
-        attempts += 1
-        item["attempts"] = attempts
-        item["last_error"] = detail
-        if ok:
-            item["sent_at"] = current.isoformat()
-            sent += 1
-        elif detail != "disabled":
-            delay_minutes = min(30 * (2 ** max(0, attempts - 1)), 360)
-            item["next_at"] = (current + timedelta(minutes=delay_minutes)).isoformat()
-            if attempts >= _MAX_NOTIFY_ATTEMPTS:
-                item["exhausted"] = True
-                exhausted += 1
-    _save(db, state)
-    return {"retried": retried, "sent": sent, "exhausted": exhausted}
+    retired = 0
+    for item in state["notification_queue"]:
+        if not item.get("sent_at") and not item.get("exhausted"):
+            item.update(exhausted=True, superseded_at=_now(now).isoformat(),
+                        last_error="retired_per_attempt_notification")
+            retired += 1
+    if retired:
+        _save(db, state)
+    return {"retried": 0, "sent": 0, "exhausted": retired}

@@ -1188,13 +1188,14 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                 else:
                     msg += "，订单制单与送达链路已完成。"
                 from app.services import notify_service
-                notify_service.notify(
+                sent, _ = notify_service.notify(
                     db,
                     msg,
                     level="info" if delivery.get("_run_status") != "fail" else "warn",
                     title="畔色 ERP | 发货报表处理结果",
-                    wechat_allowed=True,
+                    wechat_allowed=True, require_receipt=True,
                 )
+                r["delivery_alert_sent"] = bool(sent and delivery.get("_run_status") == "fail")
         except Exception:  # noqa: BLE001 —— 推送失败不阻断解密
             logging.getLogger("panse.feishu_bot").warning("解密结果微信Push失败")
     return r
@@ -1267,7 +1268,13 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
         title, color = "口令未匹配发货报表", "orange"
     else:
         title, color = "已收到发货报表口令", "green"
-    _safe_reply(db, message_id, _result_card(title, body, color))
+    delivery_result = relay if relay and relay.get("imported") else r
+    blocked = (delivery_result.get("delivery") or {}).get("_run_status") == "fail"
+    if not (imported and delivery_result.get("delivery_alert_sent") and not failure_reasons and not processing_reasons):
+        if imported and blocked:
+            title, color = "下单图暂停，请核对订单批次", "orange"
+            body = "报表已导入，口令已验证。请在 ERP 核对本批次的下单图送达记录。"
+        _safe_reply(db, message_id, _result_card(title, body, color))
     return {"message_id": message_id, "kind": "shipping_password",
             "captured": True, "imported": imported,
             "failure_reason": "；".join(dict.fromkeys(failure_reasons)) or None}

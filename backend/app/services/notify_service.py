@@ -30,6 +30,7 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import urllib.error
 import urllib.request
 from typing import Optional
@@ -141,10 +142,21 @@ def _post_json(url: str, body: dict, *, timeout_sec: float = 5.0) -> tuple[bool,
 WECHAT_SCOPE_KEY = "wechat_push_scope"
 
 
+def _erp_only_in_alert_chat(title: Optional[str], level: str, text: str) -> bool:
+    if title in {"畔色 ERP [销售周报]", "畔色ERP | 本周备货清单", "畔色 ERP [售后自动化日报]",
+                 "畔色 ERP [自动取数日报]"}:
+        return True
+    if re.fullmatch(r"畔色 ERP \| \d+ 项数据待更新", title or ""):
+        return True
+    if title == "畔色 ERP | 发货报表处理结果" and level == "info":
+        return True
+    return title is None and level == "plain" and text.startswith("今天日期：") and "\n昨日销售额：" in text
+
+
 def notify(
     db: Session, text: str, *,
     level: str = "info", title: Optional[str] = None, wechat_allowed: bool = False,
-    enqueue_on_failure: bool = True,
+    enqueue_on_failure: bool = True, require_receipt: bool = False,
 ) -> tuple[bool, str]:
     """发送通知到 notify webhook(当前=企业微信). provider=none 或 webhook 未配 时静默返回.
 
@@ -160,13 +172,15 @@ def notify(
 
     cfg = get_config(db)
     if cfg["route_mode"] == ROUTE_MODE_FEISHU_SPLIT and cfg["alert_chat_id"]:
+        if _erp_only_in_alert_chat(title, level, text):
+            return False, "erp_only"
         try:
             from app.services import feishu_client
-            feishu_client.send_text(
-                db,
-                cfg["alert_chat_id"],
-                _format_text(text, level=level, title=title),
-            )
+            result = feishu_client.send_text(db, cfg["alert_chat_id"],
+                                             _format_text(text, level=level, title=title))
+            if require_receipt:
+                message_id = (result or {}).get("message_id")
+                return (True, message_id) if message_id else (False, "delivery_unknown")
             return True, "已发送到飞书提醒群"
         except Exception as exc:  # noqa: BLE001 - 通知失败不阻断业务
             detail = f"{type(exc).__name__}: {exc}"
@@ -307,7 +321,7 @@ def retry_pending(db: Session) -> dict:
         return {"retried": 0, "sent": 0}
     sent = 0
     for rid, text_, title, level, attempts in rows:
-        ok, _ = notify(
+        ok, detail = notify(
             db,
             text_,
             level=level,
@@ -315,7 +329,9 @@ def retry_pending(db: Session) -> dict:
             wechat_allowed=True,
             enqueue_on_failure=False,
         )
-        if ok:
+        if detail == "erp_only":
+            db.execute(_sql("UPDATE notify_retries SET attempts=:mx WHERE id=:id"), {"mx": _MAX_RETRY, "id": rid})
+        elif ok:
             db.execute(_sql("UPDATE notify_retries SET sent_at=:now, attempts=attempts+1 WHERE id=:id"),
                        {"now": now, "id": rid})
             sent += 1

@@ -470,5 +470,7 @@ def relay_shipping_password(payload: RelayPwdIn, request: Request, db: Session =
     if not token or request.headers.get("X-Relay-Token") != token:
         raise HTTPException(403, "invalid relay token")
     r = feishu_bot_service.apply_shipping_password(db, (payload.pwd or "").strip())
-    return {"imported": r.get("imported") or 0, "updated": r.get("updated") or 0,
+    return {"delivery_alert_sent": bool(r.get("delivery_alert_sent")),
+            "delivery": {"_run_status": (r.get("delivery") or {}).get("_run_status")},
+            "imported": r.get("imported") or 0, "updated": r.get("updated") or 0,
             "tried": r.get("tried") or 0}

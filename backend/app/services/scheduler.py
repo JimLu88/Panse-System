@@ -1943,8 +1943,8 @@ def _job_weekly_purchase_remind(db: Session) -> dict:
         missing = m.get("missing") or 0
         alert_at = m.get("alert_at") or "尽快"
         lines.append(f"• {m.get('material_code', '')} {name}  缺 {missing:.0f}  建议 {alert_at} 前下单")
-    notify_service.notify(db, "\n".join(lines), level="warn", title="畔色ERP | 本周备货清单")
-    return {"items_count": len(top), "pushed": True}
+    ok, detail = notify_service.notify(db, "\n".join(lines), level="warn", title="畔色ERP | 本周备货清单")
+    return {"items_count": len(top), "pushed": ok, "detail": detail}
 
 
 def _job_monthly_inventory_plan(db: Session) -> dict:
@@ -2286,9 +2286,27 @@ def _job_ingest_health_check(db: Session) -> dict:
     if not problems:
         return result
 
-    lines = [f"⚠️ {today.month}月{today.day}日 自动取数体检发现问题:", ""]
-    lines += [f"• {p}" for p in problems]
-    lines += ["", "请确认: 千牛是否有新单 / PC 是否开机且 Web-Agent 在跑 / 发货口令是否已转发飞书。"]
+    from app.services import automation_pipeline_service as pipeline
+    order_run = pipeline.get_pipeline(db, "order_delivery")
+    balance_run = pipeline.get_pipeline(db, "balance_pull")
+    # Leave the full findings in the ERP job record. Only independently discovered
+    # issues belong in the group, not a second copy of a known collection failure.
+    remaining = []
+    for issue in problems:
+        if issue.startswith(("18:00后订单", "加密发货报表")) and (
+                order_run.get("notifications") or order_run.get("waiting_input") or
+                (pending_password_files and issue.startswith("加密发货报表"))):
+            continue
+        if issue.startswith("余额已") and (balance_run.get("notifications") or balance_run.get("waiting_input")):
+            continue
+        if issue.startswith("PC 按需") and any(
+            run.get("notifications") and "离线" in (run.get("last_error") or "") for run in (order_run, balance_run)
+        ):
+            continue
+        remaining.append(issue)
+    if not remaining:
+        return result
+    lines = [f"{today.month}月{today.day}日取数核对", *remaining]
     msg = "\n".join(lines)
 
     if _os.environ.get("PANSE_DISABLE_NOTIFY"):
