@@ -302,8 +302,14 @@ def failure_summary(pipeline: str, error: str) -> str:
     if "企业号流水" in error:
         parts.append("支付宝企业号：" + _short_cause(error.split("企业号流水", 1)[1].split("；")[0]))
     reason = "；".join(parts) if parts else _short_cause(error)
-    action = " 请在提醒群回复“扫码”，选择对应平台。" if "等待扫码登录" in reason else ""
-    return f"{PIPELINE_LABELS[pipeline]}未完成。{reason}。{action}"
+    instructions = []
+    if "万师傅：等待扫码登录" in reason:
+        instructions.append("请在万师傅原登录入口扫码。")
+    if "支付宝主力号：等待扫码登录" in reason:
+        instructions.append("支付宝请在本群回复“扫码”，选择“支付宝扫码”。")
+    if pipeline == "order_delivery" and "等待扫码登录" in reason:
+        instructions.append("请在本群回复“扫码”，选择“店铺后台扫码”。")
+    return f"{PIPELINE_LABELS[pipeline]}未完成。{reason}。" + "".join(instructions)
 
 
 def _claim_failure_notice(db: Session, pipeline: str, day: str) -> bool:
