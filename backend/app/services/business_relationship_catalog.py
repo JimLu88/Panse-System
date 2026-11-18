@@ -155,7 +155,8 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
-    edge('automation.batch','sync.route','取数失败仅一次群提醒','同一业务日同一任务在独立事务中先登记发送权','重试、最终失败和恢复只进ERP，投递结果未知不重发','services/automation_pipeline_service.py','def _notify_failure_once'),
+    edge('automation.batch','sync.route','取数失败仅一次群提醒','普通失败按业务日去重；发货待口令和支付宝待扫码跨天仅一次','重试、最终失败和恢复只进ERP，投递结果未知不重发；其他来源故障不被等待扫码掩盖','services/automation_pipeline_service.py','def _notify_failure_once'),
+    edge('sync.password','sync.route','等待人工输入跨天去重','发送前持久占位；新报表、重启、跨日不重新提醒','只在对应真实恢复后解除；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
     edge('order.notes','shipping.deadline','提取内部工期','有下单锚点及明确的完成或发货期限','人工交期、延期及待确认条件优先','services/fulfillment_deadlines.py','def deadline'),
     edge('factory.receipt','shipping.registration','核对原图及主子单','单件单包、有真实子单及发送图归档','压缩图只提供候选，未知提交不重发','services/fulfillment_intake.py','def _match'),
     edge('shipping.registration','shipping.fulfilled','核对平台登记结果','平台回读子单、承运商、运单号一致','平台确认和买家签收独立，继续沿用订单报表更新ERP','services/taobao_shipping.py','def confirmed',kind='protect'),

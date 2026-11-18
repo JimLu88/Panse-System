@@ -627,6 +627,9 @@ def start_pending_scans(db: Session) -> dict:
                     if any(Path(path).name in error_artifacts for path in artifacts):
                         continue
                     finance_markers[task_id] = marked_at
+                    if task_id == MAIN_ALIPAY_FLOW_TASK:
+                        from app.services import interaction_notice_service as notices
+                        notices.resolve(d, notices.ALIPAY_LOGIN)
                 state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
                 _save_json(d, KEY_STATE, state)
                 d.commit()
@@ -2893,6 +2896,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         if any(Path(path).name in error_artifacts for path in artifacts):
             continue
         finance_markers[task_id] = marked_at
+        if task_id == MAIN_ALIPAY_FLOW_TASK:
+            from app.services import interaction_notice_service as notices
+            notices.resolve(db, notices.ALIPAY_LOGIN)
     latest_state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
 
     daily_flow = out.get("alipay_daily")

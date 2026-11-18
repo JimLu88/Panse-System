@@ -1059,6 +1059,8 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         # three-report manifest exists yet.  Reopen the chain for the next
         # scheduled pull, but do not claim delivery success without a manifest.
         if r.get("imported") and not isolated_resolution:
+            from app.services import interaction_notice_service as notices
+            notices.resolve(db, notices.SHIPPING_PASSWORD)
             try:
                 from app.services import automation_pipeline_service
 

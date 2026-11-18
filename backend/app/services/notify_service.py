@@ -171,6 +171,12 @@ def notify(
         return False, "通知已被 PANSE_DISABLE_NOTIFY 关闭 (测试环境)"
 
     cfg = get_config(db)
+    if title == "畔色 ERP | 发货报表待口令":
+        from app.services import interaction_notice_service as notices
+        if not notices.claim(db, notices.SHIPPING_PASSWORD):
+            return False, "waiting_already_reported"
+        enqueue_on_failure = False
+        require_receipt = True
     if cfg["route_mode"] == ROUTE_MODE_FEISHU_SPLIT and cfg["alert_chat_id"]:
         if _erp_only_in_alert_chat(title, level, text):
             return False, "erp_only"
@@ -329,7 +335,7 @@ def retry_pending(db: Session) -> dict:
             wechat_allowed=True,
             enqueue_on_failure=False,
         )
-        if detail == "erp_only":
+        if detail in {"erp_only", "waiting_already_reported"}:
             db.execute(_sql("UPDATE notify_retries SET attempts=:mx WHERE id=:id"), {"mx": _MAX_RETRY, "id": rid})
         elif ok:
             db.execute(_sql("UPDATE notify_retries SET sent_at=:now, attempts=attempts+1 WHERE id=:id"),

@@ -129,15 +129,24 @@ def audit(db, *, end=None, collection_failed=False):
 
 def record_and_notify(db, result, *, send=None):
     """Persist per-issue send intent before network I/O; unknown is not retried."""
-    from app.services import feishu_client, notify_service
+    from app.services import feishu_client, notify_service, agent_ingest_service
+    awaiting_login = "alipay_main" in agent_ingest_service.get_pending_scans(db)
+    deferred = 0
     if db.bind.dialect.name == "postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(20261029, 1)"))
     fresh = []
     for issue in result["issues"]:
+        # Missing new bills is expected while the user has not scanned. Keep
+        # the discrepancy in ERP; real archive/row mismatches still notify.
+        if awaiting_login and (issue["key"].startswith("coverage:")
+                               or issue["key"] == "collection_or_ingest_failed"):
+            deferred += 1
+            continue
         key = "alipay_gap_alert_"+hashlib.sha256(issue["key"].encode()).hexdigest()
         if not settings_service.get(db, key, env_fallback=False):
             fresh.append((key, issue))
     result["new_issues"] = len(fresh)
+    result["waiting_login_deferred"] = deferred
     result["checked_at"] = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     result["notification"] = "quiet"
     if fresh and not os.environ.get("PANSE_DISABLE_NOTIFY"):

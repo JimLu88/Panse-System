@@ -333,9 +333,51 @@ def _claim_failure_notice(db: Session, pipeline: str, day: str) -> bool:
         return conn.execute(statement).rowcount == 1
 
 
+def _new_interaction_reasons(db, pipeline: str, error: str) -> str:
+    """Remove already reported input gates, retaining unrelated real failures."""
+    from app.services import interaction_notice_service as notices
+
+    if pipeline == "order_delivery" and any(x in error for x in (
+        "口令", "发货密码", "pending_password", "password_missing", "password_mismatch",
+    )):
+        return error if notices.claim(db, notices.SHIPPING_PASSWORD) else ""
+    # Balance tasks are grouped with commas; split them before classifying.
+    error = re.sub(r"余额任务未完成[:：]\s*((?:bal_[a-z_]+\([^)]*\),?)+)",
+                   lambda m: "；".join(re.findall(r"bal_[a-z_]+\([^)]*\)", m[1])), error)
+    parts = re.split(r"[；;](?![^()]*\))", error)
+    has_login = any(("alipay_main" in p or "支付宝主力号" in p)
+                    and _short_cause(p) in {"等待扫码登录", "需要重新授权"} for p in parts)
+    known_wait = has_login or notices.waiting(db, notices.ALIPAY_LOGIN)
+    first_login = notices.claim(db, notices.ALIPAY_LOGIN) if has_login else False
+    kept = []
+    for part in parts:
+        part = part.strip()
+        # Continuation of the fixed login instructions, never a separate fault.
+        if part.startswith(("选择店铺后台", "选择对应平台", "登录后由原业务入口", "其他平台请使用原专用入口")):
+            continue
+        if ("alipay_main" in part or "支付宝主力号" in part) and _short_cause(part) in {"等待扫码登录", "需要重新授权"}:
+            if first_login:
+                kept.append(part)
+            continue
+        if known_wait and part.startswith("流水来源没有今日成功标记:"):
+            sources = [x.strip() for x in part.split(":", 1)[1].split(",") if x.strip() != "alipay_main"]
+            part = "流水来源没有今日成功标记: " + ",".join(sources) if sources else ""
+        if known_wait and part.startswith("余额日期未更新:"):
+            sources = [x.strip() for x in part.split(":", 1)[1].split(",") if x.strip() != "主力号"]
+            part = "余额日期未更新: " + ",".join(sources) if sources else ""
+        if part:
+            kept.append(part)
+    return "；".join(kept)
+
+
 def _notify_failure_once(db, entry, pipeline, day, error):
     # Honor receipts made before this policy was deployed, including ambiguous delivery.
-    if not _claim_failure_notice(db, pipeline, day) or entry.get("notifications"):
+    if entry.get("notifications"):
+        return {"sent": False, "queued": False, "detail": "already_reported"}
+    error = _new_interaction_reasons(db, pipeline, error)
+    if not error:
+        return {"sent": False, "queued": False, "detail": "waiting_already_reported"}
+    if not _claim_failure_notice(db, pipeline, day):
         return {"sent": False, "queued": False, "detail": "already_reported"}
     sent, detail = _send_feishu(db, failure_summary(pipeline, error))
     return {"sent": sent, "queued": False, "detail": detail}
@@ -696,6 +738,11 @@ def record_success(
     """恢复结果留在 ERP，关闭此前的维护项与旧版待发通知。"""
     if pipeline not in PIPELINE_LABELS:
         raise ValueError(f"未知关键自动化: {pipeline}")
+    from app.services import interaction_notice_service as notices
+    if pipeline == "order_delivery":
+        notices.resolve(db, notices.SHIPPING_PASSWORD)
+    elif pipeline == "flow_pull":
+        notices.resolve(db, notices.ALIPAY_LOGIN)
     current = _now(now)
     state = _load(db)
     day = current.date().isoformat()
