@@ -93,11 +93,15 @@ export default function ImportArchivePage() {
         message.warning('飞书推送群未配置：到「管理 → 飞书」设置 feishu_push_chat_id（推送群会话ID）');
         return;
       }
-      message.success(
-        `已推送 ${r.pushed} 张下单图到飞书工厂群`
-        + (r.failed ? `，失败 ${r.failed} 张` : '')
-        + (r.remaining ? `，还剩 ${r.remaining} 张未推（可再次点击续推）` : '，已全部推完'),
-      );
+      const total = r.pushed + (r.post_push_added_image_count || 0);
+      if (r._run_status === 'fail' || r.failed || r.remaining || r.post_push_audit?.ok !== true) {
+        message.warning(`已推送 ${total} 张下单图；`
+          + (r._error || (r.failed || r.remaining
+            ? `失败 ${r.failed || 0} 张，仍有 ${r.remaining || 0} 张待处理。`
+            : '原始报表与飞书核对尚未完成，不能确认已全部推完。')), 10);
+      } else {
+        message.success(`已推送 ${total} 张下单图，原始报表、飞书表格及工厂图核对完成。`);
+      }
       qc.invalidateQueries({ queryKey: ['order-sheet-push-status'] });
       qc.invalidateQueries({ queryKey: ['import-archive'] });
     },
