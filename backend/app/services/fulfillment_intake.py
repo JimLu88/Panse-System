@@ -119,7 +119,11 @@ def _process(db, row, match, keys):
         raise ShippingGate("图片未匹配工厂原图，请核对下单图和工厂单号")
     order = _match(db, row)
     if os.getenv("PANSE_TOP_SHIPPING_ENABLED") != "1":
-        raise ShippingGate("已匹配工厂单与运单；淘宝自动提交尚未启用")
+        from app.services.fulfillment_batch_service import preview
+        snapshot = preview(db, row.order_no, row.carrier, row.tracking_no)
+        row.review_evidence = {"kind": "original_image", "snapshot_sha256": snapshot["snapshot_sha256"]}
+        row.state, row.detail = "ready", "已匹配工厂原图与整单运单，待生成官方批量表"
+        return
     client = TaobaoShipping()
     if order.shop != client.shop or not client.exact_trade(row, "WAIT_SELLER_SEND_GOODS"):
         raise ShippingGate("淘宝店铺、子单、数量或待发货状态需核实")

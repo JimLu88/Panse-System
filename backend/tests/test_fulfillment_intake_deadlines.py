@@ -135,7 +135,8 @@ def test_gate_prevents_submission(reason, db_session, monkeypatch):
     elif reason == "multi":
         db.add(OrderDetail(order_no=TID, sub_order_no="other", source="import"))
     db.commit()
-    assert intake.register(db, incoming, TEXT, ["image"])["state"] in ("unbound", "unauthorized", "review")
+    result = intake.register(db, incoming, TEXT, ["image"])
+    assert result["state"] in (("ready",) if reason == "disabled" else ("unbound", "unauthorized", "review"))
     assert client.sends == 0
 
 
