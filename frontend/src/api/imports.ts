@@ -43,6 +43,10 @@ export interface OrderSheetPushResult {
   remaining: number;
   order_nos: string[];
   reason?: string;
+  _run_status?: string;
+  _error?: string;
+  post_push_added_image_count?: number;
+  post_push_audit?: { ok: boolean; remaining_count?: number; verified_count?: number };
 }
 
 export const fetchOrderSheetPushStatus = () =>

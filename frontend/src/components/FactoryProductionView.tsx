@@ -92,7 +92,13 @@ export default function FactoryProductionView() {
   const repushMut = useMutation({
     mutationFn: (id: number) => repushFactory(id),
     onSuccess: (r) => {
-      message.success(r.pushed > 0 ? `已重推「${r.order_label || '畔色' + r.factory_no + '单'}」到工厂群` : '未推送(检查工厂群配置)');
+      if (!r.ok || r.post_push_audit?.ok !== true) {
+        message.warning(r._error || '推送后的报表核对尚未完成，请查看待处理项；不要重复发送已送达的图片。', 10);
+      } else if (r.pushed > 0) {
+        message.success(`已重推「${r.order_label || '畔色' + r.factory_no + '单'}」，报表、飞书及工厂图核对完成。`);
+      } else {
+        message.info('本次没有新增推送，报表核对已完成。');
+      }
       qc.invalidateQueries({ queryKey: ['factory-production'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '重推失败'),
