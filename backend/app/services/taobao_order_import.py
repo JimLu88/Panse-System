@@ -472,6 +472,11 @@ def detect_report_role(filename: str, raw: bytes) -> str | None:
         "买家实付金额", "打款商家金额", "买家应付邮费",
     }
     has_order_no = bool({"订单编号", "订单号", "主订单编号"} & header)
+    # The real order master also has address/logistics/SKU columns. Its total
+    # quantity and financial columns distinguish it from the address-only report.
+    if (has_order_no and '子订单编号' not in header
+            and '宝贝总数量' in header and len(order_keys & header) >= 2):
+        return 'orders'
     if (has_order_no and len(shipping_keys & header) >= 2
             and '子订单编号' not in header and not ({'购买数量', '数量'} & header)
             and '商品属性SKU' in header):
@@ -736,7 +741,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             "sku_code": _clean(merchant),
             "product_code": product_code_from_merchant(merchant),
             "sku_id": _clean(gv(row, "skuId", "sku id", "SKU ID", "sku_id")),
-            "qty": gv(row, "购买数量", "数量"),
+            "qty": gv(row, "购买数量", "数量", "宝贝总数量"),
             "amount": _to_decimal(gv(row, "买家应付货款", "价格", "商品价格")),
             "status_text": gv(row, "订单状态"),
             "refund_status": _clean(gv(row, "退款状态")),

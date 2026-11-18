@@ -1543,6 +1543,7 @@ def _job_ingest_scan(db: Session) -> dict:
                 db, limit=50, quiet=True,
             )
             ing["order_sheets"] = delivery
+            _sync_factory_dispatch_after_orders(db, delivery)
             if delivery.get("_run_status") == "fail":
                 ing["_run_status"] = "fail"
                 ing["_error"] = delivery.get("_error") or "订单送达收口失败"
@@ -1664,6 +1665,7 @@ def _job_order_sheets_catchup(db: Session) -> dict:
     result = oss.reconcile_pending_delivery(db, limit=20, quiet=True)
     result["order_batch_id"] = agent_ingest_service.latest_order_pull_batch_id(db)
     result["order_business_date"] = date.today().isoformat()
+    _sync_factory_dispatch_after_orders(db, result)
     return result
 
 
@@ -1705,8 +1707,7 @@ def _job_pull_catchup(db: Session) -> dict:
             result["_success_message"] = (
                 last_pull.get("message") or "没有新增订单"
             )
-        if result.get("_run_status") != "fail":
-            _sync_factory_dispatch_after_orders(db, result)
+        _sync_factory_dispatch_after_orders(db, result)
         return _record_pipeline_result(
             db,
             "order_delivery",

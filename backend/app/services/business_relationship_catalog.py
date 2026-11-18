@@ -243,7 +243,7 @@ EDGES = [
     edge('order.customer','factory.sheet','收货信息和备注','地址未脱敏或明确待补分支','信息待补不捏造地址','services/factory_sheet.py','def build_for_order_line'),
     edge('factory.sheet','factory.receipt','固定逐子单发送','生产事实合格且未送达/未占用','未知发送不盲重试','services/order_sheet_archive_service.py'),
     edge('factory.receipt','factory.archive','存已发内容快照','真实图片message_id','按SKU/数量/hash审计，不用母单sent替代','services/order_sheet_archive_service.py','def archive_sent_line_snapshot'),
-    edge('order.refund','factory.void','确定作废或停用范围','精确子单关闭/退款','不得作废有效兄弟单','services/order_line_delivery_service.py'),
+    edge('order.refund','factory.void','确定作废或停用范围','精确子单关闭/全退；活动商品已完成部分退款仍有效','不得作废有效兄弟单；退款处理中与退货仍拦截','services/order_line_delivery_service.py'),
     edge('quantity.physical','order.qty','禁止覆盖原购买量','数量确认仅供生产','交易数量保持不变','services/factory_production_evidence.py','def confirm_quantity',kind='protect'),
     edge('quantity.physical','finance.actual','禁止修改实际账单','成品数确认','不得自动改实付/已结账金额','services/factory_production_evidence.py','def confirm_quantity',kind='protect'),
     edge('order.child','finance.estimate','汇总全部有效产品成本','排除退款/非实体行','同SKU多件也要累计','services/order_cost_service.py','def _multi_product_cost'),

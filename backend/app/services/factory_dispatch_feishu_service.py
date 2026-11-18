@@ -1388,7 +1388,7 @@ def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
 
 
 def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
-                   dry_run: bool = False) -> dict:
+                   dry_run: bool = False, only_order_nos: set[str] | None = None) -> dict:
     """单向增量同步系统下单表（只写飞书，绝不把飞书内容回写 ERP）。
 
     成功不发消息；错误由调用方纳入订单自动化告警与重试。
@@ -1473,6 +1473,8 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
             return result
 
         rows = build_rows(db)
+        if only_order_nos is not None:
+            rows = [row for row in rows if str(row.get("订单号")) in only_order_nos]
         result["source_latest_order_updated_at"] = str(db.scalar(select(func.max(Order.updated_at))) or "")
         result["source_latest_line_updated_at"] = str(db.scalar(select(func.max(OrderDetail.updated_at)).where(OrderDetail.source == "import")) or "")
         result["rows"] = len(rows)
@@ -1492,6 +1494,9 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
         image_bindings = _load_image_bindings(db)
         image_bindings_before = dict(image_bindings)
         remote_rows = feishu_client.list_records(db, app_token, table_id)
+        if only_order_nos is not None:
+            remote_rows = [r for r in remote_rows
+                           if str(_norm((r.get("fields") or {}).get("订单号"))) in only_order_nos]
         projected_entity_keys = {
             str(row.get("子订单号") or row.get("订单号") or "").strip()
             for row in rows
@@ -1801,7 +1806,8 @@ def _sync_unlocked(db: Session, *, include_images: Optional[bool] = None,
     return result
 
 
-def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
+def sync(db: Session, *, include_images: Optional[bool] = None,
+         only_order_nos: set[str] | None = None) -> dict:
     """One writer across timer/order closeout/manual sync; no concurrent replay."""
     if not _SYNC_LOCK.acquire(blocking=False):
         return {"ok": False, "errors": ["factory_sync_busy"], "rows": 0}
@@ -1811,7 +1817,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                                 {"key": _SYNC_ADVISORY_KEY}).scalar()
             if not locked:
                 return {"ok": False, "errors": ["factory_sync_busy"], "rows": 0}
-        return _sync_unlocked(db, include_images=include_images)
+        return _sync_unlocked(db, include_images=include_images, only_order_nos=only_order_nos)
     finally:
         _SYNC_LOCK.release()
 
