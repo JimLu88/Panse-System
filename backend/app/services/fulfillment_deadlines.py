@@ -54,11 +54,14 @@ def deadline(order, today):
     targets = set()
     review = set()
     for note in notes:
-        for clause in re.split(r"[，,。；;\n]", note):
+        for clause in re.split(r"[，,。；;|\n]", note):
             clause = "".join(clause.split())
             match = _DURATION.fullmatch(clause)
             if not match:
-                if re.search(r"[0-9一二两三四五六七八九十]+(?:个工作日|个?天).{0,8}(?:做完|完成|发货|发出|到货|送达)", clause):
+                if re.fullmatch(r"(?:工期|交期|生产周期|制作周期)?(?:约|为|预计)?"
+                                r"[0-9一二两三四五六七八九十]+(?:个工作日|个?天)(?:内|左右)?", clause):
+                    review.add("确认备注天数的起点及完成事项")
+                elif re.search(r"[0-9一二两三四五六七八九十]+(?:个工作日|个?天).{0,8}(?:做完|完成|发货|发出|到货|送达)", clause):
                     review.add("核实备注工期")
                 continue
             action = match["kind"]
