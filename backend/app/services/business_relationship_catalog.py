@@ -29,8 +29,8 @@ def node(id, label, domain, field, path, anchor='', note=''):
 NODES = [
     {'id':'shipping.batch','label':'官方批量发货表','domain':'shipping',
      'field':'FulfillmentBatch.rows/file_sha256 + FulfillmentIntake.batch_id/review_evidence/order_claim/parcel_claim',
-     'sources':[source('services/fulfillment_batch_service.py','def prepare'), source('models/fulfillment_intake.py','class FulfillmentBatch'), source('api/shipments.py','def prepare_batch')],
-     'note':'管理员或操作员确认整单交运后，保真填充官方三列模板；多子单逐项核对，退款/延期/资料变化阻止出表。同请求取原文件，已出表订单及运单不能另批重出；出表不代表淘宝发货，浏览器上传尚未接通。'},
+     'sources':[source('services/fulfillment_batch_service.py','def prepare'), source('models/fulfillment_intake.py','class FulfillmentBatch'), source('api/shipments.py','def prepare_batch'), source('services/fulfillment_receipts.py','def reconcile')],
+     'note':'整单交运确认→保真出表→一次性提交占位→不可替换任务编号→逐单物流证据。资料变化、缺身份和未知结果不重传，失败不自动释放占位。汇总数量不能确认成功；仍由官方报表导入更新订单。0160接口和离线保护已实现，实发开关默认关闭，浏览器身份及逐单物流适配器待验收。'},
     node('shipping.registration','飞书发货登记','shipping','FulfillmentIntake.message_id / order_claim / parcel_claim','services/fulfillment_intake.py','def register','同一条图文与已发原图核对，单包真实提交后只读核验。'),
     node('shipping.deadline','内部交期提醒','shipping','Order.order_date / ship_deadline / seller_memo','services/fulfillment_deadlines.py','def deadline','生产、发货和送达分别核对，汇总进入ERP通知中心。'),
     node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','先验证共享相对路径、hash、export_id、业务日和真实生成日，再准许一次请求口令；同登记及未知不重放。'),

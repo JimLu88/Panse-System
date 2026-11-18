@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "c39aea16f9aae82986051a5703cc59313a516e6d2a515f1e0b864baa399038be",
+    "backend/app/services/business_relationship_catalog.py": "4c3f8f2dfb5c1349fcdda148a746edd719e7095cde3a1fa9b859dd7dd55a3a00",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -130,9 +130,10 @@
     "backend/app/services/interaction_notice_service.py": "4afebf36e5bbffd24b2407dbf3c1098d67806a5b14f17d225abdef44a3463239",
     "backend/app/services/order_post_push_audit.py": "a744644c1de80d179cc3a1d2bb4898f6ed5c1c1a19ac333d3f81e62b2feec40b",
     "backend/app/api/imports.py": "c46a2cd5db0fff262ed06a30600baf328378edca0074f0aff89313585379d463",
-    "backend/app/services/fulfillment_batch_service.py": "e66f2cdf3e18d0163d1774b67a55cc81d72d1cb077c6f7b37e22aa2d5ddd7012",
-    "backend/app/models/fulfillment_intake.py": "9ebad0d07d7b142ddce1212a72cedbf27c1e1b00d736d1e3984876ff0be7a3a1",
-    "backend/app/api/shipments.py": "c2d7cb06eaaaa7207868f1138127a04e6e7f7ae26a06ca11cef56ef059bb7082"
+    "backend/app/services/fulfillment_batch_service.py": "f6890fc1ff1cb588f70f317e35b7157927a2a3fd4077ffc16de691a56fbdacbe",
+    "backend/app/models/fulfillment_intake.py": "63285e36a1ab0546b799bb12461b61391c600b9d5869cb2a4187f5a05554418c",
+    "backend/app/api/shipments.py": "8374bc74b9ae37fbe62f3f359d07a8074e78d43844b1430620f00c37d6195c91",
+    "backend/app/services/fulfillment_receipts.py": "0ff35700b6a23dab64d0e2576dbd08d8a5f70fac74b724116fd731ba918309b8"
   },
   "scoped_review_20261116": {
     "paths": [

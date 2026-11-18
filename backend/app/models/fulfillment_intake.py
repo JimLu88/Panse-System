@@ -31,3 +31,5 @@ class FulfillmentBatch(Base, TimestampMixin):
     rows: Mapped[list] = mapped_column(JSON)
     file_sha256: Mapped[str] = mapped_column(String(64))
     file_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    platform_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    execution: Mapped[dict | None] = mapped_column(JSON, nullable=True)

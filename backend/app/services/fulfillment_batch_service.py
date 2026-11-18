@@ -10,7 +10,7 @@ import io
 import json
 import re
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timezone
 from xml.sax.saxutils import escape
 from zipfile import ZipFile
 
@@ -170,6 +170,7 @@ def prepare(db, *, request_id, actor, message_ids):
         rows.append({"message_id": row.message_id, "order_no": row.order_no,
                      "carrier": row.carrier, "tracking_no": row.tracking_no,
                      "shop": current["shop"],
+                     "sub_order_nos": [c["sub_order_no"] for c in current["lines"]],
                      "snapshot_sha256": current["snapshot_sha256"]})
     if len({row["shop"] for row in rows}) != 1:
         raise ShippingGate("不同店铺的订单不能放入同一发货表")
@@ -187,5 +188,168 @@ def prepare(db, *, request_id, actor, message_ids):
             db.flush()
     except IntegrityError:
         raise ShippingGate("订单或运单已在其他批次中，请核对原文件，不能重复出表")
+    db.commit()
+    return batch
+
+
+def precheck_batch(db, batch_id: str):
+    batch = db.get(FulfillmentBatch, str(batch_id))
+    if not batch:
+        raise ShippingGate("未找到该发货批次")
+    if batch.state != 'prepared' or batch.platform_task_id or batch.execution:
+        raise ShippingGate("该批次已进入执行，只能核对原任务，不能重新预检放行上传")
+    if not batch.rows or len({r['shop'] for r in batch.rows}) != 1:
+        raise ShippingGate("批次为空或店铺不唯一")
+    if hashlib.sha256(batch.file_bytes).hexdigest() != batch.file_sha256:
+        raise ShippingGate("原批次文件校验失败")
+    shop = batch.rows[0]["shop"] if batch.rows else None
+    issues = []
+    for r in batch.rows:
+        order_no = r["order_no"]
+        carrier = r["carrier"]
+        tracking_no = r["tracking_no"]
+        try:
+            current = preview(db, order_no, carrier, tracking_no)
+            if current['snapshot_sha256'] != r.get('snapshot_sha256'):
+                raise ShippingGate("订单资料在出表后变化，请重新核对原批次")
+            if [c['sub_order_no'] for c in current['lines']] != r.get('sub_order_nos'):
+                raise ShippingGate("批次缺少完整子单快照，不能放行")
+            intake = db.get(FulfillmentIntake, r['message_id'])
+            if (not intake or intake.batch_id != batch.id or intake.state != 'batch_prepared'
+                    or intake.order_claim != order_no
+                    or intake.parcel_claim != carrier + '/' + tracking_no.upper()):
+                raise ShippingGate("原批次登记或防重复占位不一致")
+        except ShippingGate as exc:
+            issues.append({"order_no": order_no, "carrier": carrier, "tracking_no": tracking_no, "reason": str(exc)})
+    if issues:
+        raise ShippingGate(f"批次中有 {len(issues)} 个订单状态变化无法发货: " + "; ".join(i["reason"] for i in issues[:3]))
+    return {
+        "ok": True,
+        "batch_id": batch.id,
+        "state": batch.state,
+        "shop": shop,
+        "count": len(batch.rows),
+        "sha256": batch.file_sha256,
+        "platform_task_id": batch.platform_task_id,
+        "rows": batch.rows,
+    }
+
+
+def record_execution_start(db, *, batch_id: str, actor: str, attempt_id: str):
+    batch = db.scalar(select(FulfillmentBatch).where(FulfillmentBatch.id == str(batch_id)).with_for_update())
+    if not batch:
+        raise ShippingGate("未找到该发货批次")
+    # A second start never grants upload permission, even with the same attempt.
+    # Lost acknowledgement after this commit is protected, not a retry signal.
+    precheck_batch(db, batch.id)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    old_execution = batch.execution or {}
+    batch.state = "submitting"
+    batch.execution = {
+        **old_execution,
+        "attempt_id": attempt_id,
+        "actor": actor,
+        "started_at": now_iso,
+        "platform_task_id": batch.platform_task_id,
+    }
+    records = list(db.scalars(select(FulfillmentIntake).where(
+        FulfillmentIntake.batch_id == batch.id).with_for_update()))
+    for row in records:
+        if row.state not in ("confirmed",):
+            row.state = "submitting"
+            row.detail = "正在向淘宝提交发货，等待平台回执"
+    db.commit()
+    return batch
+
+
+def record_platform_submission(db, *, batch_id: str, platform_task_id: str, file_sha256: str,
+                               attempt_id: str, actor: str):
+    batch = db.scalar(select(FulfillmentBatch).where(FulfillmentBatch.id == str(batch_id)).with_for_update())
+    if not batch:
+        raise ShippingGate("未找到该发货批次")
+    execution = dict(batch.execution or {})
+    if (not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', platform_task_id)
+            or execution.get('attempt_id') != attempt_id or execution.get('actor') != actor):
+        raise ShippingGate("执行身份或平台任务编号不匹配")
+    if file_sha256 != batch.file_sha256:
+        raise ShippingGate("提交文件与批次原始文件不匹配")
+    if batch.platform_task_id:
+        if batch.platform_task_id != platform_task_id:
+            raise ShippingGate("禁止覆盖原平台任务编号")
+        return batch
+    if batch.state != 'submitting':
+        raise ShippingGate("批次尚未取得一次性提交占位")
+    batch.platform_task_id = str(platform_task_id)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    execution["platform_task_id"] = str(platform_task_id)
+    execution["submitted_at"] = now_iso
+    batch.execution = execution
+
+    records = list(db.scalars(select(FulfillmentIntake).where(
+        FulfillmentIntake.batch_id == batch.id).with_for_update()))
+    for row in records:
+        if row.state not in ("confirmed",):
+            row.state = "submitting"
+            row.detail = f"淘宝已受理发货任务(Task {platform_task_id})，等待官方结果核对"
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise ShippingGate("该平台任务已绑定其他批次，禁止串用")
+    return batch
+
+
+def finish_batch_execution(db, *, batch_id: str, actor: str, platform_task_id: str,
+                           attempt_id: str, file_sha256: str, task_status: str,
+                           success_count: int, fail_count: int, order_results: dict,
+                           raw_receipt: dict = None):
+    from app.services.fulfillment_receipts import reconcile, batch_state
+    batch = db.scalar(select(FulfillmentBatch).where(FulfillmentBatch.id == str(batch_id)).with_for_update())
+    if not batch:
+        raise ShippingGate("未找到该发货批次")
+    execution = dict(batch.execution or {})
+    if (not batch.platform_task_id or batch.platform_task_id != platform_task_id
+            or execution.get('attempt_id') != attempt_id or execution.get('actor') != actor
+            or batch.file_sha256 != file_sha256):
+        raise ShippingGate("原批次、执行身份、平台任务或文件不匹配")
+    receipt = raw_receipt or {}
+    task = receipt.get('task') or {}
+    if not isinstance(task, dict):
+        raise ShippingGate("缺少结构化平台回执")
+    if (str(task.get('taskId', '')) != platform_task_id
+            or task.get('taskStatus') != task_status
+            or task.get('successCount') != success_count or task.get('failCount') != fail_count):
+        raise ShippingGate("汇总结果与原平台回执不匹配")
+    if batch.state == 'confirmed':
+        return batch  # Never downgrade an already verified batch.
+    calculated, _ = reconcile(batch.rows, task, receipt.get('errors') or {},
+        receipt.get('shipping_readbacks') or [], expected_task_id=platform_task_id,
+        started_at=execution['started_at'])
+    # The caller cannot assert a status that is unsupported by the evidence.
+    if (set(order_results) != set(calculated) or any(
+            order_results[k].get('status') != v['status'] for k, v in calculated.items())):
+        raise ShippingGate("逐单结果没有相符的官方物流证据")
+    records = list(db.scalars(select(FulfillmentIntake).where(
+        FulfillmentIntake.batch_id == batch.id).with_for_update()))
+    if {r.message_id for r in records} != {r['message_id'] for r in batch.rows}:
+        raise ShippingGate("批次登记覆盖不完整")
+    for row in records:
+        res = calculated[row.order_no]
+        if row.state == 'confirmed':
+            calculated[row.order_no] = {'status': 'confirmed', 'detail': row.detail}
+            continue
+        row.readbacks = (row.readbacks or 0) + 1
+        row.state, row.detail = res['status'], res['detail']
+        # Do not release claims even for failed rows: other results can be unknown.
+        # Official order-report import remains the sole order/status writer.
+    batch.state = batch_state(calculated)
+    digest = hashlib.sha256(json.dumps(receipt, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    history = list(execution.get('readback_history') or [])
+    history.append({'observed_at': datetime.now(timezone.utc).isoformat(), 'sha256': digest,
+                    'state': batch.state})
+    batch.execution = {**execution, 'readback_history': history, 'task_status': task_status,
+        'success_count': success_count, 'fail_count': fail_count,
+        'order_results': calculated, 'raw_receipt': receipt}
     db.commit()
     return batch

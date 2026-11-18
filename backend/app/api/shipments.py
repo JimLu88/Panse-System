@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from uuid import UUID
+from uuid import UUID, uuid4
 from pydantic import Field
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -103,10 +103,34 @@ def register_manual(body: ManualShipping, db: Session = Depends(get_db),
         raise HTTPException(409, str(exc))
 
 
+class StartExecution(BaseModel):
+    attempt_id: UUID = Field(default_factory=uuid4)
+
+
+class RecordSubmission(BaseModel):
+    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    attempt_id: UUID
+    file_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class FinishExecution(BaseModel):
+    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    attempt_id: UUID
+    file_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
+    task_status: str
+    success_count: int = Field(ge=0, le=200)
+    fail_count: int = Field(ge=0, le=200)
+    order_results: dict = Field(default_factory=dict)
+    raw_receipt: Optional[dict] = None
+
+
 def _batch_info(row):
     return {'id': row.id, 'created_at': row.created_at, 'state': row.state,
             'count': len(row.rows), 'sha256': row.file_sha256,
-            'shop': row.rows[0].get('shop') if row.rows else None}
+            'shop': row.rows[0].get('shop') if row.rows else None,
+            'platform_task_id': getattr(row, 'platform_task_id', None),
+            'execution': getattr(row, 'execution', None),
+            'rows': row.rows}
 
 
 @router.get('/batches')
@@ -139,6 +163,69 @@ def batch_file(batch_id: UUID, db: Session = Depends(get_db), _=Depends(require_
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         headers={'Content-Disposition': f'attachment; filename="taobao-shipping-{row.id}.xlsx"',
                  'Cache-Control': 'no-store'})
+
+
+@router.get('/batches/{batch_id}')
+def get_batch(batch_id: UUID, db: Session = Depends(get_db), _=Depends(require_role('admin', 'operator'))):
+    row = db.get(FulfillmentBatch, str(batch_id))
+    if not row:
+        raise HTTPException(404, '批次不存在')
+    return _batch_info(row)
+
+
+@router.get('/batches/{batch_id}/precheck')
+def precheck_batch(batch_id: UUID, db: Session = Depends(get_db), _=Depends(require_role('admin', 'operator'))):
+    try:
+        return batches.precheck_batch(db, str(batch_id))
+    except ShippingGate as exc:
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/batches/{batch_id}/execution/start')
+def start_execution(batch_id: UUID, body: StartExecution, db: Session = Depends(get_db),
+                    user=Depends(require_role('admin', 'operator'))):
+    import os
+    if os.environ.get('PANSE_BATCH_SHIPPING_ENABLED') != '1':
+        raise HTTPException(409, '批量实发尚未完成平台验收，执行入口未启用')
+    try:
+        row = batches.record_execution_start(db, batch_id=str(batch_id), actor=f'ERP:{user.id}',
+                                             attempt_id=str(body.attempt_id))
+        return {**_batch_info(row), 'upload_allowed': True}
+    except ShippingGate as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/batches/{batch_id}/execution/record')
+def record_submission(batch_id: UUID, body: RecordSubmission, db: Session = Depends(get_db),
+                      user=Depends(require_role('admin', 'operator'))):
+    try:
+        row = batches.record_platform_submission(db, batch_id=str(batch_id),
+                                                platform_task_id=body.platform_task_id,
+                                                file_sha256=body.file_sha256,
+                                                attempt_id=str(body.attempt_id), actor=f'ERP:{user.id}')
+        return _batch_info(row)
+    except ShippingGate as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
+
+
+@router.post('/batches/{batch_id}/execution/finish')
+def finish_execution(batch_id: UUID, body: FinishExecution, db: Session = Depends(get_db),
+                     user=Depends(require_role('admin', 'operator'))):
+    try:
+        row = batches.finish_batch_execution(db, batch_id=str(batch_id), actor=f'ERP:{user.id}',
+                                            platform_task_id=body.platform_task_id,
+                                            attempt_id=str(body.attempt_id), file_sha256=body.file_sha256,
+                                            task_status=body.task_status,
+                                            success_count=body.success_count,
+                                            fail_count=body.fail_count,
+                                            order_results=body.order_results,
+                                            raw_receipt=body.raw_receipt)
+        return _batch_info(row)
+    except ShippingGate as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc))
 
 
 @router.get("", response_model=list[ShipmentOut])

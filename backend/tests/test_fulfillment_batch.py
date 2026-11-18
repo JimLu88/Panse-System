@@ -150,7 +150,7 @@ def test_new_routes_require_shipping_operator():
     from app.api.shipments import router
     import inspect
     routes = [r for r in router.routes if 'batch' in r.path or 'manual' in r.path]
-    assert len(routes) == 5
+    assert len(routes) == 10
     for route in routes:
         gates = [d.call for d in route.dependant.dependencies if d.call is not None]
         assert any(set(inspect.getclosurevars(g).nonlocals.get('roles', ())) == {'admin', 'operator'} for g in gates)
@@ -174,4 +174,151 @@ def test_migration_preserves_existing_intake():
         assert conn.execute(text('select state, batch_id from fulfillment_intakes')).one() == ('unknown', None)
         module.downgrade()
         assert conn.execute(text('select state from fulfillment_intakes')).scalar() == 'unknown'
+    engine.dispose()
+
+
+def test_precheck_batch(db_session):
+    db = db_session
+    order, lines = seed(db)
+    row = register(db)
+    bid = str(uuid4())
+    batch = service.prepare(db, request_id=bid, actor='ERP:1', message_ids=[row.message_id])
+
+    # Precheck passes
+    pre = service.precheck_batch(db, bid)
+    assert pre['ok'] is True
+    assert pre['count'] == 1
+    assert pre['shop'] == 'test'
+
+    # Precheck catches refund
+    order.refund_status = '退款中'
+    db.commit()
+    with pytest.raises(ShippingGate, match='状态变化'):
+        service.precheck_batch(db, bid)
+
+
+def execution_fixture(db):
+    order, lines = seed(db)
+    row = register(db)
+    batch = service.prepare(db, request_id=str(uuid4()), actor='ERP:1', message_ids=[row.message_id])
+    attempt = str(uuid4())
+    service.record_execution_start(db, batch_id=batch.id, actor='ERP:1', attempt_id=attempt)
+    args = dict(batch_id=batch.id, actor='ERP:1', attempt_id=attempt,
+                platform_task_id='987654321', file_sha256=batch.file_sha256)
+    service.record_platform_submission(db, **args)
+    return order, row, batch, args
+
+
+def test_batch_execution_lifecycle_and_verified_receipt(db_session):
+    from datetime import datetime, timezone
+    db = db_session
+    order, row, batch, args = execution_fixture(db)
+    task = {'taskId': args['platform_task_id'], 'taskStatus': 'FINISHED', 'successCount': 1, 'failCount': 0}
+    proof = {**batch.rows[0], 'source': 'taobao_logistics_readback', 'evidence_ref': 'synthetic-proof',
+        'observed_at': datetime.now(timezone.utc).isoformat(), 'seller_confirm': True,
+        'trade_status': 'WAIT_BUYER_CONFIRM_GOODS'}
+    finished = service.finish_batch_execution(db, **args, task_status='FINISHED', success_count=1,
+        fail_count=0, order_results={TID: {'status': 'confirmed'}},
+        raw_receipt={'task': task, 'shipping_readbacks': [proof]})
+    assert finished.state == 'confirmed' and row.state == 'confirmed'
+    # The imported official order report remains the order writer; no date guesses.
+    assert order.status == 'paid' and order.tracking_no is None and order.ship_date is None
+    with pytest.raises(ShippingGate):
+        service.record_execution_start(db, batch_id=batch.id, actor='ERP:1', attempt_id=str(uuid4()))
+    service.finish_batch_execution(db, **args, task_status='FINISHED', success_count=1,
+        fail_count=0, order_results={TID: {'status':'unknown'}}, raw_receipt={'task':task})
+    assert row.state == 'confirmed'
+
+
+def test_failure_keeps_claims_and_cannot_restart(db_session):
+    db = db_session
+    order, row, batch, args = execution_fixture(db)
+    task = {'taskId':args['platform_task_id'], 'taskStatus':'ERROR', 'successCount':0, 'failCount':1}
+    result = service.finish_batch_execution(db, **args, task_status='ERROR', success_count=0,
+        fail_count=1, order_results={TID:{'status':'failed'}}, raw_receipt={'task':task,
+            'errors':{'success':True, 'data':[{'orderNo':TID,'errorMessage':'买家已申请退款'}]}})
+    assert result.state == 'failed' and row.order_claim == TID and row.parcel_claim
+    assert order.status == 'paid'
+    with pytest.raises(ShippingGate):
+        service.record_execution_start(db, batch_id=batch.id, actor='ERP:1', attempt_id=str(uuid4()))
+
+
+@pytest.mark.parametrize('mutate', ['unproven_success','wrong_tracking','wrong_shop','wrong_child','missing_proof'])
+def test_finish_rejects_unproved_status(db_session, mutate):
+    from datetime import datetime, timezone
+    db=db_session; order, row, batch, args=execution_fixture(db)
+    task={'taskId':args['platform_task_id'],'taskStatus':'FINISHED','successCount':1,'failCount':0}
+    proof={**batch.rows[0], 'source':'taobao_logistics_readback','evidence_ref':'test-proof',
+           'observed_at':datetime.now(timezone.utc).isoformat(),'seller_confirm':True,'trade_status':'WAIT_BUYER_CONFIRM_GOODS'}
+    if mutate=='wrong_tracking': proof['tracking_no']='DIFFERENT'
+    if mutate=='wrong_shop': proof['shop']='other'
+    if mutate=='wrong_child': proof['sub_order_nos']=['different']
+    proofs=[] if mutate in ('unproven_success','missing_proof') else [proof]
+    with pytest.raises(ShippingGate, match='官方物流证据'):
+        service.finish_batch_execution(db, **args, task_status='FINISHED', success_count=1,fail_count=0,
+            order_results={TID:{'status':'confirmed'}},raw_receipt={'task':task,'shipping_readbacks':proofs})
+    assert row.state=='submitting' and order.status=='paid' and row.order_claim==TID
+
+
+def test_start_once_and_task_binding(db_session):
+    db=db_session; order,row,batch,args=execution_fixture(db)
+    for attempt in (args['attempt_id'],str(uuid4())):
+        with pytest.raises(ShippingGate):
+            service.record_execution_start(db,batch_id=batch.id,actor='ERP:1',attempt_id=attempt)
+    for field,value in [('platform_task_id','OTHER'),('attempt_id',str(uuid4())),('file_sha256','0'*64),('actor','ERP:2')]:
+        with pytest.raises(ShippingGate): service.record_platform_submission(db,**{**args,field:value})
+    assert service.record_platform_submission(db,**args).platform_task_id==args['platform_task_id']
+
+
+def test_precheck_rejects_changed_snapshot(db_session):
+    db=db_session; order,lines=seed(db); row=register(db)
+    batch=service.prepare(db,request_id=str(uuid4()),actor='ERP:1',message_ids=[row.message_id])
+    lines[0].remark='发货前必须拍照'; db.commit()
+    with pytest.raises(ShippingGate): service.precheck_batch(db,batch.id)
+    with pytest.raises(ShippingGate): service.record_execution_start(db,batch_id=batch.id,actor='ERP:1',attempt_id=str(uuid4()))
+    assert batch.state=='prepared'
+
+
+def test_platform_task_cannot_be_shared_by_two_batches(db_session):
+    db=db_session; _,_,first,args=execution_fixture(db)
+    other_tid=TID+'1'
+    seed(db,other_tid); row=register(db,other_tid,TRACK+'1')
+    second=service.prepare(db,request_id=str(uuid4()),actor='ERP:1',message_ids=[row.message_id])
+    attempt=str(uuid4())
+    service.record_execution_start(db,batch_id=second.id,actor='ERP:1',attempt_id=attempt)
+    with pytest.raises(ShippingGate,match='绑定其他批次'):
+        service.record_platform_submission(db,batch_id=second.id,actor='ERP:1',attempt_id=attempt,
+            platform_task_id=args['platform_task_id'],file_sha256=second.file_sha256)
+    assert first.platform_task_id==args['platform_task_id']
+    assert second.platform_task_id is None and second.state=='submitting'
+
+
+def test_execution_api_defaults_disabled(monkeypatch):
+    from app.api.shipments import start_execution, StartExecution
+    monkeypatch.delenv('PANSE_BATCH_SHIPPING_ENABLED',raising=False)
+    with pytest.raises(HTTPException) as error:
+        start_execution(uuid4(),StartExecution(),None,None)
+    assert error.value.status_code==409
+
+
+def test_migration_0160_execution():
+    import importlib.util
+    from pathlib import Path
+    from sqlalchemy import create_engine, text, inspect
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    spec = importlib.util.spec_from_file_location('mig_0160', Path(__file__).parents[1] / 'alembic/versions/0160_fulfillment_batch_execution.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    engine = create_engine('sqlite:///:memory:')
+    with engine.begin() as conn:
+        conn.execute(text('create table fulfillment_batches (id varchar(64) primary key, state varchar(32))'))
+        module.op = Operations(MigrationContext.configure(conn))
+        module.upgrade()
+        cols = {c['name'] for c in inspect(conn).get_columns('fulfillment_batches')}
+        assert {'platform_task_id', 'execution'} <= cols
+        module.downgrade()
+        cols_down = {c['name'] for c in inspect(conn).get_columns('fulfillment_batches')}
+        assert 'platform_task_id' not in cols_down
     engine.dispose()

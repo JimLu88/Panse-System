@@ -110,7 +110,10 @@ export default function ShippingRegistrations() {
     <Typography.Text type="secondary">重复下载取得的是同一文件；上传结果不明时，请先查看淘宝“导入/导出记录”，不要再次导入。</Typography.Text>
     <Table<Batch> rowKey="id" dataSource={batches.data} loading={batches.isLoading} size="small"
       columns={[{ title: '生成时间', dataIndex: 'created_at', render: value => new Date(value).toLocaleString('zh-CN') },
-        { title: '店铺', dataIndex: 'shop' }, { title: '订单数', dataIndex: 'count' }, { title: '状态', render: () => '已出表，待淘宝核对' },
+        { title: '店铺', dataIndex: 'shop' }, { title: '订单数', dataIndex: 'count' },
+        { title: '状态', dataIndex: 'state', render: (value: string) => ({ prepared: '已出表，待淘宝核对',
+          submitting: '提交中，禁止重复上传', confirmed: '淘宝逐单核对通过', failed: '平台明确失败，待处理',
+          part_failed: '部分确认，其余待处理', unknown: '结果未知，禁止重复上传' }[value] || '待核对') },
         { title: '文件', render: (_, row) => <Button type="link" onClick={() => download(row.id)}>下载原批次</Button> }]} />
     <Modal title="登记整单发货" open={open} width={800} onCancel={() => { if (!busy) setOpen(false); }}
       footer={preview ? <Space><Button disabled={busy} onClick={() => setPreview(null)}>修改单号</Button>
