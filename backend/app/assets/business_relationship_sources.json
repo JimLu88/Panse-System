@@ -42,7 +42,7 @@
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
     "backend/app/services/agent_ingest_service.py": "6e97b2b5fdf8f0c957d1bbd55d871bb6e3b95fdd48a61370119dee20566cc92d",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
-    "backend/app/services/automation_pipeline_service.py": "9596baa250aac108c23d49fe158897f4255ff9fbe70faab84c6ba480cdc7b052",
+    "backend/app/services/automation_pipeline_service.py": "76d583423850c9953484ba016bec3b268537b4fea7fc4174b4bc0a80814a0067",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
     "backend/app/services/business_relationship_catalog.py": "613c8d599d4aff7367eccf579172eb270280afe9be6465eddb1927d39ae8d91f",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",

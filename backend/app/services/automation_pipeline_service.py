@@ -270,6 +270,8 @@ def _short_cause(error: str) -> str:
         return "发货报表等待对应口令"
     if "离线" in error or "connection refused" in low:
         return "无法连接取数电脑，请检查取数程序"
+    if "限流" in error or "rate limit" in low or re.search(r"(?<![\w])429(?![\w])", low):
+        return "平台限制导出频率，请稍后查看ERP处理结果"
     if "timeout" in low or "超时" in error:
         return "等待平台响应超时"
     if "wechat_bill_table_missing" in low:
