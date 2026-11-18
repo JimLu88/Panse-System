@@ -2402,6 +2402,11 @@ def _job_review_asset_remind(db: Session) -> dict:
 
 
 def _register_default_jobs() -> None:
+    from app.services.fulfillment_intake import reconcile_pending
+    register_job("shipping_official_readback", "核对淘宝发货回执", reconcile_pending, interval_minutes=20)
+    from app.services.fulfillment_deadlines import refresh_reminder
+    register_job("daily_urgent_fulfillment", "紧急订单汇总（ERP通知中心）",
+                 refresh_reminder, cron={"hour": 9, "minute": 10})
     from app.services.factory_forward_service import sync_pending
     register_job('factory_forward_sync', '工厂转发登记同步（失败最多5次）',
                  sync_pending, interval_minutes=5)

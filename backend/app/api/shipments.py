@@ -46,6 +46,18 @@ class ShipmentOut(BaseModel):
         )
 
 
+from app.dependencies import require_role
+from app.models.fulfillment_intake import FulfillmentIntake
+from sqlalchemy import select
+
+
+@router.get("/registrations")
+def registrations(db: Session = Depends(get_db), _=Depends(require_role("admin", "operator"))):
+    recent = db.scalars(select(FulfillmentIntake).order_by(FulfillmentIntake.created_at.desc()).limit(200))
+    return [{key: getattr(row, key) for key in ("message_id", "created_at", "order_no", "sub_order_no",
+              "carrier", "tracking_no", "state", "detail")} for row in recent]
+
+
 @router.get("", response_model=list[ShipmentOut])
 def list_shipments(entity_type: str, entity_id: int, db: Session = Depends(get_db)):
     return [ShipmentOut.of(s) for s in shipment_service.list_for_entity(db, entity_type, entity_id)]

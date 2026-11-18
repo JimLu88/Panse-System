@@ -1439,6 +1439,18 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         content = json.loads(msg.get("content") or "{}")
     except Exception:
         content = {}
+    if mtype in ("text", "post") and isinstance(content, dict):
+        from app.services import fulfillment_intake
+        command = _post_text(content) if mtype == "post" else re.sub(
+            r"@_user_\d+\s*", "", str(content.get("text") or "")).strip()
+        registered = fulfillment_intake.register(
+            db, event, command, _post_image_keys(content) if mtype == "post" else [])
+        if registered is not None:
+            if registered.get("detail"):
+                reply_id = _safe_reply(db, message_id, _result_card(
+                    "发货登记", registered["detail"], "green" if registered["state"] == "confirmed" else "orange"))
+                registered["reply_message_id"] = reply_id
+            return registered
     bkey = _batch_key(event, msg)   # 会话+发送人, 用于把 3 分钟内连发的图归一批
     uploader = _sender_label(db, event)  # 发图人 → 解析真实姓名记到归档「上传人」
 

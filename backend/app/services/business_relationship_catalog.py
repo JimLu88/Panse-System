@@ -27,6 +27,8 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('shipping.registration','飞书发货登记','shipping','FulfillmentIntake.message_id / order_claim / parcel_claim','services/fulfillment_intake.py','def register','同一条图文与已发原图核对，单包真实提交后只读核验。'),
+    node('shipping.deadline','内部交期提醒','shipping','Order.order_date / ship_deadline / seller_memo','services/fulfillment_deadlines.py','def deadline','生产、发货和送达分别核对，汇总进入ERP通知中心。'),
     node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','先验证共享相对路径、hash、export_id、业务日和真实生成日，再准许一次请求口令；同登记及未知不重放。'),
     node('order.shipping_only','仅发货资料的不完整订单','order','Order.platform_field_state.shipping_only','services/taobao_order_import.py','def _commit_shipping','保留真实母单和SKU文字，不造子单、不默认1件、不覆盖购买数量或财务；真实销售子单及明确数量才解除。'),
     node('finance.main_completeness','主力号采集后完整性核对','finance','AlipayFlow + ImportedFile / alipay_main_completeness_latest_v1','services/alipay_collection_audit.py','def after_collection','采集/入账后独立会话只读核对原始账单时间覆盖与逐笔金额日期；零交易日不当缺失。不自动补拉或改账。新异常先持久化发送意图，仅飞书提醒群通知，未知不重发，正常静默。'),
@@ -153,6 +155,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('order.notes','shipping.deadline','提取内部工期','有下单锚点及明确的完成或发货期限','人工交期、延期及待确认条件优先','services/fulfillment_deadlines.py','def deadline'),
+    edge('factory.receipt','shipping.registration','核对原图及主子单','单件单包、有真实子单及发送图归档','压缩图只提供候选，未知提交不重发','services/fulfillment_intake.py','def _match'),
+    edge('shipping.registration','shipping.fulfilled','核对平台登记结果','平台回读子单、承运商、运单号一致','平台确认和买家签收独立，继续沿用订单报表更新ERP','services/taobao_shipping.py','def confirmed',kind='protect'),
     edge('sync.shipping_target','sync.password','口令只处理登记文件','同路径/hash/export_id已核对','没有目标不扫描旧文件；处理问题不误报口令错误','services/shipping_recovery_service.py','def apply_password'),
     edge('sync.shipping_target','factory.receipt','独立恢复精确子单续推','原两份已入库报表hash/角色/业务批次与限定子单相符','真实归档日期可跨午夜；不改原attempt，不重导已入库文件，不重发sent/unknown','services/order_scoped_resume_service.py','def resume'),
     edge('order.shipping_only','factory.sheet','阻止不完整资料进入生产','缺真实子单或明确购买数量','不删除真实订单，不用默认1件填补，不覆盖已发回执','services/factory_sheet.py','def build',kind='protect'),

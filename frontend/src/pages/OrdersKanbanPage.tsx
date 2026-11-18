@@ -26,6 +26,9 @@ import type { AccessorySummary, Order } from '../api/client';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
 import DispositionModal, { type DispositionRequest } from '../components/DispositionModal';
 import FactoryProductionView from '../components/FactoryProductionView';
+import UrgentFulfillment from '../components/UrgentFulfillment';
+import ShippingRegistrations from '../components/ShippingRegistrations';
+import { useSearchParams } from 'react-router-dom';
 import AccessoryPurchasePage from './AccessoryPurchasePage';
 
 const COLUMNS: { key: string; label: string; color: string }[] = [
@@ -352,19 +355,27 @@ function OrdersBoard() {
 }
 
 export default function OrdersKanbanPage() {
-  const [topView, setTopView] = useState<'orders' | 'factory' | 'accessory'>('orders');
+  const [params, setParams] = useSearchParams();
+  const requested = params.get('view') || 'orders';
+  const topView = ['factory', 'accessory', 'urgent', 'shipping'].includes(requested) ? requested : 'orders';
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Segmented
         value={topView}
-        onChange={(v) => setTopView(v as 'orders' | 'factory' | 'accessory')}
+        onChange={(v) => setParams(prev => { prev.set('view', String(v)); return prev; })}
         options={[
           { label: '订单视图', value: 'orders' },
           { label: '工厂制作单', value: 'factory' },
           { label: '配件视图', value: 'accessory' },
+          { label: '紧急订单', value: 'urgent' },
+          { label: '发货登记', value: 'shipping' },
         ]}
       />
-      {topView === 'orders' ? <OrdersBoard /> : topView === 'factory' ? <FactoryProductionView /> : <AccessoryPurchasePage />}
+      {topView === 'orders' && <OrdersBoard />}
+      {topView === 'factory' && <FactoryProductionView />}
+      {topView === 'accessory' && <AccessoryPurchasePage />}
+      {topView === 'urgent' && <UrgentFulfillment />}
+      {topView === 'shipping' && <ShippingRegistrations />}
     </Space>
   );
 }

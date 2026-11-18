@@ -212,6 +212,12 @@ def export_factory_dispatch(
     )
 
 
+@router.get("/urgent-fulfillment")
+def urgent_fulfillment(db: Session = Depends(get_db), _=Depends(require_role("admin", "operator", "viewer"))):
+    from app.services.fulfillment_deadlines import pending_orders
+    return pending_orders(db)
+
+
 @router.get("/factory-production")
 def factory_production(
     product: Optional[str] = Query(None, description="订单号/子订单号/工厂单号/产品名称/编码/SKU"),
