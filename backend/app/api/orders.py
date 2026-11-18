@@ -496,6 +496,9 @@ def repush_factory(order_id: int, db: Session = Depends(get_db)):
     r = osa.repush_to_factory(db, o.order_no)
     if not r.get("ok"):
         raise HTTPException(400, r.get("error") or "重推失败(工厂群未配置或推送失败)")
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.attach(db, r, only_order_nos={o.order_no})
+    r["ok"] = bool(r["ok"] and checked["ok"])
     return r
 
 

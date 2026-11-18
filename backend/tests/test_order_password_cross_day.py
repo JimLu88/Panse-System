@@ -113,6 +113,8 @@ def test_historical_password_callback_keeps_today_pipeline_and_uses_existing_com
 
 
 def test_historical_completion_uses_original_flow_without_closing_today(db_session, monkeypatch):
+    monkeypatch.setattr("app.services.order_post_push_audit.attach",
+                        lambda *a, **k: {"ok": True})
     pipeline.pause_for_input(db_session, 'order_delivery', 'today still waiting')
     before = pipeline.get_pipeline(db_session, 'order_delivery')
     calls = []

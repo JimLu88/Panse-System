@@ -249,7 +249,13 @@ def handle_reply(db, event):
     line = db.get(OrderDetail, line_id)
     if line.factory_delivery_state != 'sent':
         _notice_once(db, mid, f"已确认实际成品 {qty} 件，原购买数量和财务未改。正式制单图尚未发送成功，请勿生产；原因：{line.factory_delivery_error or delivery.get('reason') or '待核对送达状态'}")
-    return {**result, 'state': line.factory_delivery_state, 'physical_qty': qty, 'delivery': delivery}
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.audit(db, only_order_nos={line.order_no},
+                                        only_sub_order_nos={line.sub_order_no})
+    if not checked.get('ok') and line.factory_delivery_state == 'sent':
+        _notice_once(db, mid, '正式制单图已发送，但原始报表与飞书逐单核对仍有缺项，系统已记录待处理；不会重复发图。')
+    return {**result, 'state': line.factory_delivery_state, 'physical_qty': qty,
+            'delivery': delivery, 'post_push_audit': checked}
 
 
 def complete_delivery(db, line):

@@ -16,6 +16,15 @@ _NOT_REFUND = ("没有申请退款", "未申请退款", "无退款", "退款关�
 def line_is_refunded(line: OrderDetail) -> bool:
     status = str(line.line_status or "").lower()
     refund_status = str(line.refund_status or "")
+    amount = Decimal(str(line.amount or 0))
+    refunded = Decimal(str(line.refund_amount or 0))
+    # A completed price refund on an active item is not a cancelled item.
+    # Unknown amounts, pending returns and fully refunded items stay blocked.
+    if (status in {"paid", "production", "shipped", "signed"}
+            and 0 < refunded < amount
+            and any(word in refund_status for word in ("成功", "完成"))
+            and "退货" not in refund_status):
+        return False
     keyword = (
         any(key in refund_status for key in ("退款", "退货", "关闭"))
         and not any(key in refund_status for key in _NOT_REFUND)

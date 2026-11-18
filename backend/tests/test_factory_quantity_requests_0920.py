@@ -13,6 +13,7 @@ from app.services import order_sheet_archive_service as sheets
 @pytest.fixture
 def flow(db_session, monkeypatch):
     from app.services import factory_dispatch_feishu_service
+    monkeypatch.setattr('app.services.order_post_push_audit.audit', lambda *a, **k: {'ok': True})
     monkeypatch.setattr(factory_dispatch_feishu_service, 'sync_if_enabled', lambda db: {'ok':True,'errors':[]})
     db = db_session
     monkeypatch.delenv('PANSE_DISABLE_NOTIFY', raising=False)
@@ -86,6 +87,20 @@ def test_question_is_once_non_production_and_bound(flow):
     for marker in ['请勿生产','CHILD','原购买数量','150*75','@机器人']:
         assert marker in text
     assert '完整测试地址' not in text
+
+
+def test_failed_report_audit_notifies_reply_once_without_replaying_image(flow, monkeypatch):
+    monkeypatch.setattr('app.services.order_post_push_audit.audit',
+                        lambda *a, **k: {'ok': False, 'remaining_count': 1})
+    f = flow
+    ask(f)
+    result = q.handle_reply(f.db, f.event)
+    assert not result['post_push_audit']['ok']
+    assert len(f.calls['images']) == 1
+    assert f.calls['notes'][-1][0] == 'REPLY'
+    assert '核对仍有缺项' in f.calls['notes'][-1][1]
+    q.handle_reply(f.db, f.event)
+    assert len(f.calls['images']) == 1 and len(f.calls['notes']) == 2
 
 
 @pytest.mark.parametrize('qty',[1,2,3])

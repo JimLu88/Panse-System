@@ -170,6 +170,9 @@ def test_shipped_order_without_address_sends_production_only_sheet(
 def test_address_release_sends_only_the_single_image(
         db_session, _feishu_stub, monkeypatch):
     """地址次日补齐时只释放图片：不发标题文字、不发 ZIP、不发日报。"""
+    # This unit covers the address-release summary policy; source reconciliation
+    # has real-export integration coverage in test_order_post_push_audit.
+    monkeypatch.setattr("app.services.scheduler._sync_factory_dispatch_after_orders", lambda db, result: result)
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
     _add_order(db_session, "RELEASE-ONLY-1", address=None)
     osa.generate_pending(db_session)
@@ -303,6 +306,7 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
 ):
     """口令是最后一环时，不再只说“可正常发”，而是当场续跑未送达图片。"""
     from app.services import feishu_bot_service
+    monkeypatch.setattr("app.services.order_post_push_audit.attach", lambda *a, **k: {"ok": True})
 
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
     monkeypatch.setattr(
@@ -344,6 +348,7 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
 def test_recovery_closeout_syncs_factory_and_closes_failure(
     db_session, monkeypatch,
 ):
+    monkeypatch.setattr("app.services.order_post_push_audit.attach", lambda *a, **k: {"ok": True})
     monkeypatch.setenv("PANSE_DISABLE_NOTIFY", "1")
     delivery_calls: list[dict] = []
     factory_calls: list[bool] = []

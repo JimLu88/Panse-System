@@ -12,6 +12,45 @@ ORDER_RECOVERY_PUSH_LIMIT = 500
 ORDER_RETRY_TIMES = ((19, 17), (20, 17), (21, 17))
 
 
+def complete_selected_order_delivery(db: Session, *, sub_order_nos: list[str]) -> dict:
+    """Explicit manual scope: deliver once, sync the same rows, verify both."""
+    from sqlalchemy import select
+    from app.models.order import OrderDetail
+    from app.services import order_line_delivery_service as lines
+    from app.services import order_sheet_archive_service as sheets
+    from app.services import factory_dispatch_feishu_service as dispatch
+
+    scope = set(sub_order_nos)
+    if not scope or len(scope) != len(sub_order_nos) or len(scope) > 50:
+        raise ValueError("需指定1至50条唯一子订单")
+    rows = db.scalars(select(OrderDetail).where(OrderDetail.sub_order_no.in_(scope))).all()
+    if len(rows) != len(scope):
+        raise ValueError("子订单不存在；未推送")
+    parents = {row.order_no for row in rows}
+    delivery = sheets.reconcile_order_line_delivery(db, limit=len(scope), only_sub_order_nos=scope)
+    # Even a held image must not prevent successful siblings reaching the table.
+    table = dispatch.sync(db, include_images=True, only_order_nos=parents)
+    db.expire_all()
+    sent = lines.sent_line_evidence(db)
+    receipts, unresolved = [], []
+    for row in rows:
+        if (row.factory_delivery_state == "sent" and row.factory_delivery_message_id
+                and row.sub_order_no in sent):
+            receipts.append({"sub_order_no": row.sub_order_no, "factory_no": row.factory_no,
+                             "message_id": row.factory_delivery_message_id})
+        else:
+            unresolved.append(row.sub_order_no)
+    result = {"ok": not unresolved and bool(table.get("ok"))
+                  and not table.get("deferred_image_uploads"),
+            "delivery": delivery, "factory_dispatch": table, "receipts": receipts,
+            "unresolved_sub_order_nos": unresolved}
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.attach(db, result, only_order_nos=parents,
+                                         only_sub_order_nos=scope, limit=len(scope))
+    result["ok"] = result["ok"] and checked["ok"]
+    return result
+
+
 def _retry_slots(now: datetime | None = None) -> list[datetime]:
     current = (now or datetime.now()).astimezone()
     return [
@@ -83,6 +122,12 @@ def complete_recovered_order_delivery(
     if not factory_dispatch.get("ok"):
         details = "; ".join(str(item) for item in (factory_dispatch.get("errors") or [])[:5])
         error = '; '.join(x for x in [error, f"飞书系统下单表同步失败: {details or '未知原因'}"] if x)
+
+    from app.services import order_post_push_audit
+    checked = order_post_push_audit.attach(db, result, batch_id=order_batch_id,
+                                         limit=ORDER_RECOVERY_PUSH_LIMIT)
+    if not checked["ok"]:
+        error = "; ".join(x for x in [error, result.get("_error")] if x)
 
     if error:
         result["_run_status"] = "fail"

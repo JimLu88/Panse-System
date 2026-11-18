@@ -149,6 +149,8 @@ def order_sheet_push(
     res = order_sheet_archive_service.push_pending_images(db, limit=limit, include_baseline=True)
     if res.get("reason") == "no_chat_id":
         raise HTTPException(400, "飞书推送群未配置: 请到 管理 → 飞书 设置 feishu_push_chat_id (推送群会话ID)")
+    from app.services import order_post_push_audit
+    order_post_push_audit.attach(db, res, limit=limit)
     return res
 
 

@@ -1488,9 +1488,18 @@ def run_ingest(
         retry_failed_alipay = (
             prior is not None and category == "alipay" and prior_status == "error"
         )
+        # Earlier classifiers treated the master as address-only shipping.
+        # Relabelling its archive is insufficient: run the corrected parser once,
+        # retaining the old row as failure evidence.
+        retry_misclassified_master = (
+            prior is not None and category == "taobao_report"
+            and expected_role == detected_role == "orders"
+            and prior_summary.get("agent_report_role") == "shipping"
+            and prior_status == "imported"
+        )
         if category == "alipay" and _is_main_alipay_path(rel) and (prior is None or retry_failed_alipay):
             main_audit_requested = True
-        if prior is not None and not retry_failed_alipay:
+        if prior is not None and not retry_failed_alipay and not retry_misclassified_master:
             report["skipped_known"] += 1
             status = str(prior_summary.get("agent_status") or "unknown")
             summary = {

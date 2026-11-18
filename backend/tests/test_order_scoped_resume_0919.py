@@ -20,6 +20,11 @@ def _csv(rows):
 
 @pytest.fixture
 def case(db_session, monkeypatch, tmp_path):
+    from tests.test_factory_dispatch_field_contract import mock_remote
+    from app.services import factory_dispatch_feishu_service as table
+    mock_remote(monkeypatch, [])
+    monkeypatch.setattr(table, "_attachment_value",
+                        lambda db, app, path, signature, name, cache: [{"file_token": signature}])
     monkeypatch.setenv('DELIVERY_STORAGE_ROOT', str(tmp_path))
     now = datetime.now(ZoneInfo('Asia/Shanghai'))
     parent, sub = '3316871605005127989', '3316871605005137171'

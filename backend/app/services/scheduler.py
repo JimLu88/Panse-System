@@ -1543,6 +1543,7 @@ def _job_ingest_scan(db: Session) -> dict:
                 db, limit=50, quiet=True,
             )
             ing["order_sheets"] = delivery
+            _sync_factory_dispatch_after_orders(db, delivery)
             if delivery.get("_run_status") == "fail":
                 ing["_run_status"] = "fail"
                 ing["_error"] = delivery.get("_error") or "订单送达收口失败"
@@ -1562,6 +1563,8 @@ def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
     首次失败直接并入 order_delivery 自动化失败原因，因此会按既有
     19:17 / 20:17 / 21:17 续跑并在飞书告知具体失败阶段。
     """
+    if "post_push_audit" in result and "factory_dispatch" in result:
+        return result
     from app.services import factory_dispatch_feishu_service
 
     synced = factory_dispatch_feishu_service.sync_if_enabled(db)
@@ -1573,6 +1576,8 @@ def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
         result["_error"] = (
             f"{previous}；" if previous else ""
         ) + f"飞书系统下单表同步失败: {detail or '未知原因'}"
+    from app.services import order_post_push_audit
+    order_post_push_audit.attach(db, result, batch_id=result.get("order_batch_id"))
     return result
 
 
@@ -1637,7 +1642,9 @@ def _job_order_sheets_daily(db: Session) -> dict:
             int(latest_changes.get(key) or 0)
             for key in ("inserted", "status_changed", "amount_changed")
         )
-        if business_change_count == 0 and int(result.get("images_pushed") or 0) == 0:
+        pushed_images = sum(int(result.get(key) or 0) for key in (
+            "images_pushed", "line_images_pushed", "post_push_added_image_count"))
+        if business_change_count == 0 and pushed_images == 0:
             result["update_complete_notice"] = order_sheet_archive_service.send_order_update_complete_notice(
                 db, on_date=date.today()
             )
@@ -1664,6 +1671,7 @@ def _job_order_sheets_catchup(db: Session) -> dict:
     result = oss.reconcile_pending_delivery(db, limit=20, quiet=True)
     result["order_batch_id"] = agent_ingest_service.latest_order_pull_batch_id(db)
     result["order_business_date"] = date.today().isoformat()
+    _sync_factory_dispatch_after_orders(db, result)
     return result
 
 
@@ -1705,8 +1713,7 @@ def _job_pull_catchup(db: Session) -> dict:
             result["_success_message"] = (
                 last_pull.get("message") or "没有新增订单"
             )
-        if result.get("_run_status") != "fail":
-            _sync_factory_dispatch_after_orders(db, result)
+        _sync_factory_dispatch_after_orders(db, result)
         return _record_pipeline_result(
             db,
             "order_delivery",
