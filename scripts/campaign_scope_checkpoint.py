@@ -67,7 +67,7 @@ def check_references(proof):
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('scope_checkpoint_evidence_changed')
 
 
-def verify_discount(root,request_id,*,transfer_db=None,agent_root=None):
+def verify_discount(root,request_id,*,transfer_db=None,agent_root=None,authority_db=None):
     """Maintenance only after the original partial discount was fully read back."""
     root=Path(root).resolve()
     if not re.fullmatch('[0-9a-f]{64}',request_id) or root.name!=request_id:
@@ -77,8 +77,8 @@ def verify_discount(root,request_id,*,transfer_db=None,agent_root=None):
     from campaign_continuous_execute import validate_request
     validate_request(request)
     with sqlite3.connect((root.parent.parent/'jobs.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
-        row=db.execute('SELECT state FROM continuous_jobs WHERE id=?',(request_id,)).fetchone()
-        if row!=('blocked',) or db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():
+        controller=db.execute('SELECT state,result FROM continuous_jobs WHERE id=?',(request_id,)).fetchone()
+        if not controller or controller[0] not in ('blocked','unknown') or db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():
             raise ValueError('idle_blocked_discount_required')
     with sqlite3.connect((root/'controller.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
         rows=db.execute("SELECT id,step,status,payload_sha FROM continuous_campaign_actions WHERE status<>'done'").fetchall()
@@ -125,8 +125,49 @@ def verify_discount(root,request_id,*,transfer_db=None,agent_root=None):
         raise ValueError('discount_terminal_file_changed')
     refs=[root/'request.json',registered,root/'shared/snapshot.json',folder/'request.json',
           folder/'discount-job.json',folder/'claim.json',terminal_path,Path(feedback['path'])]
+    collision=None
+    if controller[0]=='unknown':
+        collision,extra=discount_observation_collision(root,request_id,folder,jid,result,controller,
+                                                     authority_db=authority_db)
+        refs+=extra
     return dict(schema='campaign_discount_checkpoint_v1',request_id=request_id,action_id=action,
                 export_job_id=None,discount_job_id=jid,read_job_id=audit[0],
                 success=result['success'],failed=result['failed'],transfer_result_sha256=fingerprint(result),
                 references=[dict(path=str(p),sha256=file_sha(p)) for p in refs],
-                platform_write=False,request_changed=False,claims_released=False)
+                platform_write=False,request_changed=False,claims_released=False,local_collision=collision)
+
+
+def discount_observation_collision(root,rid,folder,jid,result,controller,*,authority_db=None):
+    """Prove a local immutable-observation collision happened before reconciliation."""
+    from campaign_continuous_recovery import verified_discount_observation_upgrade
+    expected={'reason':'controller_did_not_produce_terminal_receipt','automatic_retry':False}
+    if controller[0]!='unknown' or json.loads(controller[1])!=expected:
+        raise ValueError('exact_discount_observation_collision_required')
+    audit=root/('discount-terminal-recovery-'+jid+'.json')
+    log=root/('process-discount-terminal-recovery-'+jid+'.log')
+    text=log.read_text(encoding='utf-8');receipt=load(audit)
+    if (not text.rstrip().endswith('ValueError: continuous_evidence_is_immutable')
+            or 'in _recover_finished_phase' not in text or 'in persist' not in text
+            or "reconciled-" not in text or 'discount_reconciliation' in text
+            or receipt.get('request_id')!=rid or receipt.get('job_id')!=jid
+            or receipt.get('write_claims_released') is not False
+            or receipt.get('previous_controller',{}).get('state')!='blocked'
+            or receipt.get('old_result_sha256')!=file_sha(root/'result.json')
+            or (folder/'reconciled-result.json').exists()
+            or (folder/(result['claim']['claim_id']+'-discount-terminal.json')).exists()
+            or (root/'discount-observation-recovery.json').exists()):
+        raise ValueError('discount_reconciliation_may_have_progressed')
+    previous=folder/'reconciled-discount-observation.json'
+    old=load(previous)
+    current=dict(old,result=result)
+    if not verified_discount_observation_upgrade(old,current):
+        raise ValueError('discount_observation_upgrade_not_bound')
+    from campaign_entry_authority import STATE
+    with sqlite3.connect(Path(authority_db or STATE).resolve().as_uri()+'?mode=ro',uri=True) as db:
+        claim=result['claim']['claim_id']
+        binding=db.execute('SELECT transport,state,job_id FROM claim_transports WHERE claim_id=?',(claim,)).fetchone()
+        attempts=db.execute('SELECT status FROM attempts WHERE id LIKE ?',(claim+':%',)).fetchall()
+        if binding!=('dedicated_edge_v1','dispatched_unknown',jid) or not attempts or any(r!=('unknown',) for r in attempts):
+            raise ValueError('discount_authority_already_changed')
+    return dict(reason='verified_local_observation_collision_before_reconciliation',log_sha256=file_sha(log),
+                previous_observation_sha256=file_sha(previous),authority_unchanged=True),[audit,log,previous,root/'result.json']
