@@ -575,6 +575,9 @@ def platform_deduction(o: Order, coef: dict) -> Decimal:
     护栏(2026-06-20): 分期购/部分到账单 实收 远小于 实付, 直接取 实付−实收 会把"未到账分期款"
     误当平台费(实测 5117408713503179541 分期被算成实付58%的扣点, 单笔虚增费用¥3698)。
     故 实付−实收 超过合理扣点上限(实付×8%, 正常平台扣点仅2-4%)时, 判为部分到账, 改用率算法。"""
+    state = getattr(o, "platform_field_state", None) or {}
+    if state.get("platform_fee_basis") == "confirmed_amount" and o.platform_fee is not None:
+        return _d(o.platform_fee)
     paid = _d(o.paid_amount)
     recv = _d(o.shop_received_amount)
     rate = coef["handling_rate"]
