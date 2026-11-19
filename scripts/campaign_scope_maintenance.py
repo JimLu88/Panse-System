@@ -18,6 +18,9 @@ def validate(checkpoint,body):
 
 
 def validate_document(checkpoint,body,doc):
+    if doc.get('schema')=='campaign_run_maintenance_v1':
+        from campaign_run_maintenance import validate_document as validate_run
+        return validate_run(checkpoint,body,doc)
     checkpoint=Path(checkpoint)
     old=load(checkpoint)
     if (doc.get('schema')!='campaign_scope_maintenance_v1' or doc.get('new_release')!=body
