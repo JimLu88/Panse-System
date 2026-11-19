@@ -626,6 +626,7 @@ def reconcile_order_line_delivery(
         return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "no_chat_id"}
     from app.services import factory_quantity_request_service
     factory_quantity_request_service.complete_pending_receipts(db, only_sub_order_nos=only_sub_order_nos)
+    factory_quantity_request_service.remind_pending(db, only_sub_order_nos=only_sub_order_nos)
     sent = line_delivery.sent_line_evidence(db)
     pushed: list[str] = []
     failed: list[dict] = []
@@ -699,7 +700,7 @@ def reconcile_order_line_delivery(
             if any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
                 from app.services import factory_quantity_request_service as quantities
                 line.factory_delivery_state = 'failed'
-                line.factory_delivery_error = '实际成品数量待确认，请回复飞书对应数量卡片并 @机器人'
+                line.factory_delivery_error = '实际成品数量待确认，请点击飞书数量卡片选择并确认数量'
                 db.commit()
                 question = quantities.request_quantity(db, line_id=line.id)
                 failed.append({'order_no': order.order_no, 'sub_order_no': sub_order_no,

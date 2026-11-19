@@ -97,6 +97,8 @@ def test_closeout_projects_even_when_image_held_without_clearing_error(db_sessio
 
 def test_disabled_projection_does_not_claim_synchronized(db_session,monkeypatch):
     from app.services import order_sheet_archive_service as sheets, automation_failure_recorder_service as failures
+    # Isolate the projection caption; report audit is covered by its own suite.
+    monkeypatch.setattr('app.services.order_post_push_audit.attach', lambda *a, **kw: {'ok': True})
     monkeypatch.setattr(sheets,'reconcile_pending_delivery',lambda *a,**kw:{})
     monkeypatch.setattr(d,'sync_if_enabled',lambda db:{'ok':True,'skipped':'auto_disabled'})
     captured=[]
