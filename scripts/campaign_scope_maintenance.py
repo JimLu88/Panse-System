@@ -44,10 +44,14 @@ def validate_document(checkpoint,body,doc):
     return doc
 
 
-def approve(root,request_id,review_path):
+def approve(root,request_id,review_path,*,phase='scope'):
     from campaign_execution_release import sources
     root=Path(root);pin=root/'shared/execution-release.json';old=load(pin)
-    proof=verify(root,request_id)
+    if phase=='scope':proof=verify(root,request_id)
+    elif phase=='discount':
+        from campaign_scope_checkpoint import verify_discount
+        proof=verify_discount(root,request_id)
+    else:raise ValueError('unsupported_maintenance_checkpoint')
     review_path=Path(review_path).resolve(strict=True);review=load(review_path)
     current=sources();new=dict(schema='campaign_execution_release_v1',release_id=fingerprint(current),
                               source_hashes=current,business_identity_changed=False)

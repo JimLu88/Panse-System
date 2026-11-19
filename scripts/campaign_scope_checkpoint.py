@@ -61,6 +61,72 @@ def verify(root,request_id,*,transfer_db=None,artifact_roots=None):
 
 
 def check_references(proof):
-    if proof.get('schema')!='campaign_scope_checkpoint_v1':raise ValueError('scope_checkpoint_schema_changed')
+    if proof.get('schema') not in ('campaign_scope_checkpoint_v1','campaign_discount_checkpoint_v1'):
+        raise ValueError('scope_checkpoint_schema_changed')
     for ref in proof['references']:
         if file_sha(ref['path'])!=ref['sha256']:raise ValueError('scope_checkpoint_evidence_changed')
+
+
+def verify_discount(root,request_id,*,transfer_db=None,agent_root=None):
+    """Maintenance only after the original partial discount was fully read back."""
+    root=Path(root).resolve()
+    if not re.fullmatch('[0-9a-f]{64}',request_id) or root.name!=request_id:
+        raise ValueError('exact_discount_request_required')
+    request=load(root/'request.json');registered=root.parent.parent/'requests'/(request_id+'.json')
+    if fingerprint(request)!=request_id or load(registered)!=request:raise ValueError('original_request_changed')
+    from campaign_continuous_execute import validate_request
+    validate_request(request)
+    with sqlite3.connect((root.parent.parent/'jobs.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
+        row=db.execute('SELECT state FROM continuous_jobs WHERE id=?',(request_id,)).fetchone()
+        if row!=('blocked',) or db.execute("SELECT 1 FROM continuous_jobs WHERE state='running'").fetchone():
+            raise ValueError('idle_blocked_discount_required')
+    with sqlite3.connect((root/'controller.sqlite3').as_uri()+'?mode=ro',uri=True) as db:
+        rows=db.execute("SELECT id,step,status,payload_sha FROM continuous_campaign_actions WHERE status<>'done'").fetchall()
+        if db.execute('SELECT 1 FROM continuous_campaign_runs WHERE owner IS NOT NULL').fetchone():
+            raise ValueError('discount_controller_owner_active')
+    if len(rows)!=1 or rows[0][1:3]!=('discount','unknown'):
+        raise ValueError('one_original_unreconciled_discount_required')
+    action,_,_,sha=rows[0];folders=list((root/'segments').glob('*/actions/'+action))
+    if len(folders)!=1:raise ValueError('original_discount_folder_not_unique')
+    folder=folders[0];saved=load(folder/'request.json')
+    if saved.get('step')!='discount' or fingerprint(saved['payload'])!=sha:
+        raise ValueError('original_discount_payload_changed')
+    ref=load(folder/'discount-job.json');claim=load(folder/'claim.json')['claim_id']
+    jid=fingerprint(['discount',claim])
+    if ref!={'step':'discount','job_id':jid}:raise ValueError('original_discount_job_changed')
+    agent=Path(agent_root or 'D:/AI/畔色ERP系统/Web-Agent程序');database=Path(transfer_db or agent/'data/output/campaign-transfers/jobs.sqlite')
+    with sqlite3.connect(database.resolve().as_uri()+'?mode=ro',uri=True) as db:
+        row=db.execute('SELECT state,operation,result FROM campaign_transfer_jobs WHERE id=?',(jid,)).fetchone()
+        audit=db.execute('SELECT read_job_id,previous_result,new_result FROM campaign_discount_terminal_recovery WHERE id=?',(jid,)).fetchone()
+        if not row or row[:2]!=('finished','discount') or not audit:
+            raise ValueError('original_discount_verified_readback_required')
+        result=json.loads(row[2]);prior=json.loads(audit[1])
+        if result!=json.loads(audit[2]) or result.get('state')!='verified_partial_offer_terminal':
+            raise ValueError('audited_discount_readback_changed')
+        if (result.get('claim')!=prior.get('claim') or result.get('claim',{}).get('claim_id')!=claim
+                or any(result.get(k)!=prior.get(k) for k in ('success','failed','start','end'))):
+            raise ValueError('discount_business_identity_changed')
+        read=db.execute('SELECT state,operation,result FROM campaign_transfer_jobs WHERE id=?',(audit[0],)).fetchone()
+        if not read or read[:2]!=('finished','discount_terminal_recover'):
+            raise ValueError('finished_discount_read_job_required')
+        reading=json.loads(read[2]);terminal=reading.get('terminal') or {}
+        if reading.get('source_job_id')!=jid or dict(terminal,recording=reading.get('recording'))!=result:
+            raise ValueError('discount_read_job_terminal_changed')
+    import sys
+    if str(agent) not in sys.path:sys.path.insert(0,str(agent))
+    from app.engine.campaign_discount_terminal_recovery import check_rows
+    check_rows(result['readbacks'],dict(result['claim'],offer_id=result['offer_id'],success=result['success']),result['failure_rows'])
+    feedback=result['feedback']
+    if file_sha(feedback['path'])!=feedback['sha256']:raise ValueError('discount_report_bytes_changed')
+    terminal_path=Path(terminal['evidence_path']).resolve(strict=True)
+    if not terminal_path.is_relative_to((agent/'data/output/campaign-transfers'/audit[0]).resolve()):
+        raise ValueError('discount_terminal_outside_original_read_job')
+    if load(terminal_path)!={k:v for k,v in terminal.items() if k!='evidence_path'}:
+        raise ValueError('discount_terminal_file_changed')
+    refs=[root/'request.json',registered,root/'shared/snapshot.json',folder/'request.json',
+          folder/'discount-job.json',folder/'claim.json',terminal_path,Path(feedback['path'])]
+    return dict(schema='campaign_discount_checkpoint_v1',request_id=request_id,action_id=action,
+                export_job_id=None,discount_job_id=jid,read_job_id=audit[0],
+                success=result['success'],failed=result['failed'],transfer_result_sha256=fingerprint(result),
+                references=[dict(path=str(p),sha256=file_sha(p)) for p in refs],
+                platform_write=False,request_changed=False,claims_released=False)
