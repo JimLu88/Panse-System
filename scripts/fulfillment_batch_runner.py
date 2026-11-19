@@ -123,8 +123,9 @@ class ErpClient:
 # ==========================================
 
 class TaobaoConsignAutomation:
-    # Must remain false until authorized site inspection verifies identity,
-    # upload acceptance binding and per-order logistics readback together.
+    # A visible import dialog or historical shipment is not upload acceptance.
+    # Keep disabled until the actual upload/task binding and per-order state
+    # sources have been independently verified through the permitted surface.
     live_adapter_verified = False
     def __init__(self, cdp_url: str):
         self.cdp_url = cdp_url
@@ -229,15 +230,26 @@ class TaobaoConsignAutomation:
                     continue
                 base_fields = {f.get('name'): f.get('value') for f in pkg.get('baseInfo', {}).get('fields', [])
                                if isinstance(f, dict)}
-                # These are candidate field names, not a verified live schema.
-                # Missing platform identities/status must never be filled from the request.
                 actual_tid = str(base_fields.get('tradeId') or pkg.get('tradeId') or '').strip()
-                trade_status = base_fields.get('tradeStatus') or pkg.get('tradeStatus')
-                seller_confirm = base_fields.get('sellerConfirm', pkg.get('sellerConfirm'))
+
+                # A timestamp (including '--') cannot prove current trade
+                # status or seller confirmation. Preserve it in raw_order;
+                # missing facts must remain unknown, never synthesized.
+                statuses = [source['tradeStatus'] for source in (pkg, base_fields)
+                            if 'tradeStatus' in source]
+                confirmations = [source['sellerConfirm'] for source in (pkg, base_fields)
+                                 if 'sellerConfirm' in source]
+                if (not statuses or any(value != statuses[0] for value in statuses)
+                        or not confirmations or any(value is not True for value in confirmations)):
+                    continue
+                trade_status = statuses[0]
+                seller_confirm = True
+
                 if (actual_tid != order_no
                         or trade_status not in ('WAIT_BUYER_CONFIRM_GOODS', 'TRADE_FINISHED')
                         or seller_confirm is not True):
                     continue
+
                 logis_infos = pkg.get("logisticsInfos") or []
                 carrier_val = None
                 tracking_val = None
@@ -251,16 +263,16 @@ class TaobaoConsignAutomation:
 
                 if carrier_val and tracking_val:
                     if carrier_val == row["carrier"] and tracking_val == row["tracking_no"]:
-                        matching_pkgs.append((pkg, carrier_val, tracking_val))
+                        matching_pkgs.append((pkg, carrier_val, tracking_val, seller_confirm, trade_status))
 
             if len(matching_pkgs) != 1:
                 continue
 
-            pkg, matched_carrier, matched_tracking = matching_pkgs[0]
+            pkg, matched_carrier, matched_tracking, matched_confirm, matched_status = matching_pkgs[0]
             base_fields = {f.get("name"): f.get("value") for f in pkg.get("baseInfo", {}).get("fields", [])}
             actual_tid = str(base_fields.get('tradeId') or pkg.get('tradeId') or '').strip()
-            trade_status = base_fields.get('tradeStatus') or pkg.get('tradeStatus')
-            seller_confirm = base_fields.get('sellerConfirm', pkg.get('sellerConfirm'))
+            trade_status = matched_status
+            seller_confirm = matched_confirm
 
             children = pkg.get("children") or []
             sub_order_nos = [str(c.get("orderGoodsId")).strip() for c in children if c.get("orderGoodsId")]
@@ -418,14 +430,17 @@ class TaobaoConsignAutomation:
 
     async def fetch_error_details(self, task_id: str) -> dict:
         """读取任务的失败订单与具体原因"""
+        enc_id = urllib.parse.quote(str(task_id), safe='')
         res = await self.page.evaluate(f"""async () => {{
             try {{
-                const r = await fetch('https://wuliu2.taobao.com/gei/import/task/errors/{task_id}', {{credentials: 'include'}});
+                const r = await fetch('https://wuliu2.taobao.com/gei/import/task/errors/{enc_id}', {{credentials: 'include'}});
                 return await r.json();
             }} catch(e) {{
                 return {{error: e.toString()}};
             }}
         }}""")
+        if isinstance(res, dict) and isinstance(res.get("data"), dict) and "errors" in res["data"]:
+            return {"success": res.get("success") is True, "data": res["data"]["errors"]}
         return res
 
 

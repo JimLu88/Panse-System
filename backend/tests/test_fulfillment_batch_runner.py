@@ -431,3 +431,120 @@ async def test_read_shipping_records_mismatched_children_stays_unknown():
     results, batch_st = reconcile([row], task, {}, proofs, expected_task_id="T1")
     assert batch_st == "unknown"
     assert results[row["order_no"]]["status"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_read_shipping_records_timestamp_only_schema_stays_unknown():
+    from app.services.fulfillment_receipts import reconcile
+    tb = TaobaoConsignAutomation("mock-cdp")
+    tb.inspect_shop = AsyncMock(return_value={
+        "shopName": "畔色木作", "shopId": "test-shop", "userid": "test-user"
+    })
+    row = {
+        "order_no": "9999999999999991",
+        "shop": "畔色木作",
+        "carrier": "中通快运",
+        "tracking_no": "TEST001",
+        "sub_order_nos": ["9999999999999992", "9999999999999993"]
+    }
+    tb.page = AsyncMock()
+    # Reported platform shape; no current tradeStatus/sellerConfirm facts.
+    # This fixture is not independent live-platform acceptance evidence.
+    tb.page.evaluate.return_value = {
+        "success": True,
+        "data": [{
+            "baseInfo": {
+                "fields": [
+                    {"name": "orderId", "value": "123456789012"},
+                    {"name": "tradeId", "value": "9999999999999991"},
+                    {"name": "orderCode", "value": "LP00123456789012"}
+                ],
+                "left": [{"label": "订单编号", "value": "9999999999999991"}],
+                "right": [
+                    {"label": "发货时间", "value": "2026-11-16 11:25:33"},
+                    {"label": "支付时间", "value": "2026-11-11 22:54:22"}
+                ]
+            },
+            "logisticsInfos": [
+                {"label": "中通快运", "value": "TEST001"},
+                {"label": "发货方式", "value": "自己联系物流"}
+            ],
+            "children": [
+                {"orderGoodsId": "9999999999999992", "orderGoodsName": "合成测试商品"},
+                {"orderGoodsId": "9999999999999993", "orderGoodsName": "合成测试商品"}
+            ]
+        }]
+    }
+    proofs = await tb.read_shipping_records([row])
+    assert proofs == []
+
+    task = {"taskId": "GEI@consign2_batch_offline_consign@123", "taskStatus": "FINISHED", "successCount": 1, "failCount": 0}
+    results, batch_st = reconcile([row], task, {}, proofs, expected_task_id="GEI@consign2_batch_offline_consign@123")
+    assert batch_st == "unknown"
+    assert results[row["order_no"]]["status"] == "unknown"
+
+
+@pytest.mark.parametrize('ship_time', ['--', '未发货', '2026-11-16 11:25:33'])
+@pytest.mark.parametrize('missing', ['status', 'confirmation', 'both'])
+@pytest.mark.asyncio
+async def test_timestamp_never_supplies_missing_shipping_facts(ship_time, missing):
+    tb = TaobaoConsignAutomation('offline-only')
+    tb.inspect_shop = AsyncMock(return_value={'shopName': 'TEST'})
+    row = {'order_no': '9999999999999991', 'shop': 'TEST', 'carrier': 'TEST',
+           'tracking_no': 'TEST001', 'sub_order_nos': ['synthetic-child']}
+    pkg = {'tradeId': row['order_no'], 'tradeStatus': 'WAIT_BUYER_CONFIRM_GOODS',
+           'sellerConfirm': True, 'baseInfo': {'right': [{'label': '发货时间', 'value': ship_time}]},
+           'logisticsInfos': [{'label': 'TEST', 'value': 'TEST001'}],
+           'children': [{'orderGoodsId': 'synthetic-child'}]}
+    if missing in ('status', 'both'):
+        pkg.pop('tradeStatus')
+    if missing in ('confirmation', 'both'):
+        pkg.pop('sellerConfirm')
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {'success': True, 'data': [pkg]}
+    proofs = await tb.read_shipping_records([row])
+    assert proofs == []
+    task = {'taskId': 'T1', 'taskStatus': 'FINISHED', 'successCount': 1, 'failCount': 0}
+    results, state = reconcile_order_results([row], task, {}, proofs, expected_task_id='T1')
+    assert state == 'unknown'
+    assert results[row['order_no']]['status'] == 'unknown'
+
+
+@pytest.mark.parametrize('field,value', [('tradeStatus', 'WAIT_SELLER_SEND_GOODS'),
+                                        ('sellerConfirm', False), ('sellerConfirm', 'true')])
+@pytest.mark.asyncio
+async def test_reader_conflicting_shipping_sources_stay_unknown(field, value):
+    tb = TaobaoConsignAutomation('offline-only')
+    tb.inspect_shop = AsyncMock(return_value={'shopName': 'TEST'})
+    row = {'order_no': '9999999999999991', 'carrier': 'TEST', 'tracking_no': 'TEST001'}
+    pkg = {'tradeId': row['order_no'], 'tradeStatus': 'WAIT_BUYER_CONFIRM_GOODS',
+           'sellerConfirm': True, 'baseInfo': {'fields': [{'name': field, 'value': value}]},
+           'logisticsInfos': [{'label': 'TEST', 'value': 'TEST001'}]}
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {'success': True, 'data': [pkg]}
+    assert await tb.read_shipping_records([row]) == []
+
+
+@pytest.mark.asyncio
+async def test_unaccepted_adapter_cannot_upload():
+    tb = TaobaoConsignAutomation('offline-only')
+    tb.page = AsyncMock()
+    assert tb.live_adapter_verified is False
+    with pytest.raises(RuntimeError, match='尚未经过真实页面验收'):
+        await tb.upload_and_submit('unused.xlsx')
+    tb.page.locator.assert_not_called()
+
+
+@pytest.mark.parametrize('success', [True, False, None, 'true'])
+@pytest.mark.asyncio
+async def test_nested_failure_details_require_explicit_success(success):
+    tb = TaobaoConsignAutomation('offline-only')
+    tb.page = AsyncMock()
+    errors = [{'orderNo': 'synthetic-order', 'errorMessage': 'rejected'}]
+    response = {'data': {'errors': errors}}
+    if success is not None:
+        response['success'] = success
+    tb.page.evaluate.return_value = response
+    result = await tb.fetch_error_details('task/one')
+    assert result == {'success': success is True, 'data': errors}
+    assert 'task%2Fone' in tb.page.evaluate.call_args.args[0]
