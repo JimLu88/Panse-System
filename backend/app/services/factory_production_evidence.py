@@ -1,5 +1,6 @@
 """Explicit production facts; never infer physical quantity from money units."""
 import json
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from sqlalchemy import select
@@ -7,6 +8,64 @@ from app.models.order import Order, OrderDetail
 from app.models.settings import SystemSetting
 
 DIMENSION_REGISTRY = Path(__file__).parents[1] / 'assets' / 'factory_verified_dimensions.json'
+LOW_VALUE_PREFIX = 'factory_low_value_physical_order:'
+
+
+def _low_value_identity(db, order):
+    """An operator exception belongs to one unchanged, imported physical line."""
+    if not getattr(order, 'id', None) or not getattr(order, 'order_no', None):
+        return None
+    rows = db.scalars(select(OrderDetail).where(
+        OrderDetail.order_no == order.order_no, OrderDetail.source == 'import',
+        OrderDetail.sub_order_no.isnot(None), OrderDetail.sub_order_no != '')).all()
+    if len(rows) != 1 or not rows[0].sku_code or not rows[0].qty or rows[0].qty <= 0:
+        return None
+    line = rows[0]
+    amount = order.paid_amount or order.buyer_payable_amount or 0
+    return {'order_id': order.id, 'order_no': order.order_no, 'line_id': line.id,
+            'sub_order_no': line.sub_order_no, 'sku_code': line.sku_code, 'qty': line.qty,
+            'amount': str(Decimal(amount).quantize(Decimal('0.01')))}
+
+
+def low_value_physical_order_confirmed(db, order):
+    if not getattr(order, 'id', None) or not getattr(order, 'order_no', None):
+        return False
+    key = LOW_VALUE_PREFIX + str(getattr(order, 'order_no', '') or '')
+    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+    if not row:
+        return False
+    try:
+        record = json.loads(row.value_plain)
+        return bool(isinstance(record, dict) and record.get('schema') == 'low-value-physical-order-v1'
+                    and record.get('actor') and record.get('evidence_ref')
+                    and record.get('identity') is not None
+                    and record['identity'] == _low_value_identity(db, order))
+    except (ValueError, TypeError):
+        return False
+
+
+def confirm_low_value_physical_order(db, *, order_no, expected_sku, expected_qty,
+                                   expected_amount, actor, evidence_ref):
+    """Explicit operator instruction only; never changes payment or global gates."""
+    order = db.scalar(select(Order).where(Order.order_no == order_no).with_for_update())
+    identity = _low_value_identity(db, order) if order else None
+    if (not identity or not actor or not evidence_ref
+            or order.status not in ('paid', 'production')
+            or identity['sku_code'] != expected_sku or identity['qty'] != expected_qty
+            or identity['amount'] != str(Decimal(expected_amount).quantize(Decimal('0.01')))):
+        raise ValueError('实物订单身份或金额变化，不能沿用放行确认')
+    key = LOW_VALUE_PREFIX + order_no
+    old = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
+    record = {'schema': 'low-value-physical-order-v1', 'identity': identity,
+              'actor': actor, 'evidence_ref': evidence_ref}
+    if old:
+        if json.loads(old.value_plain) != record:
+            raise ValueError('已有不同放行确认，不能覆盖')
+        return record
+    db.add(SystemSetting(key=key, value_plain=json.dumps(record, ensure_ascii=False),
+                         is_secret=False, description='用户确认低金额实物订单，仅豁免金额推单门槛'))
+    db.commit()
+    return record
 
 
 def purchase_quantity_label(qty):

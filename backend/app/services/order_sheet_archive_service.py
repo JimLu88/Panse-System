@@ -1152,6 +1152,9 @@ def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
     thr = _push_min_amount(db)
     amt = float(getattr(o, "paid_amount", 0) or 0) or float(getattr(o, "buyer_payable_amount", 0) or 0)
     if thr > 0 and 0 < amt < thr:
+        from app.services.factory_production_evidence import low_value_physical_order_confirmed
+        if low_value_physical_order_confirmed(db, o):
+            return False, ""
         return True, f"金额¥{amt:.0f} < 门槛¥{thr:.0f}"
     return False, ""
 

@@ -222,6 +222,13 @@ def _run(db, *, batch_id, only_order_nos, only_sub_order_nos, file_ids, repair, 
             excluded.append({**info, "reason": "historical_baseline"})
             continue
         if not delivery.line_is_factory_eligible(db, line, order):
+            from app.services import order_flags
+            topup, cause = sheets._is_parts_topup(db, order)
+            if (topup and cause.startswith('金额') and order.status in ('paid', 'production')
+                    and not order.is_refill and not order_flags.is_remote(order)
+                    and not delivery.line_is_refunded(line)):
+                remaining.append({**info, 'reason': 'low_value_order_needs_review', 'detail': cause})
+                continue
             excluded.append({**info, "reason": "current_order_not_producible"})
             continue
         if sub not in sent and parent in legacy_parents:
@@ -340,6 +347,7 @@ def attach(db, result, *, batch_id=None, only_order_nos=None, only_sub_order_nos
             code = item.get("reason") or ",".join(item.get("reasons") or [])
             reason = {
                 "source_erp_conflict": "ERP商品或购买数量与报表不一致",
+                "low_value_order_needs_review": "实物商品被低金额门槛拦截，需核对后单独放行",
                 "erp_missing": "ERP缺少订单或子单",
                 "legacy_delivery_identity_unresolved": "旧图无法唯一对应子单，需核对",
                 "delivery_uncertain_no_replay": "此前发送结果未知，不能重复发",
