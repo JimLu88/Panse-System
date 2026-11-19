@@ -97,6 +97,7 @@ class FactorySheet:
     sku_image: Optional[str] = None
     purchase_qty: Optional[int] = None
     quantity_confirmation: Optional[dict] = None
+    reference_image_notice: Optional[str] = None
 
     # 主材 / 辅材 (图4, 2026-06-12): 取产品总表 main_material / aux_material, 下单图先主材后辅材
     main_material: Optional[str] = None
@@ -245,6 +246,8 @@ def build(
     if (order.platform_field_state or {}).get('shipping_only'):
         sheet.warnings.append(FactorySheetWarning(code='sales_detail_missing', severity='error',
             message='仅有发货资料，缺真实子单及购买数量，禁止据此生产'))
+    from app.services import factory_linked_topup_service
+    factory_linked_topup_service.apply_to_sheet(db, order, sheet)
     if address_pending_for_production:
         sheet.ship_date = None
         sheet.ship_eta_auto = False
@@ -330,6 +333,8 @@ def build_for_order_line(
                 message='原购买数量缺失或无效，实际成品数量待飞书确认；不能默认按1件生产',
             ))
     # 图片上同时保留主订单和子订单，便于回查，不改变淘宝主订单的客服口径。
+    from app.services import factory_linked_topup_service
+    factory_linked_topup_service.apply_to_sheet(db, order, sheet, detail.id)
     if detail.sub_order_no:
         sheet.order_no = f"{order.order_no} / 子单 {detail.sub_order_no}"
     if address_pending_for_production:

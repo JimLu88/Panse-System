@@ -214,8 +214,16 @@ def audit_sent_line_content(lines: list[OrderDetail], sent: dict[str, ImportedFi
             continue
         wrong = []
         confirmation = snapshot.get('quantity_confirmation')
+        linked_confirmation = (isinstance(confirmation, dict)
+            and confirmation.get('schema') == 'factory-linked-topup-v1'
+            and confirmation.get('physical_qty') == line.qty == 1
+            and isinstance(confirmation.get('binding_sha256'), str)
+            and len(confirmation['binding_sha256']) == 64
+            and bool(confirmation.get('topup_order_no'))
+            and confirmation['topup_order_no'] != line.order_no
+            and set(confirmation.get('dimensions_mm') or {}) == {'length', 'depth', 'height'})
         valid_confirmation = (isinstance(confirmation, dict)
-            and confirmation.get('schema') == 'factory-quantity-v1'
+            and (confirmation.get('schema') == 'factory-quantity-v1' or linked_confirmation)
             and confirmation.get('identity', {}).get('line_id') == line.id
             and confirmation.get('identity', {}).get('order_no') == line.order_no
             and confirmation.get('identity', {}).get('sub_order_no') == line.sub_order_no

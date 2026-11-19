@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('order.linked_topup','实物主单与补差单精确生产关联','order','factory_linked_topup_main:<order_no> / FactoryOrder.same_order_topup','services/factory_linked_topup_service.py','def confirm','沿用已核实账务关系；仅一件主单的定制尺寸及数量证据，事实变化即失效，不改价格或交易备注'),
     {'id':'shipping.batch','label':'官方批量发货表','domain':'shipping',
      'field':'FulfillmentBatch.rows/file_sha256 + FulfillmentIntake.batch_id/review_evidence/order_claim/parcel_claim',
      'sources':[source('services/fulfillment_batch_service.py','def prepare'), source('models/fulfillment_intake.py','class FulfillmentBatch'), source('api/shipments.py','def prepare_batch'), source('services/fulfillment_receipts.py','def reconcile')],
@@ -239,6 +240,10 @@ EDGES = [
     edge('campaign.window','campaign.files','绑定模板与窗口','当次官方身份','不复用旧已填数据','services/campaign_workflow_service.py',evidence='review'),
     edge('campaign.files','campaign.receipt','固定程序提交并取终态','一次claim且非成功/未知','上传成功不是报名成功','services/campaign_workflow_service.py',evidence='review'),
     edge('order.file','order.parent','导入母单字段','原始导入档案','缺列不清空现有事实','services/taobao_order_import.py'),
+    edge('order.child','order.linked_topup','显式核对主单与费用单','唯一子单、SKU、数量、金额、客户和备注指纹匹配已有账务关联','仅一张实物；退款、远期、未知发送及重复占用不能放行','services/factory_linked_topup_service.py','def confirm'),
+    edge('order.linked_topup','factory.receipt','豁免主单补差备注过滤','明确有效绑定且其余推单条件满足','补差单始终不独立生产，绑定失效保持待核对','services/order_sheet_archive_service.py','def _is_parts_topup'),
+    edge('order.linked_topup','factory.sheet','应用本单定制尺寸','精确主单及子单身份有效','标准图仅结构材质参考；失效不回退标准尺寸，原SKU及财务不改','services/factory_linked_topup_service.py','def apply_to_sheet'),
+    edge('order.post_audit','order.linked_topup','保留误过滤实物主单待核对','标准实物被补差备注过滤或定制绑定失效','不能静默排除后报告齐全；未经明确确认不自动推单','services/order_post_push_audit.py','def _run'),
     edge('order.child','order.low_value','记录低金额实物订单确认','唯一导入子单和当前SKU、数量、金额匹配','不继承其他订单；身份改变后原确认失效','services/factory_production_evidence.py','def confirm_low_value_physical_order'),
     edge('order.low_value','factory.receipt','仅豁免金额推单门槛','有明确确认记录且事实未改变','补差备注、退款、远期、数量和防重复发送门保持有效','services/order_sheet_archive_service.py','def _is_parts_topup'),
     edge('order.post_audit','order.low_value','低金额实物列入待核对','报表有实体SKU且仅因金额被过滤','不得当作齐全；未明确确认不自动发图','services/order_post_push_audit.py','def _run'),

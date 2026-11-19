@@ -266,6 +266,9 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
              else _gallery_data_uri(getattr(sheet, "gallery_main_image", None)))
     _img = _sku or _main
     pic_html = f"<img src='{e(_img)}'>" if _img else "<div class='noimg'>无产品图纸</div>"
+    if getattr(sheet, 'reference_image_notice', None):
+        pic_html = ("<div style='font-size:26px;color:#dc2626;font-weight:800;padding:16px'>"
+                    + e(sheet.reference_image_notice) + '</div>' + pic_html)
     # 敲章: 加急 + 定制(自动识别 is_custom_variant)
     stamps = ""
     if sheet.urgent:
@@ -504,7 +507,7 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
-    if any(getattr(w, 'code', '') in {'production_quantity_unverified', 'sales_detail_missing'} for w in getattr(sheet, 'warnings', [])):
+    if any(getattr(w, 'code', '') in {'production_quantity_unverified', 'sales_detail_missing', 'linked_topup_binding_stale'} for w in getattr(sheet, 'warnings', [])):
         raise ValueError('缺真实销售明细或已核成品件数，停止自动生产发送，待补齐来源或确认数量')
     return _html_to_png(render_html(sheet), width=1684)
 
@@ -1145,6 +1148,16 @@ def _push_min_amount(db: Session) -> float:
 
 def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
     """是否定制补差/加价单(不推工厂)。返回 (是否, 原因)。命中备注关键词 或 金额<阈值。"""
+    from app.services import factory_linked_topup_service as linked
+    no = getattr(o, 'order_no', None)
+    if no and linked.topup_member(db, no):
+        return True, '同一主单的补差费用，不独立生产'
+    if no:
+        binding_state = linked.assessment(db, no)['state']
+        if binding_state == 'valid':
+            return False, ''
+        if binding_state == 'stale':
+            return True, '定制主单关联已变化，须重新确认，不能回退标准尺寸'
     text = " ".join(str(getattr(o, f, "") or "") for f in
                     ("remark", "seller_memo", "production_note", "buyer_message"))
     for k in _PARTS_TOPUP_KEYWORDS:
