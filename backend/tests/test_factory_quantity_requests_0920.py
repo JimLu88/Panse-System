@@ -439,3 +439,59 @@ def test_sdk_routes_quantity_selection_and_acknowledges(flow,monkeypatch):
     assert calls[0]['target']==q.run_card_action
     assert calls[0]['args'][0]['_factory_forward_trusted'] is True
     assert calls[0]['args'][0]['action']['option']=='2'
+
+
+def expired_original(f, monkeypatch):
+    def patch(db, mid, card):
+        if mid == 'CARD':
+            raise q.feishu_client.FeishuError('older than fourteen days', code=230031)
+        f.calls['patches'].append((mid, card))
+    monkeypatch.setattr(q.feishu_client, 'patch_card', patch)
+
+
+def test_expired_confirmed_card_gets_one_status_reply_without_image_replay(flow, monkeypatch):
+    f=flow;ask(f)
+    assert q.handle_card(f.db,card_event(f))['state']=='sent'
+    expired_original(f,monkeypatch)
+    replies=[]
+    monkeypatch.setattr(q.feishu_client,'reply_card',lambda db,mid,card: replies.append((mid,card)) or {'message_id':'STATUS'})
+    q.refresh_cards(f.db,f.line.id)
+    q.refresh_cards(f.db,f.line.id)
+    assert len(replies)==1 and replies[0][1]['header']['template']=='green'
+    assert len(f.calls['images'])==1
+    record=q._read(q._row(f.db,q.PREFIX+str(f.line.id)))
+    assert not record['card_sync_pending'] and 'STATUS' in q._card_ids(record)
+    assert q._row(f.db,q.CARD_PREFIX+'STATUS').value_plain==str(f.line.id)
+
+
+def test_expired_card_status_reply_unknown_is_never_replayed(flow, monkeypatch):
+    f=flow;ask(f);expired_original(f,monkeypatch)
+    calls=[]
+    def timeout(*args):calls.append(1);raise TimeoutError()
+    monkeypatch.setattr(q.feishu_client,'reply_card',timeout)
+    q.refresh_cards(f.db,f.line.id)
+    q.refresh_cards(f.db,f.line.id)
+    assert calls==[1]
+    record=q._read(q._row(f.db,q.PREFIX+str(f.line.id)))
+    assert record['card_sync_pending'] and record['expired_card_replacements']['CARD']['state']=='unknown'
+
+
+def test_expired_pending_card_can_be_replaced_then_confirmed(flow, monkeypatch):
+    f=flow;ask(f);expired_original(f,monkeypatch)
+    replies=[]
+    monkeypatch.setattr(q.feishu_client,'reply_card',lambda db,mid,card: replies.append(card) or {'message_id':'STATUS'})
+    assert q.handle_card(f.db,card_event(f,op='factory_quantity_choose'))['state']=='replacement_card'
+    assert '选择并确认数量' in json.dumps(replies[0],ensure_ascii=False)
+    assert q.handle_card(f.db,card_event(f,mid='STATUS'))['state']=='sent'
+    assert len(f.calls['images'])==1
+    record=q._read(q._row(f.db,q.PREFIX+str(f.line.id)))
+    assert record['expired_card_replacements']=={'CARD':{'state':'sent','message_id':'STATUS'}}
+    assert sum('选择并确认数量' in json.dumps(c,ensure_ascii=False) for c in replies)==1
+
+
+def test_held_card_does_not_ask_for_another_confirmation(flow):
+    f=flow;ask(f)
+    record=q._read(q._row(f.db,q.PREFIX+str(f.line.id)));record['state']='held'
+    card=q.question_card(record)
+    assert card['header']['template']=='grey' and '旧卡已停用' in card['header']['title']['content']
+    assert 'actions' not in json.dumps(card)

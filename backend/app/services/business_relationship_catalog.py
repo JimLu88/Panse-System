@@ -92,7 +92,7 @@ NODES = [
     node('order.refund','子单关闭与退款','order','OrderDetail.line_status / refund_status','services/order_line_delivery_service.py'),
     node('order.notes','备注及身份版本','order','Order.buyer_message / remark / seller_memo / production_note','services/factory_production_evidence.py','def _identity'),
     node('order.customer','客户和收货信息','order','Customer / Order.customer_address','models/customer.py'),
-    node('quantity.card','数量询问卡','quantity','factory_quantity_request:<line_id>','services/factory_quantity_request_service.py','def request_quantity'),
+    node('quantity.card','数量询问卡','quantity','factory_quantity_request:<line_id>','services/factory_quantity_request_service.py','def request_quantity','超过飞书14天更新期限时追加一次状态回执；先持久占位，未知不重发；不重复发生产图。'),
     node('quantity.action','数量卡选择确认','quantity','card message / revision / operator','services/factory_quantity_request_service.py','def handle_card','仅可信回调、当前卡片及订单身份；立即更新确认状态，正式图沿原防重链处理。'),
     node('quantity.reminder','未确认数量再次提醒','quantity','last_reminder_day / reminder_state','services/factory_quantity_request_service.py','def remind_pending','普通推单时扫描全部待确认卡，同一北京时间日期一次；未知发送不重放，已确认/取消/退款不提醒。'),
     node('quantity.reply','真实回复与身份核验','quantity','handle_reply','services/factory_quantity_request_service.py','def handle_reply'),

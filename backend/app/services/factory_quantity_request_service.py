@@ -51,13 +51,45 @@ def _day():
 
 def _card_ids(record):
     return list(dict.fromkeys([m for m in [record.get('card_message_id'),
-        *(record.get('reminder_message_ids') or [])] if m]))
+        *(record.get('reminder_message_ids') or []),
+        *(v.get('message_id') for v in (record.get('expired_card_replacements') or {}).values())] if m]))
+
+
+def _replace_expired_card(db, line_id, message_id):
+    """Feishu forbids edits after 14 days. Append one status card, never an image."""
+    row = _row(db, PREFIX + str(line_id), lock=True)
+    record = _read(row)
+    replacements = record.setdefault('expired_card_replacements', {})
+    if message_id in replacements:
+        db.rollback()
+        return replacements[message_id].get('state') == 'sent'
+    replacements[message_id] = {'state': 'sending', 'claimed_at': _now()}
+    _save(db, row, record)
+    try:
+        result = feishu_client.reply_card(db, message_id, question_card(record)) or {}
+        mid = result.get('message_id') or (result.get('message') or {}).get('message_id')
+        if not mid:
+            raise RuntimeError('missing_replacement_card_message_id')
+        row = _row(db, PREFIX + str(line_id), lock=True)
+        latest = _read(row)
+        latest['expired_card_replacements'][message_id] = {'state': 'sent', 'message_id': mid}
+        db.add(SystemSetting(key=CARD_PREFIX + mid, value_plain=str(line_id), is_secret=False))
+        _save(db, row, latest)
+        return True
+    except Exception as exc:
+        db.rollback()
+        row = _row(db, PREFIX + str(line_id), lock=True)
+        latest = _read(row)
+        latest['expired_card_replacements'][message_id] = {'state': 'unknown', 'error_type': type(exc).__name__}
+        _save(db, row, latest)
+        return False
 
 
 def question_card(record, *, status=None, choosing=False):
     confirmed = bool(record.get('physical_qty') and
                      (record.get('reply_message_id') or record.get('confirmation_ref')))
-    title = '已确认数量' if confirmed else '待确认数量'
+    held = record.get('state') == 'held' and not confirmed
+    title = '已确认数量' if confirmed else '旧卡已停用' if held else '待确认数量'
     state = status or ('已确认数量，正式图已发送' if record.get('state') == 'sent' else
                        '已确认数量，正式图待处理' if confirmed else
                        '订单资料已变化，请核对当前订单；本卡片已停用' if record.get('state') == 'held' else
@@ -69,6 +101,8 @@ def question_card(record, *, status=None, choosing=False):
     if confirmed:
         body += (f"已确认成品数量：{record['physical_qty']} 件\n"
                  "只按最终正式制单图生产，本卡片不作为生产单。")
+    elif held:
+        body += '本卡片对应的订单资料已变化或已有发送记录，不再通过旧卡确认数量。请以当前订单和正式制单图为准。'
     else:
         body += (f"订单备注：{record['notes'] or '无'}\n\n"
                  "点击下方按钮选择实际成品数量，确认后自动生成正式制单图。\n"
@@ -90,22 +124,29 @@ def question_card(record, *, status=None, choosing=False):
                       'text': {'tag': 'plain_text', 'content': '选择并确认数量'}, 'value': value}
         elements.append({'tag': 'action', 'actions': [action]})
     return {'config': {'wide_screen_mode': True, 'update_multi': True},
-            'header': {'template': 'green' if confirmed else 'orange',
+            'header': {'template': 'green' if confirmed else 'grey' if held else 'orange',
                        'title': {'tag': 'plain_text', 'content': f"畔色{record['factory_no']}单｜{title}"}},
             'elements': elements}
 
 
 def refresh_cards(db, line_id):
-    """Idempotent card projection; never sends an image or a new message."""
+    """Project quantity state; expired cards get one protected status reply."""
     row = _row(db, PREFIX + str(line_id))
     record = _read(row)
     if not record:
         return
     failed = []
     for mid in _card_ids(record):
+        replacement = (record.get('expired_card_replacements') or {}).get(mid)
+        if replacement:
+            if replacement.get('state') != 'sent':
+                failed.append(mid)
+            continue
         try:
             feishu_client.patch_card(db, mid, question_card(record))
-        except Exception:
+        except Exception as exc:
+            if getattr(exc, 'code', None) == 230031 and _replace_expired_card(db, line_id, mid):
+                continue
             failed.append(mid)
             log.warning('数量卡状态更新待重试 line=%s', line_id)
     row = _row(db, PREFIX + str(line_id), lock=True)
@@ -454,7 +495,13 @@ def handle_card(db, event):
         raise ValueError('此数量卡已失效，请使用当前卡片')
     if value.get('op') == 'factory_quantity_choose':
         db.rollback()
-        feishu_client.patch_card(db, mid, question_card(record, choosing=True))
+        try:
+            feishu_client.patch_card(db, mid, question_card(record, choosing=True))
+        except Exception as exc:
+            if getattr(exc, 'code', None) != 230031:
+                raise
+            refresh_cards(db, line_id)
+            return {'state': 'replacement_card'}
         latest = _read(_row(db, PREFIX + str(line_id), lock=True))
         changed = latest.get('state') != record.get('state')
         db.rollback()
@@ -486,7 +533,7 @@ def run_card_action(event):
 
 
 def refresh_existing_cards(db):
-    """Upgrade existing cards from persisted facts only; no confirmations or image sends."""
+    """Upgrade card status from facts; expired cards get a reply, never a new confirmation/image."""
     rows = list(db.scalars(select(SystemSetting).where(SystemSetting.key.startswith(PREFIX))))
     result = {'updated': 0, 'pending': 0}
     for row in rows:
