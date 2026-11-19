@@ -159,10 +159,129 @@ class TaobaoConsignAutomation:
             await self.playwright.stop()
 
     async def inspect_shop(self) -> dict:
-        raise NotImplementedError('尚未验收店铺身份读取器；不能用页面正文出现店名代替登录身份')
+        """
+        读取当前登录卖家及店铺的真实平台身份配置。
+        必须从千牛工作台配置(QN_WORKBENCH_CFG)读取结构化身份，严禁按页面正文文本猜测。
+        """
+        info = await self.page.evaluate("""() => {
+            if (!window.QN_WORKBENCH_CFG) {
+                return null;
+            }
+            const cfg = window.QN_WORKBENCH_CFG;
+            const user = cfg.user || {};
+            const shop = cfg.shopInfo || {};
+            if (!shop.shopName || !shop.shopId || !user.userid) {
+                return null;
+            }
+            return {
+                shopName: String(shop.shopName).trim(),
+                shopId: String(shop.shopId).trim(),
+                nick: String(user.nick || shop.nick || '').trim(),
+                userid: String(user.userid).trim(),
+                shopStatus: String(shop.shopStatus || '').trim(),
+                sub: Boolean(user.issub || shop.sub)
+            };
+        }""")
+        if not info or not info.get("shopName") or not info.get("userid") or not info.get("shopId"):
+            raise RuntimeError("无法从千牛工作台配置(QN_WORKBENCH_CFG)读取到真实登录店铺身份")
+        return info
 
     async def read_shipping_records(self, rows: list[dict]) -> list[dict]:
-        raise NotImplementedError('尚未接通官方逐单物流回读；汇总数量不能代替物流证据')
+        """
+        官方逐单物流回读 (遵守 fulfillment_receipts.py 合同):
+        对批次中的每一个主交易单号，调用平台的 queryOrderList 接口读取真实发货状态及包裹物流信息。
+        要求：店铺、主单、全部子单、承运商、运单号、卖家确认及时间必须与原始行严格相符。
+        """
+        shop_info = await self.inspect_shop()
+        shop_name = shop_info["shopName"]
+        proofs = []
+
+        for row in rows:
+            order_no = str(row["order_no"]).strip()
+            if not re.fullmatch(r'[0-9]{10,24}', order_no):
+                raise RuntimeError('主交易单号格式不合法，停止平台读取')
+            res = await self.page.evaluate(f"""async () => {{
+                try {{
+                    const params = new URLSearchParams({{
+                        listType: 'sendedConfirm',
+                        tradeId: '{order_no}',
+                        pageIndex: '1',
+                        pageSize: '10'
+                    }});
+                    const r = await fetch('https://wuliu2.taobao.com/user/queryOrderList?' + params.toString(), {{
+                        credentials: 'include'
+                    }});
+                    return await r.json();
+                }} catch (e) {{
+                    return {{error: e.toString()}};
+                }}
+            }}""")
+
+            if not isinstance(res, dict) or not res.get("success") or not res.get("data"):
+                continue
+
+            packages = res.get("data", [])
+            if not isinstance(packages, list):
+                continue
+            matching_pkgs = []
+            for pkg in packages:
+                if not isinstance(pkg, dict):
+                    continue
+                base_fields = {f.get('name'): f.get('value') for f in pkg.get('baseInfo', {}).get('fields', [])
+                               if isinstance(f, dict)}
+                # These are candidate field names, not a verified live schema.
+                # Missing platform identities/status must never be filled from the request.
+                actual_tid = str(base_fields.get('tradeId') or pkg.get('tradeId') or '').strip()
+                trade_status = base_fields.get('tradeStatus') or pkg.get('tradeStatus')
+                seller_confirm = base_fields.get('sellerConfirm', pkg.get('sellerConfirm'))
+                if (actual_tid != order_no
+                        or trade_status not in ('WAIT_BUYER_CONFIRM_GOODS', 'TRADE_FINISHED')
+                        or seller_confirm is not True):
+                    continue
+                logis_infos = pkg.get("logisticsInfos") or []
+                carrier_val = None
+                tracking_val = None
+                for info in logis_infos:
+                    lbl = str(info.get("label") or "").strip()
+                    val = str(info.get("value") or "").strip()
+                    if lbl == "发货方式":
+                        continue
+                    carrier_val = lbl
+                    tracking_val = val
+
+                if carrier_val and tracking_val:
+                    if carrier_val == row["carrier"] and tracking_val == row["tracking_no"]:
+                        matching_pkgs.append((pkg, carrier_val, tracking_val))
+
+            if len(matching_pkgs) != 1:
+                continue
+
+            pkg, matched_carrier, matched_tracking = matching_pkgs[0]
+            base_fields = {f.get("name"): f.get("value") for f in pkg.get("baseInfo", {}).get("fields", [])}
+            actual_tid = str(base_fields.get('tradeId') or pkg.get('tradeId') or '').strip()
+            trade_status = base_fields.get('tradeStatus') or pkg.get('tradeStatus')
+            seller_confirm = base_fields.get('sellerConfirm', pkg.get('sellerConfirm'))
+
+            children = pkg.get("children") or []
+            sub_order_nos = [str(c.get("orderGoodsId")).strip() for c in children if c.get("orderGoodsId")]
+
+            proof = {
+                "order_no": actual_tid,
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "source": "taobao_logistics_readback",
+                "evidence_ref": 'wuliu2:queryOrderList:sha256:' + hashlib.sha256(
+                    json.dumps(pkg, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+                "shop": shop_name,
+                "carrier": matched_carrier,
+                "tracking_no": matched_tracking,
+                "seller_confirm": seller_confirm,
+                "trade_status": trade_status,
+                "sub_order_nos": sub_order_nos,
+                "raw_order": pkg,
+            }
+            proofs.append(proof)
+
+        return proofs
 
     async def get_task_list(self) -> list[dict]:
         """读取当前店铺在 ASCP 平台的发货任务列表"""
@@ -254,6 +373,15 @@ class TaobaoConsignAutomation:
                 raise RuntimeError(f"淘宝接口返回失败: {err_msg}")
         except Exception as exc:
             raise RuntimeError('提交结果未知：保留原批次占位，禁止用任务列表首条猜测或重新上传') from exc
+
+        # 现场验证：核实平台任务列表存在由本次上传创建的任务，禁止首条猜测
+        tasks = await self.get_task_list()
+        matching_task = [t for t in tasks if str(t.get("taskId")) == str(task_id)]
+        if not matching_task:
+            raise RuntimeError(f'提交结果未知：平台返回 Task ID {task_id} 未在官方任务列表中确认，保留原批次')
+        t_code = matching_task[0].get("taskCode") or matching_task[0].get("code")
+        if t_code != "consign2_batch_offline_consign":
+            raise RuntimeError(f'平台任务类型不匹配({t_code})，保留原批次')
 
         # 等待弹窗自动关闭
         await self.page.wait_for_timeout(1000)

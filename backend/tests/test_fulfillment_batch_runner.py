@@ -285,3 +285,149 @@ async def test_dry_run_mode():
     mock_tb.connect.assert_not_called()
     # In dry-run mode, finish writeback is NOT called
     assert mock_erp.record_finish.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_inspect_shop_real_config():
+    tb = TaobaoConsignAutomation("mock-cdp")
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {
+        "shopName": "畔色木作",
+        "shopId": "431991266",
+        "nick": "tb697331180593",
+        "userid": "2215699812811",
+        "shopStatus": "open",
+        "sub": False,
+    }
+    shop = await tb.inspect_shop()
+    assert shop["shopName"] == "畔色木作"
+    assert shop["shopId"] == "431991266"
+    assert shop["userid"] == "2215699812811"
+
+
+@pytest.mark.asyncio
+async def test_inspect_shop_missing_raises():
+    tb = TaobaoConsignAutomation("mock-cdp")
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = None
+    with pytest.raises(RuntimeError, match="无法从千牛工作台配置"):
+        await tb.inspect_shop()
+
+
+@pytest.mark.parametrize('missing', ['status', 'confirmation', 'trade_id', 'wrong_trade_id', 'false_confirmation'])
+@pytest.mark.asyncio
+async def test_reader_cannot_fill_missing_platform_facts(missing):
+    tb = TaobaoConsignAutomation('mock-only')
+    tb.inspect_shop = AsyncMock(return_value={'shopName': 'test', 'shopId': 'test-shop', 'userid': 'test-user'})
+    row = {'order_no': '9999999999999991', 'carrier': 'TEST', 'tracking_no': 'TEST001',
+           'shop': 'test', 'sub_order_nos': ['synthetic-child']}
+    pkg = {'tradeId': row['order_no'], 'tradeStatus': 'WAIT_BUYER_CONFIRM_GOODS', 'sellerConfirm': True,
+           'logisticsInfos': [{'label': 'TEST', 'value': 'TEST001'}],
+           'children': [{'orderGoodsId': 'synthetic-child'}]}
+    if missing == 'status': pkg.pop('tradeStatus')
+    if missing == 'confirmation': pkg.pop('sellerConfirm')
+    if missing == 'trade_id': pkg.pop('tradeId')
+    if missing == 'wrong_trade_id': pkg['tradeId'] = '9999999999999992'
+    if missing == 'false_confirmation': pkg['sellerConfirm'] = False
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {'success': True, 'data': [pkg]}
+    assert await tb.read_shipping_records([row]) == []
+
+
+@pytest.mark.asyncio
+async def test_reader_rejects_duplicate_matching_packages():
+    tb = TaobaoConsignAutomation('mock-only')
+    tb.inspect_shop = AsyncMock(return_value={'shopName': 'test'})
+    row = {'order_no': '9999999999999991', 'carrier': 'TEST', 'tracking_no': 'TEST001'}
+    pkg = {'tradeId': row['order_no'], 'tradeStatus': 'WAIT_BUYER_CONFIRM_GOODS', 'sellerConfirm': True,
+           'logisticsInfos': [{'label': 'TEST', 'value': 'TEST001'}]}
+    tb.page = AsyncMock(); tb.page.evaluate.return_value = {'success': True, 'data': [pkg, pkg]}
+    assert await tb.read_shipping_records([row]) == []
+
+
+@pytest.mark.asyncio
+async def test_read_shipping_records_matching_produces_confirmed_proof():
+    from app.services.fulfillment_receipts import reconcile
+    tb = TaobaoConsignAutomation("mock-cdp")
+    tb.inspect_shop = AsyncMock(return_value={
+        "shopName": "畔色木作", "shopId": "431991266", "userid": "2215699812811"
+    })
+    row = {
+        "order_no": "5127598658673000805",
+        "shop": "畔色木作",
+        "carrier": "圆通速递",
+        "tracking_no": "YT2596963266216",
+        "sub_order_nos": ["5127598658673046814", "5127598658673073642"]
+    }
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {
+        "success": True,
+        "data": [{
+            # Synthetic candidate schema, not evidence of live platform fields.
+            "tradeStatus": "WAIT_BUYER_CONFIRM_GOODS", "sellerConfirm": True,
+            "baseInfo": {"fields": [{"name": "tradeId", "value": "5127598658673000805"}, {"name": "orderCode", "value": "LP001"}]},
+            "logisticsInfos": [
+                {"label": "圆通速递", "value": "YT2596963266216"},
+                {"label": "发货方式", "value": "自己联系物流"}
+            ],
+            "children": [
+                {"orderGoodsId": "5127598658673046814"},
+                {"orderGoodsId": "5127598658673073642"}
+            ]
+        }]
+    }
+    proofs = await tb.read_shipping_records([row])
+    assert len(proofs) == 1
+    p = proofs[0]
+    assert p["order_no"] == "5127598658673000805"
+    assert p["carrier"] == "圆通速递"
+    assert p["tracking_no"] == "YT2596963266216"
+    assert p["shop"] == "畔色木作"
+    assert p["seller_confirm"] is True
+    assert p["trade_status"] == "WAIT_BUYER_CONFIRM_GOODS"
+
+    # Now verify it satisfies reconcile contract to 'confirmed'
+    task = {"taskId": "T1", "taskStatus": "FINISHED", "successCount": 1, "failCount": 0}
+    results, batch_st = reconcile([row], task, {}, proofs, expected_task_id="T1")
+    assert batch_st == "confirmed"
+    assert results[row["order_no"]]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_read_shipping_records_mismatched_children_stays_unknown():
+    from app.services.fulfillment_receipts import reconcile
+    tb = TaobaoConsignAutomation("mock-cdp")
+    tb.inspect_shop = AsyncMock(return_value={
+        "shopName": "畔色木作", "shopId": "431991266", "userid": "2215699812811"
+    })
+    row = {
+        "order_no": "5127598658673000805",
+        "shop": "畔色木作",
+        "carrier": "圆通速递",
+        "tracking_no": "YT2596963266216",
+        "sub_order_nos": ["5127598658673046814", "5127598658673073642", "MISSING_SUB"]
+    }
+    tb.page = AsyncMock()
+    tb.page.evaluate.return_value = {
+        "success": True,
+        "data": [{
+            # Synthetic candidate schema, not evidence of live platform fields.
+            "tradeStatus": "WAIT_BUYER_CONFIRM_GOODS", "sellerConfirm": True,
+            "baseInfo": {"fields": [{"name": "tradeId", "value": "5127598658673000805"}, {"name": "orderCode", "value": "LP001"}]},
+            "logisticsInfos": [
+                {"label": "圆通速递", "value": "YT2596963266216"}
+            ],
+            "children": [
+                {"orderGoodsId": "5127598658673046814"},
+                {"orderGoodsId": "5127598658673073642"}
+            ]
+        }]
+    }
+    proofs = await tb.read_shipping_records([row])
+    assert len(proofs) == 1
+
+    # In reconcile, since sub_order_nos does not match expected_children, status must remain unknown
+    task = {"taskId": "T1", "taskStatus": "FINISHED", "successCount": 1, "failCount": 0}
+    results, batch_st = reconcile([row], task, {}, proofs, expected_task_id="T1")
+    assert batch_st == "unknown"
+    assert results[row["order_no"]]["status"] == "unknown"
