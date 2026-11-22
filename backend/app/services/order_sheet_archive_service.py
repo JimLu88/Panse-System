@@ -94,7 +94,8 @@ def _is_refunded(o: Order, *, db: Session | None = None) -> bool:
         return False
     from app.models.finance import AlipayFlow
     flows = db.scalars(select(AlipayFlow).where(
-        or_(AlipayFlow.related_order_no == o.order_no, AlipayFlow.platform_order_no == o.order_no),
+        or_(AlipayFlow.related_order_no.in_([o.order_no, "T200P" + o.order_no]),
+            AlipayFlow.platform_order_no == o.order_no),
         AlipayFlow.reconciliation_type.in_(["customer_payment", "refund"]))).all()
     accounts = {}
     for flow in flows:

@@ -82,7 +82,7 @@
     "backend/app/services/order_financials.py": "56c1ac3d343155b8c81ca16e29c7d56ca28b990c3952a5a1976b55f20301ba3a",
     "backend/app/services/order_line_delivery_service.py": "995e8dd3cf1b5f660b541081bb2f39cc94607fffef6aff01eb6d0624e59bf988",
     "backend/app/services/order_purchase_facts.py": "f0420fc5a60e22f365924755c8c74ff77df0b84bd37a06fff3ea9b254de44ae3",
-    "backend/app/services/order_sheet_archive_service.py": "23c3dafcc5b8bb2eca00c2f015d5d017220861a88d685df2d0156ca9aa2af036",
+    "backend/app/services/order_sheet_archive_service.py": "20f1ff7ce758c73ef2e496e742ac5630f4f2f948f59dcfd5094927e2cd7a0979",
     "backend/app/services/order_sync_service.py": "eb3c8a522c045b5e3b70f87f506e91e336c16d518f536d14f750a894a0a68882",
     "backend/app/services/pricing_bom_sync_service.py": "1c50fb1355f51a2abfd131b7e944092b21b948eba1f244f177592667b5cef1c5",
     "backend/app/services/pricing_calc_service.py": "0ceb2f7bec7142febf381e2bf34a61b114de743f8057dd330d4ecf8e2be905b7",

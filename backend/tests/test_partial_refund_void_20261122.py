@@ -108,7 +108,8 @@ def test_partial_refund_does_not_generate_void_even_without_status(db_session,mo
     result=sheets.reconcile_refunded_order_lines(db_session)
     assert result['voided']==0
 
-def test_later_full_refund_proven_by_payment_ledger_is_not_restored(db_session,monkeypatch):
+@pytest.mark.parametrize("payment_prefix", ["", "T200P"])
+def test_later_full_refund_proven_by_payment_ledger_is_not_restored(db_session,monkeypatch,payment_prefix):
     from app.models.finance import AlipayFlow
     from app.models.order import Order
     from datetime import datetime, timezone, timedelta
@@ -117,7 +118,7 @@ def test_later_full_refund_proven_by_payment_ledger_is_not_restored(db_session,m
     order.paid_amount=Decimal('2491.95');order.buyer_payable_amount=Decimal('2500');order.refund_amount=Decimal('2491.95')
     assert not sheets._is_refunded(order,db=db_session)  # Amount ambiguity alone is not enough.
     db_session.add_all([
-        AlipayFlow(account='test',transaction_no='pay',amount=Decimal('2491.95'),related_order_no=line.order_no,reconciliation_type='customer_payment'),
+        AlipayFlow(account='test',transaction_no='pay',amount=Decimal('2491.95'),related_order_no=payment_prefix+line.order_no,reconciliation_type='customer_payment'),
         AlipayFlow(account='test',transaction_no='refund',amount=Decimal('-2491.95'),related_order_no=line.order_no,reconciliation_type='refund'),
     ])
     db_session.commit()
