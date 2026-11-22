@@ -221,6 +221,8 @@ def test_refunded_child_key_does_not_void_active_legacy_parent(db_session):
     line = db_session.query(OrderDetail).one()
     line.sub_order_no = 'TEST-PARENT'
     line.line_status = 'cancelled'
+    line.amount = line.refund_amount = Decimal('100')
+    line.refund_status = '退款成功'
     db_session.commit()
     records = [{'record_id':'legacy','fields':{'订单号':'TEST-PARENT'}}]
     assert d._confirmed_void_record_ids(db_session, records, set()) == set()

@@ -69,7 +69,7 @@ def test_unconfirmed_custom_still_blocks(db_session,monkeypatch):
     o,line=setup(db_session)
     sheet=factory_sheet.build_for_order_line(db_session,o.id,line.id)
     monkeypatch.setattr(sheets,'_html_to_png',lambda *a,**k:pytest.fail('must not render'))
-    with pytest.raises(ValueError,match='实物数量'):sheets.render_png(sheet)
+    with pytest.raises(ValueError,match='停止自动生产发送'):sheets.render_png(sheet)
 
 
 @pytest.mark.parametrize('state',['sending_image','uncertain','sent'])

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from app.models.order import Order, OrderDetail
@@ -44,28 +45,152 @@ def _eligible(db, line, order):
                 and line_is_factory_eligible(db, line, order))
 
 
-def question_card(record, *, status=None):
-    # Plain text fields prevent product/remark text from becoming mentions/links.
-    body = (f"畔色{record['factory_no']}单 · 数量待确认，请勿生产\n"
+def _day():
+    return datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+
+
+def _card_ids(record):
+    return list(dict.fromkeys([m for m in [record.get('card_message_id'),
+        *(record.get('reminder_message_ids') or []),
+        *(v.get('message_id') for v in (record.get('expired_card_replacements') or {}).values())] if m]))
+
+
+def _replace_expired_card(db, line_id, message_id):
+    """Feishu forbids edits after 14 days. Append one status card, never an image."""
+    row = _row(db, PREFIX + str(line_id), lock=True)
+    record = _read(row)
+    replacements = record.setdefault('expired_card_replacements', {})
+    if message_id in replacements:
+        db.rollback()
+        return replacements[message_id].get('state') == 'sent'
+    replacements[message_id] = {'state': 'sending', 'claimed_at': _now()}
+    _save(db, row, record)
+    try:
+        result = feishu_client.reply_card(db, message_id, question_card(record)) or {}
+        mid = result.get('message_id') or (result.get('message') or {}).get('message_id')
+        if not mid:
+            raise RuntimeError('missing_replacement_card_message_id')
+        row = _row(db, PREFIX + str(line_id), lock=True)
+        latest = _read(row)
+        latest['expired_card_replacements'][message_id] = {'state': 'sent', 'message_id': mid}
+        db.add(SystemSetting(key=CARD_PREFIX + mid, value_plain=str(line_id), is_secret=False))
+        _save(db, row, latest)
+        return True
+    except Exception as exc:
+        db.rollback()
+        row = _row(db, PREFIX + str(line_id), lock=True)
+        latest = _read(row)
+        latest['expired_card_replacements'][message_id] = {'state': 'unknown', 'error_type': type(exc).__name__}
+        _save(db, row, latest)
+        return False
+
+
+def question_card(record, *, status=None, choosing=False):
+    confirmed = bool(record.get('physical_qty') and
+                     (record.get('reply_message_id') or record.get('confirmation_ref')))
+    held = record.get('state') == 'held' and not confirmed
+    title = '已确认数量' if confirmed else '旧卡已停用' if held else '待确认数量'
+    state = status or ('已确认数量，正式图已发送' if record.get('state') == 'sent' else
+                       '已确认数量，正式图待处理' if confirmed else
+                       '订单资料已变化，请核对当前订单；本卡片已停用' if record.get('state') == 'held' else
+                       '数量待确认，请勿生产')
+    body = (f"畔色{record['factory_no']}单 · {state}\n"
             f"订单：{record['identity']['order_no']}\n子单：{record['identity']['sub_order_no']}\n"
             f"产品：{record['product']}\n规格：{record['sku']}\n"
-            f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}（不等于已确认成品数）\n"
-            f"订单备注：{record['notes'] or '无'}\n\n"
-            "请负责此订单的同事回复本卡片，并 @机器人，填写实际成品数量。"
-            "例如回复 1 表示1件，回复 2 表示2件。请勿仅在群里单独发数字。\n"
-            "确认后系统自动生成正式制单图；未确认前不要据此生产。")
-    if status:
-        body = (f"畔色{record['factory_no']}单 · {status}\n"
-                f"订单：{record['identity']['order_no']}\n"
-                f"子单：{record['identity']['sub_order_no']}\n"
-                f"产品：{record['product']}\n规格：{record['sku']}\n"
-                f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}\n"
-                f"确认成品数量：{record.get('physical_qty', '待确认')}\n"
-                "只按最终正式制单图生产，本卡片不作为生产单。")
-    return {'config': {'wide_screen_mode': True},
-            'header': {'template': 'orange', 'title': {'tag': 'plain_text',
-                       'content': f"畔色{record['factory_no']}单｜数量确认"}},
-            'elements': [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': body}}]}
+            f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}\n")
+    if confirmed:
+        body += (f"已确认成品数量：{record['physical_qty']} 件\n"
+                 "只按最终正式制单图生产，本卡片不作为生产单。")
+    elif held:
+        body += '本卡片对应的订单资料已变化或已有发送记录，不再通过旧卡确认数量。请以当前订单和正式制单图为准。'
+    else:
+        body += (f"订单备注：{record['notes'] or '无'}\n\n"
+                 "点击下方按钮选择实际成品数量，确认后自动生成正式制单图。\n"
+                 "也可回复本卡片并 @机器人 填写数量，例如 1 或 2。未确认前请勿生产。")
+    elements = [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': body}}]
+    if not confirmed and record.get('state') in ('asking', 'awaiting_reply'):
+        value = {'op': 'factory_quantity_choose', 'line_id': record['identity']['line_id'],
+                 'revision': record.get('revision', 1)}
+        if choosing:
+            value['op'] = 'factory_quantity_confirm'
+            action = {'tag': 'select_static', 'placeholder': {'tag': 'plain_text', 'content': '选择实际成品数量'},
+                      'value': value, 'options': [
+                          {'text': {'tag': 'plain_text', 'content': f'{qty} 件'}, 'value': str(qty)}
+                          for qty in range(1, 101)],
+                      'confirm': {'title': {'tag': 'plain_text', 'content': '确认实际成品数量'},
+                                  'text': {'tag': 'plain_text', 'content': '请核对所选数量。确认后将按此数量生成正式制单图，原购买数量不变。'}}}
+        else:
+            action = {'tag': 'button', 'type': 'primary',
+                      'text': {'tag': 'plain_text', 'content': '选择并确认数量'}, 'value': value}
+        elements.append({'tag': 'action', 'actions': [action]})
+    return {'config': {'wide_screen_mode': True, 'update_multi': True},
+            'header': {'template': 'green' if confirmed else 'grey' if held else 'orange',
+                       'title': {'tag': 'plain_text', 'content': f"畔色{record['factory_no']}单｜{title}"}},
+            'elements': elements}
+
+
+def refresh_cards(db, line_id):
+    """Project quantity state; expired cards get one protected status reply."""
+    row = _row(db, PREFIX + str(line_id))
+    record = _read(row)
+    if not record:
+        return
+    failed = []
+    for mid in _card_ids(record):
+        replacement = (record.get('expired_card_replacements') or {}).get(mid)
+        if replacement:
+            if replacement.get('state') != 'sent':
+                failed.append(mid)
+            continue
+        try:
+            feishu_client.patch_card(db, mid, question_card(record))
+        except Exception as exc:
+            if getattr(exc, 'code', None) == 230031 and _replace_expired_card(db, line_id, mid):
+                continue
+            failed.append(mid)
+            log.warning('数量卡状态更新待重试 line=%s', line_id)
+    row = _row(db, PREFIX + str(line_id), lock=True)
+    latest = _read(row)
+    # A concurrent confirmation must not be acknowledged by a stale pending patch.
+    if latest.get('state') != record.get('state') or latest.get('physical_qty') != record.get('physical_qty'):
+        latest['card_sync_pending'] = True
+    else:
+        latest['card_sync_pending'] = bool(failed)
+        latest['card_sync_failed_ids'] = failed
+    _save(db, row, latest)
+
+
+def _remind(db, row, record):
+    day = _day()
+    if (record.get('state') != 'awaiting_reply' or record.get('reply_message_id')
+            or record.get('confirmation_ref') or record.get('reminder_state') in ('sending', 'unknown')
+            or record.get('last_reminder_day', record.get('created_at', '')[:10]) == day):
+        db.rollback()
+        return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
+    record.update(reminder_state='sending', last_reminder_day=day)
+    _save(db, row, record)
+    try:
+        result = feishu_client.send_card(db, record['chat_id'], question_card(record)) or {}
+        mid = result.get('message_id') or (result.get('message') or {}).get('message_id')
+        if not mid:
+            raise RuntimeError('missing_reminder_message_id')
+        row = _row(db, PREFIX + str(record['identity']['line_id']), lock=True)
+        latest = _read(row)
+        latest['reminder_message_ids'] = [*(latest.get('reminder_message_ids') or []), mid]
+        latest['reminder_state'] = 'sent'
+        db.add(SystemSetting(key=CARD_PREFIX + mid, value_plain=str(record['identity']['line_id']), is_secret=False))
+        _save(db, row, latest)
+        # A reply may have confirmed the order while the reminder was sending.
+        if latest.get('state') != 'awaiting_reply':
+            refresh_cards(db, record['identity']['line_id'])
+        return {'state': latest['state'], 'card_message_id': mid, 'reminded': True}
+    except Exception as exc:
+        db.rollback()
+        row = _row(db, PREFIX + str(record['identity']['line_id']), lock=True)
+        latest = _read(row)
+        latest.update(reminder_state='unknown', reminder_error_type=type(exc).__name__)
+        _save(db, row, latest)
+        return {'state': latest['state'], 'reminder_state': 'unknown'}
 
 
 def request_quantity(db, *, line_id):
@@ -84,8 +209,14 @@ def request_quantity(db, *, line_id):
         record = _read(old)
         # Same identity and uncertain sends are never replayed. A changed
         # identity needs a new question, not the old answer or an inert held card.
-        if (record.get('identity') == facts._identity(order, line)
-                or record['state'] in ('asking', 'ask_uncertain', 'sent')):
+        if record.get('identity') == facts._identity(order, line):
+            if (not line.factory_delivery_message_id and not line.factory_delivery_sent_at
+                    and line.factory_delivery_state in (None, '', 'failed')
+                    and facts.quantity_confirmation(db, order, line) is None):
+                return _remind(db, old, record)
+            db.rollback()
+            return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
+        if record['state'] in ('asking', 'ask_uncertain', 'sent') or record.get('reminder_state') in ('sending', 'unknown'):
             db.rollback()
             return {'state': record['state'], 'card_message_id': record.get('card_message_id')}
         history = list(record.get('superseded') or [])
@@ -107,7 +238,7 @@ def request_quantity(db, *, line_id):
               'sku': (line.sku_name or order.sku or line.sku_code or '')[:160],
               'notes': '\n'.join(str(x) for x in [order.buyer_message, order.remark,
                           order.seller_memo, getattr(order, 'production_note', None)] if x)[:600],
-              'chat_id': chat, 'created_at': _now(), 'revision': len(history) + 1,
+              'chat_id': chat, 'created_at': _now(), 'last_reminder_day': _day(), 'revision': len(history) + 1,
               'superseded': history}
     row = old or SystemSetting(key=PREFIX + str(line_id), is_secret=False,
                                description='生产数量待确认及飞书回复回执')
@@ -202,7 +333,7 @@ def handle_reply(db, event):
     record = _read(row)
     if (not record or actual.get('message_id') != mid or actual.get('deleted') is not False
             or actual.get('chat_id') != record['chat_id'] or msg.get('chat_id') != record['chat_id']
-            or record.get('card_message_id') != card_id
+            or card_id not in _card_ids(record)
             or card_id not in (actual.get('parent_id'), actual.get('root_id'))
             or sender.get('sender_type') != 'user' or not sender.get('id')):
         db.rollback()
@@ -213,8 +344,14 @@ def handle_reply(db, event):
         db.rollback()
         _notice_once(db, mid, '数量尚未确认。请回复对应卡片并 @机器人，只填写实际成品数量，例如 1 或 2。')
         return {**result, 'state': 'invalid_quantity'}
-    qty = int(match[1])
-    if record.get('reply_message_id'):
+    return _confirm(db, line_id, int(match[1]), 'feishu:' + sender['id'], 'feishu-message:' + mid, mid)
+
+
+def _confirm(db, line_id, qty, actor, evidence_ref, mid):
+    row = _row(db, PREFIX + str(line_id), lock=True)
+    record = _read(row)
+    result = {'kind': 'factory_quantity', 'message_id': mid}
+    if record.get('reply_message_id') or record.get('confirmation_ref'):
         db.rollback()
         if record.get('physical_qty') != qty:
             _notice_once(db, mid, f"此前已确认 {record['physical_qty']} 件，本次回复不同，未覆盖、未重复发单。请联系订单负责人核对，勿按本次回复改变生产。")
@@ -231,18 +368,18 @@ def handle_reply(db, event):
         _save(db, row, record)
         _notice_once(db, mid, '订单状态、规格、购买数量或备注已有变化，或者已经进入发送。此次未确认，请核对最新订单；不要重复回复旧卡片。')
         return {**result, 'state': 'held'}
-    actor = 'feishu:' + sender['id']
     try:
         facts.confirm_quantity(db, line_id=line_id, expected_sku=line.sku_code,
                                expected_purchase_qty=line.qty, physical_qty=qty, actor=actor,
-                               evidence_ref='feishu-message:' + mid, commit=False)
+                               evidence_ref=evidence_ref, commit=False)
         record.update(state='confirmed', physical_qty=qty, actor=actor,
-                      reply_message_id=mid, confirmed_at=_now())
+                      reply_message_id=mid, confirmation_ref=evidence_ref, confirmed_at=_now(), card_sync_pending=True)
         _save(db, row, record)
     except ValueError:
         db.rollback()
         _notice_once(db, mid, '订单已有其他数量确认或发送状态变化，本次没有覆盖，也没有重复发单，请人工核对。')
         return {**result, 'state': 'held'}
+    refresh_cards(db, line_id)
     from app.services import order_sheet_archive_service as sheets
     delivery = sheets.reconcile_order_line_delivery(db, limit=1, only_sub_order_nos={line.sub_order_no})
     db.expire_all()
@@ -254,6 +391,7 @@ def handle_reply(db, event):
                                         only_sub_order_nos={line.sub_order_no})
     if not checked.get('ok') and line.factory_delivery_state == 'sent':
         _notice_once(db, mid, '正式制单图已发送，但原始报表与飞书逐单核对仍有缺项，系统已记录待处理；不会重复发图。')
+    refresh_cards(db, line_id)
     return {**result, 'state': line.factory_delivery_state, 'physical_qty': qty,
             'delivery': delivery, 'post_push_audit': checked}
 
@@ -264,7 +402,7 @@ def complete_delivery(db, line):
         return
     row = _row(db, PREFIX + str(line.id), lock=True)
     record = _read(row)
-    if (not record or not record.get('reply_message_id') or record.get('receipt_state')
+    if (not record or not (record.get('reply_message_id') or record.get('confirmation_ref')) or record.get('receipt_state')
             or line.factory_delivery_state != 'sent' or not line.factory_delivery_message_id):
         db.rollback()
         return
@@ -293,7 +431,7 @@ def complete_delivery(db, line):
         text = (f"畔色{record['factory_no']}单数量已确认，正式制单图已发送。\n"
                 f"子单：{record['identity']['sub_order_no']}\n"
                 f"原购买数量 {facts.purchase_quantity_label(record['identity']['purchase_qty'])}，实际成品 {record['physical_qty']} 件。\n"
-                f"确认人：{name}（依据本卡片下的回复）。\n"
+                f"确认人：{name}（依据本卡片的数量确认）。\n"
                 "原购买数量及财务金额不变；请按最新正式制单图的确认数量生产，待确认卡片不作为生产单。\n"
                 + ("工厂表已同步并回读。" if record['factory_sync']['state']=='verified'
                    else "工厂表尚未确认同步；系统已单独记录，不会因此重复发制单图。"))
@@ -303,12 +441,13 @@ def complete_delivery(db, line):
             raise RuntimeError('quantity_receipt_message_id_missing')
         record.update(receipt_state='sent', receipt_message_id=receipt_id)
         _save(db, row, record)
-        feishu_client.patch_card(db, record['card_message_id'], question_card(record, status='数量已确认，正式图已发送'))
     except Exception as exc:
         db.rollback()
         log.exception('数量解释/卡片更新未完成，不重发生产图 line=%s', line.id)
         record['receipt_error_type'] = type(exc).__name__
         _save(db, row, record)
+    finally:
+        refresh_cards(db, line.id)
 
 
 def complete_pending_receipts(db, *, only_sub_order_nos=None):
@@ -318,9 +457,11 @@ def complete_pending_receipts(db, *, only_sub_order_nos=None):
     rows = list(db.scalars(select(SystemSetting).where(SystemSetting.key.startswith(PREFIX))))
     for row in rows:
         record = _read(row)
-        if not record.get('reply_message_id') or record.get('receipt_state'):
-            continue
         if only_sub_order_nos is not None and record['identity']['sub_order_no'] not in only_sub_order_nos:
+            continue
+        if record.get('card_sync_pending'):
+            refresh_cards(db, record['identity']['line_id'])
+        if not (record.get('reply_message_id') or record.get('confirmation_ref')) or record.get('receipt_state'):
             continue
         line = db.get(OrderDetail, record['identity']['line_id'])
         if line and line.factory_delivery_state == 'sent' and line.factory_delivery_message_id:
@@ -329,3 +470,111 @@ def complete_pending_receipts(db, *, only_sub_order_nos=None):
             except Exception:
                 db.rollback()
                 log.exception('数量确认解释恢复未完成 line=%s', line.id)
+
+
+def handle_card(db, event):
+    """Only authenticated SDK/webhook callbacks can confirm the current card."""
+    if os.getenv('PANSE_DISABLE_NOTIFY'):
+        return {'state': 'notify_disabled'}
+    if not event.get('_factory_forward_trusted'):
+        raise ValueError('卡片来源未验证，未确认数量')
+    action = event.get('action') or {}
+    value = action.get('value') or {}
+    context = event.get('context') or {}
+    mid = context.get('open_message_id')
+    actor = (event.get('operator') or {}).get('open_id')
+    binding = _row(db, CARD_PREFIX + str(mid))
+    if not binding or not actor or str(value.get('line_id')) != binding.value_plain:
+        raise ValueError('卡片与订单不匹配，未确认数量')
+    line_id = int(binding.value_plain)
+    row = _row(db, PREFIX + str(line_id), lock=True)
+    record = _read(row)
+    if (not record or mid not in _card_ids(record) or value.get('revision') != record.get('revision', 1)
+            or (context.get('open_chat_id') and context['open_chat_id'] != record['chat_id'])):
+        db.rollback()
+        raise ValueError('此数量卡已失效，请使用当前卡片')
+    if value.get('op') == 'factory_quantity_choose':
+        db.rollback()
+        try:
+            feishu_client.patch_card(db, mid, question_card(record, choosing=True))
+        except Exception as exc:
+            if getattr(exc, 'code', None) != 230031:
+                raise
+            refresh_cards(db, line_id)
+            return {'state': 'replacement_card'}
+        latest = _read(_row(db, PREFIX + str(line_id), lock=True))
+        changed = latest.get('state') != record.get('state')
+        db.rollback()
+        if changed:
+            refresh_cards(db, line_id)
+        return {'state': latest['state']}
+    raw_qty = action.get('option')
+    if value.get('op') != 'factory_quantity_confirm' or not re.fullmatch(r'[1-9][0-9]{0,8}', str(raw_qty or '')):
+        db.rollback()
+        raise ValueError('请选择有效的实际成品数量')
+    return _confirm(db, line_id, int(raw_qty), 'feishu:' + actor,
+                    f'feishu-card:{mid}:revision:{record.get("revision", 1)}', mid)
+
+
+def run_card_action(event):
+    # The SDK acknowledgement is returned immediately; state is durable before delivery.
+    from app.database import SessionLocal
+    with SessionLocal() as db:
+        try:
+            handle_card(db, event)
+        except ValueError as exc:
+            db.rollback()
+            mid = (event.get('context') or {}).get('open_message_id')
+            if mid:
+                _notice_once(db, mid, str(exc))
+        except Exception:
+            db.rollback()
+            log.exception('数量卡处理未完成，保留原确认/发送状态')
+
+
+def refresh_existing_cards(db):
+    """Upgrade card status from facts; expired cards get a reply, never a new confirmation/image."""
+    rows = list(db.scalars(select(SystemSetting).where(SystemSetting.key.startswith(PREFIX))))
+    result = {'updated': 0, 'pending': 0}
+    for row in rows:
+        record = _read(row)
+        line_id = record['identity']['line_id']
+        line = db.get(OrderDetail, line_id)
+        order = db.scalar(select(Order).where(Order.order_no == line.order_no)) if line else None
+        confirmation = facts.quantity_confirmation(db, order, line) if line and order else None
+        if confirmation and confirmation['identity'] == record['identity']:
+            record.update(physical_qty=confirmation['physical_qty'], actor=confirmation['actor'],
+                          confirmation_ref=confirmation['evidence_ref'])
+            record['state'] = 'sent' if line.factory_delivery_state == 'sent' and line.factory_delivery_message_id else 'confirmed'
+        elif record.get('state') == 'awaiting_reply' and (not line or not order or
+                not _eligible(db, line, order) or record['identity'] != facts._identity(order, line)):
+            record.update(state='held')
+        record['card_sync_pending'] = True
+        _save(db, row, record)
+        refresh_cards(db, line_id)
+        result['updated'] += 1
+        result['pending'] += bool(_read(_row(db, PREFIX + str(line_id))).get('card_sync_pending'))
+    return result
+
+
+def remind_pending(db, *, only_sub_order_nos=None):
+    """At an ordinary push, revisit every pending card, independent of image batch limits."""
+    if os.getenv('PANSE_DISABLE_NOTIFY'):
+        return
+    keys = list(db.scalars(select(SystemSetting.key).where(SystemSetting.key.startswith(PREFIX))))
+    for key in keys:
+        row = _row(db, key, lock=True)
+        record = _read(row)
+        if (not record or record.get('state') != 'awaiting_reply' or
+                (only_sub_order_nos is not None and record['identity']['sub_order_no'] not in only_sub_order_nos)):
+            db.rollback()
+            continue
+        line = db.get(OrderDetail, record['identity']['line_id'])
+        order = db.scalar(select(Order).where(Order.order_no == line.order_no)) if line else None
+        if (not _eligible(db, line, order) or record['identity'] != facts._identity(order, line)
+                or line.factory_delivery_message_id or line.factory_delivery_sent_at
+                or line.factory_delivery_state not in (None, '', 'failed')
+                or facts.quantity_confirmation(db, order, line)):
+            db.rollback()
+            continue
+        _remind(db, row, record)

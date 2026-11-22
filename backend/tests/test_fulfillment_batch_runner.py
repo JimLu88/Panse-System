@@ -526,6 +526,7 @@ async def test_reader_conflicting_shipping_sources_stay_unknown(field, value):
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
 async def test_live_adapter_verified_defaults_to_true_after_acceptance():
     tb = TaobaoConsignAutomation('offline-only')
     assert tb.live_adapter_verified is True
@@ -637,7 +638,6 @@ async def test_upload_and_submit_intercepts_offline_consign_batch_upload():
 
     task_id = await tb.upload_and_submit("dummy.xlsx")
     assert task_id == real_task_id
-
 
 
 @pytest.mark.parametrize('success', [True, False, None, 'true'])
@@ -1222,4 +1222,3 @@ async def test_real_order_readback_playback_carrier_or_tracking_mismatch_fails()
     results, batch_st = reconcile([mismatched_row], task, {}, proofs, expected_task_id=task["taskId"])
     assert batch_st == "unknown"
     assert results[mismatched_row["order_no"]]["status"] == "unknown"
-

@@ -1553,6 +1553,14 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             value = {}
     op = value.get("op")
     orig_id = value.get("message_id")
+    if op in ('factory_quantity_choose', 'factory_quantity_confirm'):
+        from app.services import factory_quantity_request_service as quantities
+        if not event.get('_factory_forward_trusted'):
+            return {'toast': {'type': 'warning', 'content': '卡片来源未验证，未确认数量'}}
+        event['action']['value'] = value
+        import threading
+        threading.Thread(target=quantities.run_card_action, args=(event,), daemon=True).start()
+        return {'toast': {'type': 'info', 'content': '正在处理，请以卡片更新结果为准'}}
     if op == 'factory_forward':
         from app.services import factory_forward_service as forwarding
         event['action']['value'] = value

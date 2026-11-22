@@ -261,6 +261,9 @@ class TaobaoConsignAutomation:
                                if isinstance(f, dict)}
                 actual_tid = str(base_fields.get('tradeId') or pkg.get('tradeId') or '').strip()
 
+                # A timestamp (including '--') cannot prove current trade
+                # status or seller confirmation. Preserve it in raw_order;
+                # missing facts must remain unknown, never synthesized.
                 # 优先从包裹或baseInfo中获取状态(用于纯测试mock或具备该字段的平台报文)；
                 # 若无，则使用千牛官方订单详情中核实的真实状态
                 statuses = [source['tradeStatus'] for source in (pkg, base_fields)

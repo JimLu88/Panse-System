@@ -228,6 +228,14 @@ def _on_card(data: Any):
     op, value, card_msg_id = _parse_card_event(raw.get("event") or raw)
     orig_id = value.get("message_id")
 
+    if op in ('factory_quantity_choose', 'factory_quantity_confirm'):
+        from app.services import factory_quantity_request_service as quantities
+        event = raw.get('event') or raw
+        event['_factory_forward_trusted'] = True
+        event['action']['value'] = value
+        threading.Thread(target=quantities.run_card_action, args=(event,), daemon=True).start()
+        return P2CardActionTriggerResponse({'toast': {'type': 'info', 'content': '正在处理，请以卡片更新结果为准'}})
+
     if op == 'factory_forward':
         db = _new_session()
         try:

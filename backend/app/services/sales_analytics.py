@@ -43,6 +43,8 @@ def _is_service_line(name) -> bool:
     return any(k in n for k in SERVICE_KEYWORDS)
 
 
+BARTER_REPORT_MARKER = '【已核实博主置换·计入订单】'
+
 def settled_sale_clause():
     """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款 且 非纯服务行项。不含 is_refill 过滤。
 
@@ -57,7 +59,7 @@ def settled_sale_clause():
     return and_(
         Order.status.in_(SETTLED_SALE_STATUSES),
         paid > 0,                                                   # 必须有真实付款: 关闭/未付款单(实付0)不算成交
-        not_(and_(refund > 0, refund >= paid * Decimal("0.99"))),  # 全额退款不算成交
+        or_(func.coalesce(Order.remark, "").contains(BARTER_REPORT_MARKER), not_(and_(refund > 0, refund >= paid * Decimal("0.99")))),  # 全额退款不算成交
         not_(and_(is_service, paid <= 0)),                          # 仅排除 ¥0 的纯服务附加行
     )
 
@@ -70,7 +72,7 @@ def is_settled_sale(o) -> bool:
     refund = Decimal(str(getattr(o, "refund_amount", 0) or 0))
     if paid <= 0:                                          # 关闭/未付款单(实付0)不算成交
         return False
-    if refund > 0 and refund >= paid * Decimal("0.99"):   # 全额退款
+    if refund > 0 and refund >= paid * Decimal("0.99") and BARTER_REPORT_MARKER not in (getattr(o, "remark", "") or ""):   # 全额退款
         return False
     if _is_service_line(getattr(o, "product_name", "")) and paid <= 0:  # 仅 ¥0 纯服务附加行
         return False

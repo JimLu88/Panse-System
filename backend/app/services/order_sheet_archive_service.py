@@ -78,20 +78,33 @@ def _is_active_factory_order(o: Order) -> bool:
     return normalized == "paid" or (o.status or "").strip().lower() == "production"
 
 
-def _is_refunded(o: Order) -> bool:
-    """是否退款作废: 状态关闭/退货, 或退款状态含退款/退货, 或【全额(≥90%)退款】。
-    小额差价/运费退款(如 ¥5)不算作废 (用户拍板 2026-06-12: 避免误把差价单作废/拦推送)。"""
-    rs = o.refund_status or ""
-    # 2026-07-08 修子串误判: 淘宝『没有申请退款』(正常无退款态)带"退款"二字被 `"退款" in rs`
-    # 误判成已退款 → 误拦下单图生成+工厂推送。先排除这些【含"退款"字样但实际没退】的状态。
-    _NOT_REFUND = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
-    _refund_kw = (any(k in rs for k in ("退款", "退货", "关闭"))
-                  and not any(k in rs for k in _NOT_REFUND))
-    if (o.status or "") == "cancelled" or _refund_kw:
+def _is_refunded(o: Order, *, db: Session | None = None) -> bool:
+    """Only confirmed full refunds void a factory order, never price adjustments."""
+    from app.services.order_line_delivery_service import is_full_refund
+
+    # paid_amount can already be net of a price-protection refund.
+    original = max(Decimal(str(o.paid_amount or 0)),
+                   Decimal(str(getattr(o, "buyer_payable_amount", None) or 0)))
+    if is_full_refund(original, o.refund_amount, o.refund_status):
         return True
-    ra = Decimal(str(o.refund_amount or 0))
-    pa = Decimal(str(o.paid_amount or 0))
-    return ra > 0 and pa > 0 and ra >= pa * Decimal("0.9")
+    # After a price adjustment, a later refund may return the entire net payment.
+    # Only exact matched payment/refund ledger evidence can prove that case.
+    paid = Decimal(str(o.paid_amount or 0))
+    if db is None or paid <= 0 or Decimal(str(o.refund_amount or 0)) < paid:
+        return False
+    from app.models.finance import AlipayFlow
+    flows = db.scalars(select(AlipayFlow).where(
+        or_(AlipayFlow.related_order_no.in_([o.order_no, "T200P" + o.order_no]),
+            AlipayFlow.platform_order_no == o.order_no),
+        AlipayFlow.reconciliation_type.in_(["customer_payment", "refund"]))).all()
+    accounts = {}
+    for flow in flows:
+        bucket = accounts.setdefault(flow.account, [Decimal(0), Decimal(0)])
+        if flow.reconciliation_type == "customer_payment" and flow.amount > 0:
+            bucket[0] += flow.amount
+        elif flow.reconciliation_type == "refund" and flow.amount < 0:
+            bucket[1] -= flow.amount
+    return any(received == paid and returned >= received for received, returned in accounts.values())
 
 
 def _partial_refund_child_lines(db: Session, order: Order) -> list[OrderDetail]:
@@ -266,6 +279,9 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
              else _gallery_data_uri(getattr(sheet, "gallery_main_image", None)))
     _img = _sku or _main
     pic_html = f"<img src='{e(_img)}'>" if _img else "<div class='noimg'>无产品图纸</div>"
+    if getattr(sheet, 'reference_image_notice', None):
+        pic_html = ("<div style='font-size:26px;color:#dc2626;font-weight:800;padding:16px'>"
+                    + e(sheet.reference_image_notice) + '</div>' + pic_html)
     # 敲章: 加急 + 定制(自动识别 is_custom_variant)
     stamps = ""
     if sheet.urgent:
@@ -456,7 +472,7 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
             continue   # 取消 + 未付款(含付定金的待付款)永不生成 (用户拍板 2026-06-20 铁律)
         if not _is_paid(o):   # 用户拍板: 必须已付款才生成下单图
             continue
-        if _is_refunded(o):   # 已退款/退货/关闭 → 不生成也不推送 (改走作废图流程)
+        if _is_refunded(o, db=db):   # 已退款/退货/关闭 → 不生成也不推送 (改走作废图流程)
             continue
         from app.services import order_flags
         if order_flags.is_remote(o):
@@ -504,7 +520,7 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
-    if any(getattr(w, 'code', '') in {'production_quantity_unverified', 'sales_detail_missing'} for w in getattr(sheet, 'warnings', [])):
+    if any(getattr(w, 'code', '') in {'production_quantity_unverified', 'sales_detail_missing', 'linked_topup_binding_stale'} for w in getattr(sheet, 'warnings', [])):
         raise ValueError('缺真实销售明细或已核成品件数，停止自动生产发送，待补齐来源或确认数量')
     return _html_to_png(render_html(sheet), width=1684)
 
@@ -626,6 +642,7 @@ def reconcile_order_line_delivery(
         return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "no_chat_id"}
     from app.services import factory_quantity_request_service
     factory_quantity_request_service.complete_pending_receipts(db, only_sub_order_nos=only_sub_order_nos)
+    factory_quantity_request_service.remind_pending(db, only_sub_order_nos=only_sub_order_nos)
     sent = line_delivery.sent_line_evidence(db)
     pushed: list[str] = []
     failed: list[dict] = []
@@ -699,7 +716,7 @@ def reconcile_order_line_delivery(
             if any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
                 from app.services import factory_quantity_request_service as quantities
                 line.factory_delivery_state = 'failed'
-                line.factory_delivery_error = '实际成品数量待确认，请回复飞书对应数量卡片并 @机器人'
+                line.factory_delivery_error = '实际成品数量待确认，请点击飞书数量卡片选择并确认数量'
                 db.commit()
                 question = quantities.request_quantity(db, line_id=line.id)
                 failed.append({'order_no': order.order_no, 'sub_order_no': sub_order_no,
@@ -779,7 +796,7 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
     targets = [
         line for line in line_delivery.physical_lines(db)
         if line.sub_order_no
-        and line_delivery.line_is_refunded(line)
+        and line_delivery.line_is_fully_refunded(line, db=db)
         and str(line.sub_order_no) in sent
         and str(line.sub_order_no) not in already_void
     ]
@@ -800,7 +817,7 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
             content = render_void_png(sheet)
             image_key = feishu_client.upload_image(db, content)
             label = f"畔色{line.factory_no}单"
-            notice = f"{label}已作废（订单关闭／退款成功）。请停止制作、不要发货；本消息不是新增下单。"
+            notice = f"{label}已作废（全额退款已确认）。请停止制作、不要发货；本消息不是新增下单。"
             record = import_storage.archive(
                 db,
                 content=content,
@@ -961,7 +978,7 @@ def _is_pushable(db: Session, rec: ImportedFile) -> bool:
         ).limit(1)
     ).scalar_one_or_none() is not None:
         return False
-    if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+    if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
         return False
     from app.services import order_flags
     if order_flags.is_remote(order):
@@ -1144,6 +1161,16 @@ def _push_min_amount(db: Session) -> float:
 
 def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
     """是否定制补差/加价单(不推工厂)。返回 (是否, 原因)。命中备注关键词 或 金额<阈值。"""
+    from app.services import factory_linked_topup_service as linked
+    no = getattr(o, 'order_no', None)
+    if no and linked.topup_member(db, no):
+        return True, '同一主单的补差费用，不独立生产'
+    if no:
+        binding_state = linked.assessment(db, no)['state']
+        if binding_state == 'valid':
+            return False, ''
+        if binding_state == 'stale':
+            return True, '定制主单关联已变化，须重新确认，不能回退标准尺寸'
     text = " ".join(str(getattr(o, f, "") or "") for f in
                     ("remark", "seller_memo", "production_note", "buyer_message"))
     for k in _PARTS_TOPUP_KEYWORDS:
@@ -1152,6 +1179,9 @@ def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
     thr = _push_min_amount(db)
     amt = float(getattr(o, "paid_amount", 0) or 0) or float(getattr(o, "buyer_payable_amount", 0) or 0)
     if thr > 0 and 0 < amt < thr:
+        from app.services.factory_production_evidence import low_value_physical_order_confirmed
+        if low_value_physical_order_confirmed(db, o):
+            return False, ""
         return True, f"金额¥{amt:.0f} < 门槛¥{thr:.0f}"
     return False, ""
 
@@ -1229,7 +1259,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order:
             continue
-        if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+        if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
             continue   # 取消/退款/待付款 不推工厂 (待付款大概率会取消, 用户拍板 2026-06-20)
         from app.services import order_flags
         if order_flags.is_remote(order):
@@ -1651,7 +1681,7 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
         if any((r.row_summary or {}).get("activated") is True for r in evidence):
             continue   # 已有"激活态"推的图 → 不再重推
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
-        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
             continue
         if not _is_active_factory_order(order):
             continue
@@ -1726,7 +1756,7 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
         if len(changed) + len(released_baseline) >= limit:
             break
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
-        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
             continue
         if not _is_active_factory_order(order) or not order_flags.is_activated(order):
             continue
@@ -1754,7 +1784,7 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
     o = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
     if o is None:
         return {"ok": False, "error": "订单不存在"}
-    if (o.status or "") in ("cancelled", "pending_payment") or _is_refunded(o) or not _is_paid(o):
+    if (o.status or "") in ("cancelled", "pending_payment") or _is_refunded(o, db=db) or not _is_paid(o):
         return {"ok": False, "error": "取消/退款/未付款单不推工厂"}
     if order_flags.is_factory_remote(o):
         return {"ok": False, "error": "远期挂起单不推工厂 —— 等客户通知「开始制作」后再推"}
@@ -1821,7 +1851,7 @@ def deliver_unsent_legacy_single_line(
     if (order.order_date is None or order.order_date >= _AUTO_NUMBER_SINCE
             or order.factory_no is not None or order.is_refill):
         return {"ok": False, "error": "不是未编号的历史正式订单"}
-    if not _is_active_factory_order(order) or not _is_paid(order) or _is_refunded(order):
+    if not _is_active_factory_order(order) or not _is_paid(order) or _is_refunded(order, db=db):
         return {"ok": False, "error": "订单未处于可生产的已付款状态"}
     if order_flags.is_factory_remote(order) or order_flags.is_remote(order):
         return {"ok": False, "error": "订单仍处于远期挂起"}
@@ -1908,7 +1938,7 @@ def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | N
         if order_nos is not None and no not in order_nos:
             continue
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
-        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
             continue
         if not _is_active_factory_order(order):
             continue
@@ -1953,7 +1983,7 @@ def remind_remote_pushed(db: Session) -> dict:
     items: list = []
     for no in seen:
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
-        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order, db=db):
             continue
         if not _is_active_factory_order(order):
             continue
@@ -2114,7 +2144,11 @@ def generate_void_sheets(db: Session, *, limit: int = 100) -> dict:
             break
         if o.order_no not in sheet_nos or o.order_no in voided_done:
             continue
-        if not _is_refunded(o) or not _is_paid(o):
+        if not _is_refunded(o, db=db) or not _is_paid(o):
+            continue
+        # Authoritative physical child rows own void decisions independently.
+        from app.services import order_line_delivery_service as line_delivery
+        if line_delivery.physical_lines(db, o.order_no):
             continue
         try:
             sheet = factory_sheet.build(db, o.id)

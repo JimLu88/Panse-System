@@ -296,8 +296,10 @@ def _is_non_factory_order(order: Order) -> bool:
 
 def _status(order: Order, *, remote: bool, refunded: bool) -> str:
     normalized = order_service.normalize_status(order.status)
-    if normalized == "cancelled" or refunded:
+    if refunded:
         return "已作废"
+    if normalized == "cancelled":
+        return "售后处理中"
     if normalized == "signed":
         return "已签收"
     if normalized == "shipped":
@@ -320,13 +322,15 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
 def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) -> str:
     """交期列始终给出原因：在制单显示排程，终态显示低干扰的结果标签。"""
     normalized = order_service.normalize_status(order.status)
-    if refunded or normalized == "cancelled":
+    if refunded:
         return "取消"
+    if normalized == "cancelled":
+        return "售后处理"
     if normalized in {"shipped", "signed"}:
         return "完成"
     if normalized == "aftersales":
         return "售后处理"
-    # 工厂在制总口径会把任意退款金额都排除，但下单表只把全额/接近全额退款视为作废。
+    # 工厂在制总口径会把任意退款金额都排除，但下单表只把有确切金额证据的全额退款视为作废。
     # 部分退款（差价、运费等）仍是正常生产单，交期必须继续按排程显示。
     if normalized == "paid":
         return str(schedule["urgency_label"])
@@ -354,16 +358,13 @@ def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> 
     return "做好直接发货"
 
 
-def _line_void(line: OrderDetail) -> bool:
-    """Only evidenced cancellation/full refund is void; small refunds are not."""
-    if order_service.normalize_status(line.line_status) == "cancelled":
-        return True
-    amount = Decimal(str(line.amount or 0))
-    refunded = Decimal(str(line.refund_amount or 0))
-    return amount > 0 and refunded >= amount
+def _line_void(line: OrderDetail, *, db: Session | None = None) -> bool:
+    """Partial refunds and status labels alone cannot revoke a factory order."""
+    from app.services.order_line_delivery_service import line_is_fully_refunded
+    return line_is_fully_refunded(line, db=db)
 
 
-def _line_projection(order: Order, line: OrderDetail, *, single: bool):
+def _line_projection(order: Order, line: OrderDetail, *, single: bool, db: Session | None = None):
     """Detached read model: never mutate parent ORM data or borrow sibling status/cost."""
     values = {column.key: getattr(order, column.key) for column in Order.__table__.columns}
     values.update(status=order_service.normalize_status(line.line_status) if line.line_status else "unknown",
@@ -380,10 +381,10 @@ def _line_projection(order: Order, line: OrderDetail, *, single: bool):
     inactive_refund = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
     if rs and ("退款" in rs or "退货" in rs) and not any(x in rs for x in inactive_refund):
         # A known small completed refund does not revoke a delivered product.
-        partial_completed = ("成功" in rs or "完成" in rs) and Decimal(str(line.refund_amount or 0)) > 0 and not _line_void(line)
+        partial_completed = ("成功" in rs or "完成" in rs) and Decimal(str(line.refund_amount or 0)) > 0 and not _line_void(line, db=db)
         if not partial_completed:
             values["status"] = "aftersales"
-    if _line_void(line):
+    if _line_void(line, db=db):
         values["status"] = "cancelled"
     return SimpleNamespace(**values)
 
@@ -439,7 +440,7 @@ def _production_projection(db, order, line=None):
     confirmed = getattr(sheet, 'quantity_confirmation', None)
     qty_unknown = (not confirmed and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
         w.code in {'production_quantity_unverified', 'sales_detail_missing'} for w in sheet.warnings)
-    blockers = [w.code for w in sheet.warnings if w.code in {'production_quantity_unverified', 'sales_detail_missing'}]
+    blockers = [w.code for w in sheet.warnings if w.code in {'production_quantity_unverified', 'sales_detail_missing', 'linked_topup_binding_stale'}]
     size_unverified = not sheet.size_info or any(w.code in (
         'variant_size_unverified', 'size_unverified', 'custom_size_in_remark') for w in sheet.warnings)
     if qty_unknown and 'production_quantity_unverified' not in blockers:
@@ -587,7 +588,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         if imported_lines and not line_rows and not legacy_shared_key:
             continue  # Never replace filtered authoritative lines with parent product.
         paid = order_sheet_archive_service._is_paid(order)
-        refunded = order_sheet_archive_service._is_refunded(order)
+        refunded = order_sheet_archive_service._is_refunded(order, db=db)
         normalized = order_service.normalize_status(order.status)
         # 工厂订单表只承载仍有效的生产/交付记录。取消或退款订单即使历史上
         # 已经拿过工厂号，也必须退出当前工厂表，不能继续作为可执行订单展示。
@@ -608,7 +609,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         if line_rows:
             for line in line_rows:
                 sub_order_no = str(line.sub_order_no or "")
-                line_refunded = _line_void(line)
+                line_refunded = _line_void(line, db=db)
                 if line_refunded:
                     continue
                 ps_line = db.execute(
@@ -626,7 +627,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     or int(sheet_image.get("render_width") or 0) != 1684
                 ):
                     sheet_image = None
-                projected = _line_projection(order, line, single=len(imported_lines) == 1)
+                projected = _line_projection(order, line, single=len(imported_lines) == 1, db=db)
                 remote = order_flags.is_remote(projected)
                 schedule = order_flags.factory_schedule(projected)
                 is_custom, custom_reason = _custom_order_info(projected, ps_line)
@@ -842,7 +843,7 @@ def _ineligible_factory_entity_keys(
         order_no
         for order_no, order in order_by_no.items()
         if order_service.normalize_status(order.status) == "cancelled"
-        or order_sheet_archive_service._is_refunded(order)
+        or order_sheet_archive_service._is_refunded(order, db=db)
     }
     keys = set(invalid_order_nos)
     lines = db.execute(
@@ -857,7 +858,7 @@ def _ineligible_factory_entity_keys(
             continue
         if (
             str(line.order_no or "") in invalid_order_nos
-            or _line_void(line)
+            or _line_void(line, db=db)
         ):
             keys.add(sub_order_no)
     # 淘宝单商品明细的子订单号可能与主订单号相同：非生产明细已退款，但主订单
@@ -1150,7 +1151,7 @@ def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[s
         if order is None or order.factory_no is None:
             continue
         result["eligible"] += 1
-        refunded = order_sheet_archive_service._is_refunded(order)
+        refunded = order_sheet_archive_service._is_refunded(order, db=db)
         slot = "void" if refunded else "sent"
         current = (snapshots.get(order.order_no) or {}).get(slot)
         if (
@@ -1362,13 +1363,12 @@ def _confirmed_void_record_ids(db: Session, records: list[dict], projected: set[
         parent = parents.get(order_no)
         if parent is None:
             continue
-        parent_void = (order_service.normalize_status(parent.status) == "cancelled"
-                       or order_sheet_archive_service._is_refunded(parent))
+        parent_void = order_sheet_archive_service._is_refunded(parent, db=db)
         if sub_no:
             line = lines.get(sub_no)
             if line is None or line.order_no != order_no:
                 continue
-            invalid = parent_void or _line_void(line)
+            invalid = _line_void(line, db=db)
         else:
             invalid = parent_void
         if invalid:

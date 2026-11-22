@@ -18,6 +18,8 @@ SSH_HOST="${SSH_HOST:-15068803006@DS923plus}"
 SSH_PORT="${SSH_PORT:-2222}"
 NAS_DOCKER="${NAS_DOCKER:-sudo /usr/local/bin/docker}"
 NAS_DIR="${NAS_DIR:-/volume1/docker/panse}"
+# Synology also ships Compose as a standalone binary.
+NAS_COMPOSE="${NAS_COMPOSE:-$NAS_DOCKER compose}"
 IMAGE="${IMAGE:-panse-system-api:latest}"
 WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://192.168.31.21:8200/api/health}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -p "$SSH_PORT" "$SSH_HOST")
@@ -120,13 +122,14 @@ echo "[1/7] 预检 SSH + 当前 panse-system 容器"
 
 rollback="panse-system-api:rollback-$(date +%Y%m%d-%H%M%S)"
 echo "[2/7] 给 NAS 当前 API 镜像打回滚标签: $rollback"
-"${SSH[@]}" "$NAS_DOCKER image inspect '$IMAGE' >/dev/null 2>&1 && $NAS_DOCKER tag '$IMAGE' '$rollback' || true"
+running_image=$("${SSH[@]}" "$NAS_DOCKER inspect --format '{{.Image}}' panse-system-api-1")
+"${SSH[@]}" "$NAS_DOCKER tag '$running_image' '$rollback'"
 
 echo "[3/7] 传镜像 (docker save | gzip | ssh -> gunzip | docker load)"
 docker save "$IMAGE" | gzip | "${SSH[@]}" "gunzip | $NAS_DOCKER load"
 
 echo "[4/7] 起新 api 容器 (用载入的镜像, 不在 NAS 上 build)"
-"${SSH[@]}" "cd $NAS_DIR && $NAS_DOCKER compose -p panse-system up -d --no-build api"
+"${SSH[@]}" "cd $NAS_DIR && $NAS_COMPOSE -p panse-system up -d --no-build api"
 
 echo "[5/7] 重启 web (nginx 重新解析 api 容器 IP, 防 502) —— 红线步骤"
 "${SSH[@]}" "$NAS_DOCKER restart panse-system-web-1"

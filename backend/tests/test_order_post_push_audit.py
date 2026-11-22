@@ -114,6 +114,26 @@ def test_missing_image_and_table_are_repaired_once_from_export(db_session, expor
     assert len(_feishu) == 1 and len(remote[0]) == 1
 
 
+def test_low_amount_product_is_visible_then_explicitly_released(db_session, exported, remote, _feishu):
+    from decimal import Decimal
+    batch, _ = exported()
+    order, line = existing(db_session)
+    order.paid_amount = Decimal('285.52')
+    db_session.commit()
+    held = audit.audit(db_session, batch_id=batch)
+    assert not held['ok']
+    assert held['remaining'] == [{'order_no': PARENT, 'sub_order_no': PARENT,
+        'reason': 'low_value_order_needs_review', 'detail': '金额¥286 < 门槛¥400'}]
+    assert not _feishu
+    facts.confirm_low_value_physical_order(db_session, order_no=PARENT,
+        expected_sku=SKU, expected_qty=1, expected_amount='285.52',
+        actor='explicit-user', evidence_ref='request:low-value-item')
+    released = audit.audit(db_session, batch_id=batch)
+    assert released['ok'] and released['images_pushed'] == released['verified_count'] == 1
+    assert audit.audit(db_session, batch_id=batch)['images_pushed'] == 0
+    assert len(_feishu) == 1 and order.paid_amount == Decimal('285.52')
+
+
 def test_deleted_table_row_is_recreated_without_resending_group_image(db_session, exported, remote, _feishu):
     batch, _ = exported()
     existing(db_session)
