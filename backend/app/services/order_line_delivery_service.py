@@ -27,8 +27,14 @@ def is_full_refund(amount, refunded, refund_status=None) -> bool:
     return original > 0 and actual >= original
 
 
-def line_is_fully_refunded(line: OrderDetail) -> bool:
-    return is_full_refund(line.amount, line.refund_amount, line.refund_status)
+def line_is_fully_refunded(line: OrderDetail, db: Session | None = None) -> bool:
+    if is_full_refund(line.amount, line.refund_amount, line.refund_status):
+        return True
+    if db is not None:
+        from app.services.order_sheet_archive_service import _is_refunded
+        parent = db.scalar(select(Order).where(Order.order_no == line.order_no))
+        return bool(parent and _is_refunded(parent, db=db))
+    return False
 
 
 def line_is_refunded(line: OrderDetail) -> bool:

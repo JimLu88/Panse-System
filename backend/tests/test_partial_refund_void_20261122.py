@@ -107,3 +107,40 @@ def test_partial_refund_does_not_generate_void_even_without_status(db_session,mo
     record.kind='order_sheet_sent';db_session.commit()
     result=sheets.reconcile_refunded_order_lines(db_session)
     assert result['voided']==0
+
+def test_later_full_refund_proven_by_payment_ledger_is_not_restored(db_session,monkeypatch):
+    from app.models.finance import AlipayFlow
+    from app.models.order import Order
+    from datetime import datetime, timezone, timedelta
+    line,record=seed(db_session)
+    order=db_session.query(Order).filter_by(order_no=line.order_no).one()
+    order.paid_amount=Decimal('2491.95');order.buyer_payable_amount=Decimal('2500');order.refund_amount=Decimal('2491.95')
+    assert not sheets._is_refunded(order,db=db_session)  # Amount ambiguity alone is not enough.
+    db_session.add_all([
+        AlipayFlow(account='test',transaction_no='pay',amount=Decimal('2491.95'),related_order_no=line.order_no,reconciliation_type='customer_payment'),
+        AlipayFlow(account='test',transaction_no='refund',amount=Decimal('-2491.95'),related_order_no=line.order_no,reconciliation_type='refund'),
+    ])
+    db_session.commit()
+    assert sheets._is_refunded(order,db=db_session)
+    assert lines.line_is_fully_refunded(line,db=db_session)
+    calls,_=remote(monkeypatch)
+    with pytest.raises(ValueError,match='Later full refund'):
+        recovery.correct_partial_refund_void(db_session,record.id,apply=True)
+    later=ImportedFile(kind='order_sheet_void',stored_path='/kept/later-full.jpg',source='auto',
+        created_at=datetime.now(timezone.utc)+timedelta(days=1),row_summary={'order_no':line.order_no})
+    db_session.add(later);db_session.commit()
+    result=recovery.correct_partial_refund_void(db_session,record.id,apply=True,historical_only=True)
+    assert result['historical_only'] and '不能恢复生产或发货' in result['text']
+    assert later.kind=='order_sheet_void' and calls.count('POST')==1
+
+
+def test_refund_on_different_account_cannot_prove_full_refund(db_session):
+    from app.models.finance import AlipayFlow
+    order=_order(db_session,'DIFFERENT-ACCOUNT')
+    order.paid_amount=50;order.buyer_payable_amount=100;order.refund_amount=50
+    db_session.add_all([
+        AlipayFlow(account='one',transaction_no='pay2',amount=50,related_order_no=order.order_no,reconciliation_type='customer_payment'),
+        AlipayFlow(account='two',transaction_no='refund2',amount=-50,related_order_no=order.order_no,reconciliation_type='refund'),
+    ])
+    db_session.commit()
+    assert not sheets._is_refunded(order,db=db_session)

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.import_file import ImportedFile
 from app.models.order import OrderDetail
 from app.services import feishu_client, settings_service
-from app.services.order_line_delivery_service import line_is_refunded
+from app.services.order_line_delivery_service import line_is_refunded, line_is_fully_refunded
 
 RETRACTED_KIND = "order_sheet_void_retracted"
 KEY = "partial_refund_correction_v1"
@@ -31,7 +31,7 @@ def _save(db, record, correction):
     db.commit()
 
 
-def correct_partial_refund_void(db: Session, archive_id: int, *, apply: bool = False) -> dict:
+def correct_partial_refund_void(db: Session, archive_id: int, *, apply: bool = False, historical_only: bool = False) -> dict:
     """Run only for an explicitly reviewed archive. Unknown sends cannot replay."""
     record = db.scalar(select(ImportedFile).where(ImportedFile.id == archive_id).with_for_update())
     if not record or record.kind not in {"order_sheet_void", RETRACTED_KIND}:
@@ -45,6 +45,15 @@ def correct_partial_refund_void(db: Session, archive_id: int, *, apply: bool = F
             or line_is_refunded(line)
             or not (0 < Decimal(str(line.refund_amount or 0)) < Decimal(str(line.amount or 0)))):
         raise ValueError("Not a verified active partial-refund child with a sent void notice")
+    later_full = line_is_fully_refunded(line, db=db)
+    if later_full != historical_only:
+        raise ValueError("Later full refund must remain void; historical correction requires explicit scope")
+    if historical_only:
+        later_voids = db.scalars(select(ImportedFile).where(
+            ImportedFile.kind == "order_sheet_void", ImportedFile.id != record.id,
+            ImportedFile.created_at > record.created_at)).all()
+        if not any((r.row_summary or {}).get("order_no") == line.order_no for r in later_voids):
+            raise ValueError("Missing separate later full-refund void evidence")
     label = f"畔色{line.factory_no}单"
     historical = line.line_status == "signed"
     text = (f"【作废通知更正】{label}\n订单：{line.order_no}\n"
@@ -52,6 +61,12 @@ def correct_partial_refund_void(db: Session, archive_id: int, *, apply: bool = F
             + ("该单已签收，本次仅更正历史记录，无需重新制作或发货。" if historical else
                "此前通知中的“停止制作、不要发货”不适用于本单，请按原订单及既有生产、交运安排执行。")
             + "\n本消息不是新增下单，请勿重复制作、重复发货。")
+    if historical_only:
+        text = (f"【历史作废通知更正】{label}\n订单：{line.order_no}\n"
+                f"早期只退差价 ¥{line.refund_amount:.2f} 时发送作废通知，属于系统误判。"
+                "但此后该单又退回了剩余实付货款，财务流水已确认全额退回。\n"
+                "本次仅说明早期通知错误，后续全额退款撤单继续保留，不能恢复生产或发货。"
+                "\n本消息不是新增下单，请勿重复制作、重复发货。")
     card = {"header": {"template": "green", "title": {"tag": "plain_text", "content": f"作废已更正｜{label}"}},
             "elements": [{"tag": "div", "text": {"tag": "plain_text", "content": text}}]}
     if not apply:
@@ -76,9 +91,9 @@ def correct_partial_refund_void(db: Session, archive_id: int, *, apply: bool = F
         correction = {"state": "prepared", "at": datetime.now(timezone.utc).isoformat(),
                       "original_kind": record.kind, "original_message_id": original_id,
                       "chat_id": chat_id, "text": text, "factory_no": line.factory_no,
-                      "refund_amount": str(line.refund_amount), "amount": str(line.amount),
+                      "refund_amount": str(line.refund_amount), "amount": str(line.amount), "historical_only": historical_only,
                       "uuid": str(uuid5(NAMESPACE_URL, f"panse:partial-refund-void:{archive_id}"))}
-        record.kind = RETRACTED_KIND
+        record.kind = record.kind if historical_only else RETRACTED_KIND
         _save(db, record, correction)  # Persist intent and retain original artifact/history.
         try:
             if original_id:
