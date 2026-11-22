@@ -13,6 +13,8 @@ SSH_HOST="${SSH_HOST:-15068803006@DS923plus}"
 SSH_PORT="${SSH_PORT:-2222}"
 NAS_DOCKER="${NAS_DOCKER:-sudo /usr/local/bin/docker}"
 NAS_DIR="${NAS_DIR:-/volume1/docker/panse}"
+# Synology also ships Compose as a standalone binary.
+NAS_COMPOSE="${NAS_COMPOSE:-$NAS_DOCKER compose}"
 IMAGE="${IMAGE:-panse-system-web:lan}"
 WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://192.168.31.21:8200/api/health}"
 WEB_BASE_URL="${WEB_BASE_URL:-http://192.168.31.21:8200}"
@@ -65,13 +67,14 @@ fi
 
 rollback="panse-system-web:rollback-$(date +%Y%m%d-%H%M%S)"
 echo "[3/7] 给 NAS 当前 Web 镜像打回滚标签: $rollback"
-"${SSH[@]}" "$NAS_DOCKER image inspect '$IMAGE' >/dev/null 2>&1 && $NAS_DOCKER tag '$IMAGE' '$rollback' || true"
+running_image=$("${SSH[@]}" "$NAS_DOCKER inspect --format '{{.Image}}' panse-system-web-1")
+"${SSH[@]}" "$NAS_DOCKER tag '$running_image' '$rollback'"
 
 echo "[4/7] 传镜像 (docker save | gzip | ssh -> gunzip | docker load)"
 docker save "$IMAGE" | gzip | "${SSH[@]}" "gunzip | $NAS_DOCKER load"
 
 echo "[5/7] 重建 web 容器 (红线: 必须 -f docker-compose.lan.yml 防撞 443)"
-"${SSH[@]}" "cd $NAS_DIR && $NAS_DOCKER compose -p panse-system -f docker-compose.lan.yml up -d web"
+"${SSH[@]}" "cd $NAS_DIR && $NAS_COMPOSE -p panse-system -f docker-compose.lan.yml up -d web"
 
 echo "[6/7] 验证健康"
 sleep 5
