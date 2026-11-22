@@ -79,19 +79,13 @@ def _is_active_factory_order(o: Order) -> bool:
 
 
 def _is_refunded(o: Order) -> bool:
-    """是否退款作废: 状态关闭/退货, 或退款状态含退款/退货, 或【全额(≥90%)退款】。
-    小额差价/运费退款(如 ¥5)不算作废 (用户拍板 2026-06-12: 避免误把差价单作废/拦推送)。"""
-    rs = o.refund_status or ""
-    # 2026-07-08 修子串误判: 淘宝『没有申请退款』(正常无退款态)带"退款"二字被 `"退款" in rs`
-    # 误判成已退款 → 误拦下单图生成+工厂推送。先排除这些【含"退款"字样但实际没退】的状态。
-    _NOT_REFUND = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
-    _refund_kw = (any(k in rs for k in ("退款", "退货", "关闭"))
-                  and not any(k in rs for k in _NOT_REFUND))
-    if (o.status or "") == "cancelled" or _refund_kw:
-        return True
-    ra = Decimal(str(o.refund_amount or 0))
-    pa = Decimal(str(o.paid_amount or 0))
-    return ra > 0 and pa > 0 and ra >= pa * Decimal("0.9")
+    """Only confirmed full refunds void a factory order, never price adjustments."""
+    from app.services.order_line_delivery_service import is_full_refund
+
+    # paid_amount can already be net of a price-protection refund.
+    original = max(Decimal(str(o.paid_amount or 0)),
+                   Decimal(str(getattr(o, "buyer_payable_amount", None) or 0)))
+    return is_full_refund(original, o.refund_amount, o.refund_status)
 
 
 def _partial_refund_child_lines(db: Session, order: Order) -> list[OrderDetail]:
@@ -783,7 +777,7 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
     targets = [
         line for line in line_delivery.physical_lines(db)
         if line.sub_order_no
-        and line_delivery.line_is_refunded(line)
+        and line_delivery.line_is_fully_refunded(line)
         and str(line.sub_order_no) in sent
         and str(line.sub_order_no) not in already_void
     ]
@@ -804,7 +798,7 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
             content = render_void_png(sheet)
             image_key = feishu_client.upload_image(db, content)
             label = f"畔色{line.factory_no}单"
-            notice = f"{label}已作废（订单关闭／退款成功）。请停止制作、不要发货；本消息不是新增下单。"
+            notice = f"{label}已作废（全额退款已确认）。请停止制作、不要发货；本消息不是新增下单。"
             record = import_storage.archive(
                 db,
                 content=content,
@@ -2132,6 +2126,10 @@ def generate_void_sheets(db: Session, *, limit: int = 100) -> dict:
         if o.order_no not in sheet_nos or o.order_no in voided_done:
             continue
         if not _is_refunded(o) or not _is_paid(o):
+            continue
+        # Authoritative physical child rows own void decisions independently.
+        from app.services import order_line_delivery_service as line_delivery
+        if line_delivery.physical_lines(db, o.order_no):
             continue
         try:
             sheet = factory_sheet.build(db, o.id)

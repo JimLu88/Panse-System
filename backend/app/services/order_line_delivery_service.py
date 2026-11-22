@@ -13,6 +13,24 @@ from app.models.order import Order, OrderDetail
 _NOT_REFUND = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
 
 
+def is_full_refund(amount, refunded, refund_status=None) -> bool:
+    """Void requires a known original amount and a completed full refund.
+
+    Missing status is allowed for imported actual refund amounts; pending,
+    failed or withdrawn applications are not completed refunds.
+    """
+    status = str(refund_status or "")
+    if any(word in status for word in _NOT_REFUND + ("申请", "处理中", "等待", "待审核", "待处理")):
+        return False
+    original = Decimal(str(amount or 0))
+    actual = Decimal(str(refunded or 0))
+    return original > 0 and actual >= original
+
+
+def line_is_fully_refunded(line: OrderDetail) -> bool:
+    return is_full_refund(line.amount, line.refund_amount, line.refund_status)
+
+
 def line_is_refunded(line: OrderDetail) -> bool:
     status = str(line.line_status or "").lower()
     refund_status = str(line.refund_status or "")
@@ -22,7 +40,7 @@ def line_is_refunded(line: OrderDetail) -> bool:
     # Unknown amounts, pending returns and fully refunded items stay blocked.
     if (status in {"paid", "production", "shipped", "signed"}
             and 0 < refunded < amount
-            and any(word in refund_status for word in ("成功", "完成"))
+            and (not refund_status.strip() or any(word in refund_status for word in ("成功", "完成")))
             and "退货" not in refund_status):
         return False
     keyword = (

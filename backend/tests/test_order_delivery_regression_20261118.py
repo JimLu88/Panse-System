@@ -41,6 +41,8 @@ def test_real_master_is_not_address_only(db_session):
 
 @pytest.mark.parametrize("status,refund_status,amount,refund,blocked", [
     ("paid", "退款成功", 4335, 5, False),
+    ("paid", None, 2678.17, 8.05, False),
+    ("signed", "", 2937.85, 81.51, False),
     ("production", "退款完成", 4335, 5, False),
     ("signed", "退款成功", 4335, 5, False),
     ("cancelled", "退款成功", 4335, 5, True),

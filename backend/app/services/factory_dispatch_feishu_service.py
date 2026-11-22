@@ -296,8 +296,10 @@ def _is_non_factory_order(order: Order) -> bool:
 
 def _status(order: Order, *, remote: bool, refunded: bool) -> str:
     normalized = order_service.normalize_status(order.status)
-    if normalized == "cancelled" or refunded:
+    if refunded:
         return "已作废"
+    if normalized == "cancelled":
+        return "售后处理中"
     if normalized == "signed":
         return "已签收"
     if normalized == "shipped":
@@ -320,13 +322,15 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
 def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) -> str:
     """交期列始终给出原因：在制单显示排程，终态显示低干扰的结果标签。"""
     normalized = order_service.normalize_status(order.status)
-    if refunded or normalized == "cancelled":
+    if refunded:
         return "取消"
+    if normalized == "cancelled":
+        return "售后处理"
     if normalized in {"shipped", "signed"}:
         return "完成"
     if normalized == "aftersales":
         return "售后处理"
-    # 工厂在制总口径会把任意退款金额都排除，但下单表只把全额/接近全额退款视为作废。
+    # 工厂在制总口径会把任意退款金额都排除，但下单表只把有确切金额证据的全额退款视为作废。
     # 部分退款（差价、运费等）仍是正常生产单，交期必须继续按排程显示。
     if normalized == "paid":
         return str(schedule["urgency_label"])
@@ -355,12 +359,9 @@ def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> 
 
 
 def _line_void(line: OrderDetail) -> bool:
-    """Only evidenced cancellation/full refund is void; small refunds are not."""
-    if order_service.normalize_status(line.line_status) == "cancelled":
-        return True
-    amount = Decimal(str(line.amount or 0))
-    refunded = Decimal(str(line.refund_amount or 0))
-    return amount > 0 and refunded >= amount
+    """Partial refunds and status labels alone cannot revoke a factory order."""
+    from app.services.order_line_delivery_service import line_is_fully_refunded
+    return line_is_fully_refunded(line)
 
 
 def _line_projection(order: Order, line: OrderDetail, *, single: bool):
@@ -1362,13 +1363,12 @@ def _confirmed_void_record_ids(db: Session, records: list[dict], projected: set[
         parent = parents.get(order_no)
         if parent is None:
             continue
-        parent_void = (order_service.normalize_status(parent.status) == "cancelled"
-                       or order_sheet_archive_service._is_refunded(parent))
+        parent_void = order_sheet_archive_service._is_refunded(parent)
         if sub_no:
             line = lines.get(sub_no)
             if line is None or line.order_no != order_no:
                 continue
-            invalid = parent_void or _line_void(line)
+            invalid = _line_void(line)
         else:
             invalid = parent_void
         if invalid:

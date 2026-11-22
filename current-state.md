@@ -1916,3 +1916,10 @@ Start with `docs/logistics-bill-product-analytics.md`. For the next engineering 
 
 ## 2026-10-24 孚格沿用现有主账号部署完成
 用户明确不另设密码。孚格 a16e4a6 已部署，仅一次同步唯一活跃admin lightrat 的 bcrypt 校验信息；没有读取明文或复制业务库，运行时仍无畔色库/网络访问。账户ready，setup服务停止；畔色API/Web StartedAt前后完全一致。112款/2确认SKU/3300图未变。42项本地测试通过、1项Windows符号链接跳过；错误口令和跨店token受拒。真实密码登录待用户自行输入，不声称已代用户登录。证据 outputs/fuge-pricing-isolation-20261024/erp-maintenance/owner-login-production.json。以后畔色改密不自动同步孚格。
+
+
+## 2026-11-22 部分退款误作废修复
+
+- 工厂作废必须具备原金额与全额退款金额证据；差价退款和单独退款文字不再触发作废。售后处理中仍保留生产拦截，子单不连带作废兄弟商品。
+- 新增 partial_refund_void_recovery_service：经授权逐条修正已发误作废卡，保留原档案、原图及原发送记录，新增更正消息逐条读回；未知发送不自动重放。签收历史单明确无需重复制作或发货。
+- 本地验证：88 项主要回归通过；另外92项检查中旧取消标签断言按新规则修订后通过。关系目录已更新；无关历史来源指纹未重锁。生产发布与7单群更正结果另存项目 outputs/partial-refund-void-20261122，不能以本段代替送达证据。

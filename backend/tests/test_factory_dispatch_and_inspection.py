@@ -221,7 +221,7 @@ def test_dispatch_urgency_uses_schedule_for_active_and_reason_for_terminal():
         _order(status="cancelled"),
         refunded=False,
         schedule=schedule,
-    ) == "取消"
+    ) == "售后处理"
     assert dispatch._urgency_label(
         _order(status="signed"),
         refunded=True,
