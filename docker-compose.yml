@@ -55,6 +55,7 @@ services:
       WEB_AGENT_URL: ${WEB_AGENT_URL:-http://host.docker.internal:8500}
       PROCUREMENT_AGENT_TOKEN: ${PROCUREMENT_AGENT_TOKEN:-}
       AGENT_OUTPUT_DIR: /app/agent_output
+      PANSE_BATCH_SHIPPING_ENABLED: ${PANSE_BATCH_SHIPPING_ENABLED:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Linux Docker(群晖)也能解析宿主机
     ports:

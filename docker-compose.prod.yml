@@ -73,6 +73,7 @@ services:
       PROCUREMENT_AGENT_TOKEN: ${PROCUREMENT_AGENT_TOKEN:-}
       # 绘图子程序 (独立部署, 见 docs/绘图子程序_交接方案.md); 空=不出图纸, 不报错
       DRAWING_SERVICE_URL: ${DRAWING_SERVICE_URL:-}
+      PANSE_BATCH_SHIPPING_ENABLED: ${PANSE_BATCH_SHIPPING_ENABLED:-0}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: >
