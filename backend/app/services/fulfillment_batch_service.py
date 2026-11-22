@@ -269,7 +269,7 @@ def record_platform_submission(db, *, batch_id: str, platform_task_id: str, file
     if not batch:
         raise ShippingGate("未找到该发货批次")
     execution = dict(batch.execution or {})
-    if (not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', platform_task_id)
+    if (not re.fullmatch(r'[A-Za-z0-9_@-]{1,64}', platform_task_id)
             or execution.get('attempt_id') != attempt_id or execution.get('actor') != actor):
         raise ShippingGate("执行身份或平台任务编号不匹配")
     if file_sha256 != batch.file_sha256:

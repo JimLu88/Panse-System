@@ -1,0 +1,7 @@
+# 畔色 ERP 淘宝批量发货执行器环境依赖
+playwright>=1.40.0
+openpyxl>=3.1.2
+httpx>=0.25.0
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pydantic>=2.0.0

@@ -108,13 +108,13 @@ class StartExecution(BaseModel):
 
 
 class RecordSubmission(BaseModel):
-    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_@-]{1,64}$')
     attempt_id: UUID
     file_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
 
 
 class FinishExecution(BaseModel):
-    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_-]{1,64}$')
+    platform_task_id: str = Field(pattern=r'^[A-Za-z0-9_@-]{1,64}$')
     attempt_id: UUID
     file_sha256: str = Field(pattern=r'^[0-9a-f]{64}$')
     task_status: str
