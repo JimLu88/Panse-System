@@ -252,6 +252,7 @@ export const fetchBusinessMonthly = (fromYear = 2026, fromMonth = 1) =>
 
 // 逐单核对 (财务) — 某月每笔订单的完整成本拆解 + 支付宝覆盖/对账 + 问题单
 export interface PerOrderRow {
+  is_sample_shipment?: boolean;
   order_no: string;
   product_name: string;
   sku: string | null;

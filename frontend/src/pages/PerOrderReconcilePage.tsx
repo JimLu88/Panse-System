@@ -126,9 +126,10 @@ export default function PerOrderReconcilePage() {
   const cols: ColumnsType<PerOrderRow> = [
     { title: '订单号', dataIndex: 'order_no', width: 150, fixed: 'left',
       render: (v: string, r) => (
-        <Space size={2}>
+        <Space size={2} wrap>
           <Text copyable={{ text: v }} style={{ fontSize: 11 }}>{v.length > 14 ? v.slice(0, 14) + '…' : v}</Text>
           {r.is_custom && <Tag color="purple" style={{ marginInlineEnd: 0, padding: '0 3px', fontSize: 10 }}>定制</Tag>}
+          {r.is_sample_shipment && <Tag color="gold" style={{ marginInlineEnd: 0, padding: '0 3px', fontSize: 11 }}>样品出货</Tag>}
           {r.cost_cap_mode === '退货已入库' && <Tag color="orange">退货退款</Tag>}
         </Space>
       ) },
