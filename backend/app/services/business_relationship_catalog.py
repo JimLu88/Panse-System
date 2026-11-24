@@ -27,6 +27,7 @@ def node(id, label, domain, field, path, anchor='', note=''):
 
 
 NODES = [
+    node('sync.order_push_command','飞书自主推单指令','sync','message_id / feishu_order_push_active_v1','services/feishu_order_push_service.py','def handle_message','仅可信用户与已配置订单/提醒群；同消息去重，运行或未知不重启；推送状态不执行业务'),
     node('order.linked_topup','实物主单与补差单精确生产关联','order','factory_linked_topup_main:<order_no> / FactoryOrder.same_order_topup','services/factory_linked_topup_service.py','def confirm','沿用已核实账务关系；仅一件主单的定制尺寸及数量证据，事实变化即失效，不改价格或交易备注'),
     {'id':'shipping.batch','label':'官方批量发货表','domain':'shipping',
      'field':'FulfillmentBatch.rows/file_sha256 + FulfillmentIntake.batch_id/review_evidence/order_claim/parcel_claim',
@@ -165,6 +166,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('sync.inbound','sync.order_push_command','识别推送与推送状态','可信消息、用户身份、允许群、完整指令','数量/口令/图片分支不接管；不执行淘宝发货','services/feishu_bot_service.py','def on_message_event'),
+    edge('sync.order_push_command','automation.agent','沿用订单取数与增量送达','独占受理后调用现有订单流程','三报表完整、新鲜、数量有效才按原规则发图；财务及活动不启动','services/feishu_order_push_service.py','def run_request'),
+    edge('sync.order_push_command','factory.receipt','返回真实推送结果','原流程delivery结果与群消息回执','异常或未知不报成功；回复失败不重跑业务；进程中断保留待核原记录','services/feishu_order_push_service.py','def run_request'),
     edge('automation.batch','sync.route','取数失败仅一次群提醒','普通失败按业务日去重；发货待口令和支付宝待扫码跨天仅一次','重试、最终失败和恢复只进ERP，投递结果未知不重发；其他来源故障不被等待扫码掩盖','services/automation_pipeline_service.py','def _notify_failure_once'),
     edge('sync.password','sync.route','等待人工输入跨天去重','发送前持久占位；新报表、重启、跨日不重新提醒','只在对应真实恢复后解除；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
     edge('order.notes','shipping.deadline','提取内部工期','有下单锚点及明确的完成或发货期限','人工交期、延期及待确认条件优先','services/fulfillment_deadlines.py','def deadline'),
