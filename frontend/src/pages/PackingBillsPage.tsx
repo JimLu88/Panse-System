@@ -261,7 +261,7 @@ export default function PackingBillsPage() {
   const setCell = (i: number, patch: Partial<PackingRowParsed>) =>
     setRows(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   const delRow = (i: number) => setRows(rows.filter((_, idx) => idx !== i));
-  const addRow = () => setRows([...rows, { customer_name: '', packing_fee: null, excluded: false }]);
+  const addRow = () => setRows(current => [...current, { customer_name: '', packing_fee: null, excluded: false }]);
 
   const previewTotals = useMemo(() => {
     const payable = rows.filter(r => !r.excluded).reduce((s, r) => s + Number(r.packing_fee || 0), 0);
@@ -274,6 +274,11 @@ export default function PackingBillsPage() {
 
   const handleCommit = async () => {
     if (!rows.length) { message.warning('没有可入库的行'); return; }
+    if (!billMonth) { message.warning('请先选择账期'); return; }
+    if (rows.some(r => !r.customer_name?.trim() || r.packing_fee == null || !Number.isFinite(r.packing_fee) || r.packing_fee < 0)) {
+      message.warning('请填写每行的客户姓名和有效打包费（不能小于 0）');
+      return;
+    }
     setSaving(true);
     try {
       const r = await commitPackingBill({
@@ -281,6 +286,8 @@ export default function PackingBillsPage() {
       message.success(
         `入库 ${r.inserted} 行（去重 ${r.skipped}）· 配单 ${r.matched} · 剔除 ${r.excluded} · ` +
         `当月应付 ¥${r.payable_total.toFixed(2)}`);
+      qc.invalidateQueries({ queryKey: ['packing-all'] });
+      qc.invalidateQueries({ queryKey: ['packing-variance'] });
       setRows([]);
       setDeclaredTotal(null);
       setOcrWarnings([]);
@@ -371,11 +378,12 @@ export default function PackingBillsPage() {
         message="手写中文姓名识别准确率约 60–80%，识别后请务必逐行核对姓名与金额再入库。"
         description="本子上标了「改客户/不计入/作废」的行会自动勾上「不计入」并从应付总额里剔除；可手动改。配单按订单号优先、否则客户名唯一匹配（自动排除关闭单）。" />
 
-      <Upload accept="image/*" showUploadList={false} beforeUpload={handleParse} disabled={parsing}>
-        <Button type="primary" icon={<InboxOutlined />} loading={parsing} disabled={parsing}>
-          上传手写账单照片识别
-        </Button>
-      </Upload>
+      <Space wrap>
+        <Button icon={<PlusOutlined />} onClick={addRow} disabled={!billMonth || parsing || saving}>增加账单</Button>
+        <Upload accept="image/*" showUploadList={false} beforeUpload={handleParse} disabled={parsing}>
+          <Button type="primary" icon={<InboxOutlined />} loading={parsing} disabled={parsing}>上传手写账单照片识别</Button>
+        </Upload>
+      </Space>
 
       {ocrWarnings.length > 0 && (
         <Alert type="info" showIcon message="识别提示" description={<ul style={{ margin: 0, paddingLeft: 18 }}>{ocrWarnings.map((w, i) => <li key={i}>{w}</li>)}</ul>} />
