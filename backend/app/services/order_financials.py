@@ -258,6 +258,20 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 "cap_mode": "退货已入库", "cap_label": "退回商品不重复计损；原打包、物流、安装及售后分别计费",
                 "logistics_component": Decimal("0"), "install_component": Decimal("0")}
     from app.services import sku_utils
+    # A confirmed accessory charge on a mixed top-up remains on this order;
+    # only the furniture/customization portion belongs to the primary order.
+    override = getattr(o, "parts_override", None) or {}
+    if override.get("confirmed_socket_qty") and override.get("primary_order_no") and not o.is_refill:
+        qty = _d(override.get("confirmed_socket_qty"))
+        unit = _d(override.get("confirmed_socket_unit_cost"))
+        total = _d(override.get("confirmed_socket_total"))
+        freight = _d(override.get("confirmed_socket_freight"))
+        if qty > 0 and qty == qty.to_integral_value() and unit > 0 and total == qty * unit and freight >= 0:
+            cost = total + freight
+            return {"factory_wood": Decimal("0"), "estimate_part": cost,
+                    "packing": Decimal("0"), "precap_total": cost, "final": cost,
+                    "logistics_component": freight, "install_component": Decimal("0"),
+                    "cap_mode": "确认混合补差插座", "cap_label": f"插座{qty}个×{unit}元+运费{freight}元；定制补差成本归主单"}
     nz = lambda a, e: _d(a) if a is not None else _d(e)   # 实际优先, 否则预估
     # 封顶/兜底基数 = 真实收入(实付−退款) (用户 2026-07-14: 一单两件退一件, 兜底85曾按毛实付
     # 把退掉那件的成本也背上, 全库实扫8单)。检测类判断(插座100倍数/片段实配件门)仍用毛实付。
