@@ -1142,6 +1142,10 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                     order_business_date=completion.get("order_business_date"),
                     update_current_pipeline=completion.get("current_day_state_updated", True),
                 )
+                from app.services import feishu_order_push_service
+                feishu_order_push_service.record_password_closeout(
+                    db, completion.get("order_batch_id"), closeout,
+                )
                 delivery = closeout.get("delivery") or {}
                 r["factory_dispatch"] = closeout.get("factory_dispatch")
                 r["automation_pipeline"] = closeout.get("automation_pipeline")

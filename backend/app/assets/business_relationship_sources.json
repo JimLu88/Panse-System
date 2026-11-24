@@ -40,11 +40,11 @@
     "backend/app/models/taobao_listing.py": "3408c4ee3fec07d611d623f83c005f0a305a301005b6c97fc504179c07130dd3",
     "backend/app/services/accounting_period_service.py": "ce5fafbbecc6bad20090011028f697caf34154fffddb32b47949d695996f0b0d",
     "backend/app/services/aftersales_auto_service.py": "e961a45d3ba150b74d59ca89dbf2d27b5692596487699c5a78e9e2c5c82d12be",
-    "backend/app/services/agent_ingest_service.py": "6bd227c1ccd76b1a1804632d0a481f605ca84964f2dc521ddfb581285865f3e8",
+    "backend/app/services/agent_ingest_service.py": "d51bb8036f959cafbe6c9e62e55dd1f37e79d5552ca0c243611805bc4d1319a9",
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "e86ecc88e98cc2b8a7aafb204c24bbb3cfa8b30a8a225e8dc8d70f28b3de5c87",
+    "backend/app/services/business_relationship_catalog.py": "3e4e1ca014c9b5ef3c573cefbdcebd7d2b3dda4de352d66a59fdecc5bf4b8b6e",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -68,7 +68,7 @@
     "backend/app/services/factory_settlement_service.py": "571cec94eb4ece62c06aee7362f73f9b7794186c30b683813908279dfa73bb68",
     "backend/app/services/factory_sheet.py": "b3d5696f7d9cd939057502b309f051e9c4465eca6228db8a220d422c9bf3521a",
     "backend/app/services/factory_shipping_confirmation_service.py": "6efb62c061a91072a9d0ad4091a0c3ff92d4c4b7dd0b1a4e5fa93ad2887323c4",
-    "backend/app/services/feishu_bot_service.py": "c1b633819a80e2504e308d0779934213cff8aac27898ccc86595ca43054f8699",
+    "backend/app/services/feishu_bot_service.py": "da560a57062fe5872be34e7a1eb19952787e09f5283288f5b29f552d5c5e31f0",
     "backend/app/services/feishu_sync_service.py": "501968bee45b42cffb3a60a69e06bb0c4f28b52fb5b598e99f48812f170b2303",
     "backend/app/services/feishu_ws_service.py": "321b44f74579aaccb9ad687eaf6095f0061843ae67f8e2c89b6e9516181c31fe",
     "backend/app/services/inventory_demand_service.py": "3c679d00429330629b19e5f021e4ecb596532753b7077dae0fea2665dd41bb94",
@@ -93,7 +93,7 @@
     "backend/app/services/remote_report_service.py": "6fba28eea67a6b4e5e53e2330e6b92e4256a53229dd3efa317a11725f4b52d3e",
     "backend/app/services/sales_analytics.py": "2886b733e4eecc5f8d3362d715c79b41f5cc152f251a0e66d90d499205c6f0cf",
     "backend/app/services/sales_rollup_service.py": "a71e84e81bb685eae5d3445e2d519ffe84d33f7e68cafecf0e5cfd962cb1ec40",
-    "backend/app/services/scheduler.py": "77347a004e71da449099cd48324e78dd4d139c1cecb4299c340cbe3f1e7fa4c5",
+    "backend/app/services/scheduler.py": "06eeb78bee2d88d929fae8bf94d24360d79dcb6ec29a8b12c7bd107b00c72c37",
     "backend/app/services/shipment_service.py": "0ece15887653479dc5aba6d181cf474dbf6c766258f75d260883dedcf522391a",
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "295b48b08e59e2f723bbf36363aa3968937b8bb15ed823cc79caa56745781369",
@@ -136,7 +136,7 @@
     "backend/app/services/fulfillment_receipts.py": "0ff35700b6a23dab64d0e2576dbd08d8a5f70fac74b724116fd731ba918309b8",
     "backend/app/services/factory_linked_topup_service.py": "0e0d8fa2b5b8345d44d8cec4ccb8515b2ac04bf50b024407c7bb629fc3e5c430",
     "backend/app/services/partial_refund_void_recovery_service.py": "915902ff1aa18ab8b37f99b66f05d4f75508e7be2078213325c4fa6b26f4fd45",
-    "backend/app/services/feishu_order_push_service.py": "30f6328f9c3546f487d78d2e84903d4eb6536fc0a260664d4d36a90b47327909"
+    "backend/app/services/feishu_order_push_service.py": "f47764d51818765c91c529940ad7a36455622bc62beb9947cb0b18955a216ecb"
   },
   "scoped_review_20261116": {
     "paths": [

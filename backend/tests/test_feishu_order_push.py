@@ -70,11 +70,11 @@ def test_worker_results(harness,monkeypatch,result,state,text):
     S.handle_message(db,event()); key=launches[0]
     monkeypatch.setattr(database,'SessionLocal',lambda:nullcontext(db))
     calls=[]
-    monkeypatch.setattr(scheduler,'_job_web_agent_daily',lambda d:calls.append(1) or result)
+    monkeypatch.setattr(scheduler,'_job_web_agent_daily',lambda d, **kw:calls.append(kw) or result)
     S.run_request(key); S.run_request(key)
     row=S._load(db,key)
     assert row['state']==state and text in row['message']
-    assert row['result_notice']=='sent' and len(calls)==1
+    assert row['result_notice']=='sent' and calls==[{'manual_request_key':key}]
 
 def test_result_reply_failure_does_not_reexecute(harness,monkeypatch):
     from app import database
@@ -82,7 +82,7 @@ def test_result_reply_failure_does_not_reexecute(harness,monkeypatch):
     db,launches,_=harness
     S.handle_message(db,event());key=launches[0]
     monkeypatch.setattr(database,'SessionLocal',lambda:nullcontext(db))
-    monkeypatch.setattr(scheduler,'_job_web_agent_daily',lambda db:{'delivery':{'images_pushed':1}})
+    monkeypatch.setattr(scheduler,'_job_web_agent_daily',lambda db, **kw:{'delivery':{'images_pushed':1}})
     monkeypatch.setattr(S,'_reply',lambda *a: (_ for _ in ()).throw(RuntimeError('network')))
     S.run_request(key); S.run_request(key)
     assert S._load(db,key)['result_notice']=='unknown'

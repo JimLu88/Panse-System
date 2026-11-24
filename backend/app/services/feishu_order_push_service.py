@@ -143,7 +143,7 @@ def run_request(key):
             row.update(state="running", started_at=datetime.now(timezone.utc).isoformat())
             _save(db, key, row)
         try:
-            result = scheduler._job_web_agent_daily(db)
+            result = scheduler._job_web_agent_daily(db, manual_request_key=key)
             if not isinstance(result, dict) or (not result.get("delivery")
                     and result.get("_run_status") not in {"fail", "skipped"}
                     and not result.get("skipped")):
@@ -165,6 +165,7 @@ def run_request(key):
                     message += f"\n另有 {len(held)} 单因地址不完整暂缓，补齐后再推。"
                 state = "completed"
             row.update(state=state, message=message, images_pushed=pushed,
+                       order_batch_id=result.get("order_batch_id"),
                        finished_at=datetime.now(timezone.utc).isoformat())
             _save(db, key, row)
         except Exception as exc:
@@ -184,3 +185,19 @@ def run_request(key):
         except Exception:
             row["result_notice"] = "unknown"  # Status query remains available; never blindly resend.
         _save(db, key, row)
+
+
+def record_password_closeout(db, batch_id, closeout):
+    """Refresh this request's status only from its own recovered batch."""
+    row = _load(db, ACTIVE_KEY)
+    if not batch_id or row.get("order_batch_id") != batch_id:
+        return
+    delivery = closeout.get("delivery") or {}
+    count = int(delivery.get("images_pushed") or 0) + int(delivery.get("line_images_pushed") or 0)
+    failed = closeout.get("_run_status") == "fail"
+    row.update(state="blocked" if failed else "completed", images_pushed=count,
+               message=(f"补口令后已推送 {count} 张下单图。" +
+                        ("仍有待处理项：" + str(closeout.get("_error") or "请查看推送结果")[:700]
+                         if failed else "本批订单核对与补推已完成。")),
+               finished_at=datetime.now(timezone.utc).isoformat())
+    _save(db, row["key"], row)

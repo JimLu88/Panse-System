@@ -835,7 +835,7 @@ def _order_pull_freshness_hour(now: Optional[datetime] = None) -> int:
     return min(18, (now or datetime.now()).hour)
 
 
-def _job_web_agent_daily(db: Session) -> dict:
+def _job_web_agent_daily(db: Session, *, manual_request_key: str | None = None) -> dict:
     """每天 18:00: Web-Agent 订单专用取数编排。
 
     串行触发到期任务 → 等 job 完成 → 扫共享目录导入 → 飞书日报。
@@ -878,7 +878,8 @@ def _job_web_agent_daily(db: Session) -> dict:
         )
     # The 18:00 run must refresh orders after 18:00 even when a manual pull
     # happened earlier that day. Other report types keep their own intervals.
-    r = agent_ingest_service.orchestrate(db, force_orders=True, orders_only=True)
+    manual_options = {"manual_request_key": manual_request_key} if manual_request_key else {}
+    r = agent_ingest_service.orchestrate(db, force_orders=True, orders_only=True, **manual_options)
     # #15: agent 离线/任务出错 → 明确告警(不再静默显示"正常"); 成功则消掉旧告警。
     offline = r.get("agent_offline")
     failed = [t.get("task", "") for t in (r.get("tasks") or []) if t.get("status") == "error"]

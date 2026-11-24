@@ -166,8 +166,9 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('sync.order_push_command','sync.password','补口令续接原手动批次','manual_request_key持久绑定批次，独立订单凭据不被财务编排覆盖','不推断force_orders等于手动；原batch三角色/hash完整性不降级；仅更新同批次推送状态','services/agent_ingest_service.py','def _orchestrate_locked'),
     edge('sync.inbound','sync.order_push_command','识别推送与推送状态','可信消息、用户身份、允许群、完整指令','数量/口令/图片分支不接管；不执行淘宝发货','services/feishu_bot_service.py','def on_message_event'),
-    edge('sync.order_push_command','automation.agent','沿用订单取数与增量送达','独占受理后调用现有订单流程','三报表完整、新鲜、数量有效才按原规则发图；财务及活动不启动','services/feishu_order_push_service.py','def run_request'),
+    edge('sync.order_push_command','automation.agent','沿用订单取数与增量送达','独占受理后调用现有订单流程；用户请求标记与原批次持久绑定','白天主动取数补口令不套晚间时段；三报表角色/hash/批次/导入时间仍核验；财务及活动不启动','services/feishu_order_push_service.py','def run_request'),
     edge('sync.order_push_command','factory.receipt','返回真实推送结果','原流程delivery结果与群消息回执','异常或未知不报成功；回复失败不重跑业务；进程中断保留待核原记录','services/feishu_order_push_service.py','def run_request'),
     edge('automation.batch','sync.route','取数失败仅一次群提醒','普通失败按业务日去重；发货待口令和支付宝待扫码跨天仅一次','重试、最终失败和恢复只进ERP，投递结果未知不重发；其他来源故障不被等待扫码掩盖','services/automation_pipeline_service.py','def _notify_failure_once'),
     edge('sync.password','sync.route','等待人工输入跨天去重','发送前持久占位；新报表、重启、跨日不重新提醒','只在对应真实恢复后解除；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
