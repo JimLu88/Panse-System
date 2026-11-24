@@ -854,6 +854,7 @@ def per_order_reconcile(
             "sku_code": o.sku_code,
             "product_code": o.product_code,
             "is_custom": bool(o.is_custom),
+            "is_sample_shipment": "【样品出货订单】" in (o.remark or ""),
             "order_date": o.order_date.isoformat() if o.order_date else None,
             "paid_amount": round(paid, 2), "refund_amount": round(refund, 2), "revenue": round(revenue, 2),
             # cost_freight/cost_install = 展示值(含折在商品成本里的分量); cost_total 用单列实报原值, 不重复计

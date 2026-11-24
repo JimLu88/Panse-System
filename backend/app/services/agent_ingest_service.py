@@ -2546,7 +2546,8 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
                 orders_only: bool = False,
                 skip_tasks: set[str] | None = None,
                 order_batch_id: str | None = None,
-                order_business_date: date | None = None) -> dict:
+                order_business_date: date | None = None,
+                manual_request_key: str | None = None) -> dict:
     """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""
     if not _orch_lock.acquire(blocking=False):
         return {
@@ -2562,7 +2563,8 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
             force_orders=force_orders, force_finance=force_finance,
             orders_only=orders_only, skip_tasks=skip_tasks,
             order_batch_id=order_batch_id,
-            order_business_date=order_business_date)
+            order_business_date=order_business_date,
+            manual_request_key=manual_request_key)
     except Exception:
         try:
             web_agent_service.request_stop(
@@ -2580,7 +2582,8 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                         orders_only: bool = False,
                         skip_tasks: set[str] | None = None,
                         order_batch_id: str | None = None,
-                        order_business_date: date | None = None) -> dict:
+                        order_business_date: date | None = None,
+                        manual_request_key: str | None = None) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     business_date = order_business_date or date.today()
     if (orders_only or force_orders) and not order_batch_id:
@@ -2589,6 +2592,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         "started_at": datetime.now().isoformat(timespec="seconds"),
         "tasks": [], "pending_manual": [], "task_errors": [], "skipped": [],
     }
+    # Explicit Feishu initiation stays attached to the original batch, including
+    # a later password callback. Never infer a manual run from force_orders.
+    if manual_request_key and orders_only:
+        out.update(manual_recovery=True, manual_request_key=manual_request_key)
     if order_batch_id:
         out["order_batch_id"] = order_batch_id
         out["order_business_date"] = business_date.isoformat()
@@ -2996,6 +3003,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
 
     out["finished_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
+    if out.get("manual_request_key"):
+        # Finance may replace KEY_ORCH_STATE before the password arrives.
+        _save_json(db, "web_agent_order_receipt_evidence", {**out, "running": False})
     db.commit()
 
     # 编排线程返回时已没有仍在运行的浏览器 job。待登录/待扫码只保留为 ERP

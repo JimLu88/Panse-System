@@ -199,6 +199,8 @@ _HELP_CONTENT = (
     "**🔎 工厂验货图**\n"
     "把图片和文字放在同一条消息里，例如：`验货 畔色321单` 或 `验货 订单号3314…`。"
     "系统会直接归到对应订单的检查图库，不再走单据识别。\n\n"
+    "**📦 订单推送**\n"
+    "登录完成后 @我发送 `推送`，更新最新订单并补推；发 `推送状态` 查看结果。\n\n"
     "**📱 登录二维码**\n"
     "收到自动取数登录提醒后，在提醒群里 @我 回复 `扫码`（也支持 `发二维码`），"
     "先选择「店铺后台扫码」或「支付宝扫码」，再在电脑弹出的窗口登录；回复「扫码状态」可查询进度。\n\n"
@@ -1140,6 +1142,10 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                     order_business_date=completion.get("order_business_date"),
                     update_current_pipeline=completion.get("current_day_state_updated", True),
                 )
+                from app.services import feishu_order_push_service
+                feishu_order_push_service.record_password_closeout(
+                    db, completion.get("order_batch_id"), closeout,
+                )
                 delivery = closeout.get("delivery") or {}
                 r["factory_dispatch"] = closeout.get("factory_dispatch")
                 r["automation_pipeline"] = closeout.get("automation_pipeline")
@@ -1435,6 +1441,10 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
 
     返回处理结果, 或 None(无 message_id 等无法处理)。
     """
+    from app.services import feishu_order_push_service
+    order_push = feishu_order_push_service.handle_message(db, event)
+    if order_push is not None:
+        return order_push
     msg = event.get("message") or {}
     mtype = msg.get("message_type")
     message_id = msg.get("message_id")
@@ -1493,7 +1503,7 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
             res = platform_scan.start_login(db, selected_platform, request_id=message_id)
             tip = (
                 "已受理所选平台登录，请在电脑弹出的登录窗口用对应App扫码。回复「扫码状态」可查进度。\n"
-                "本次仅登录；原待处理任务保留，不自动重拉订单。"
+                "登录完成后，在本群 @机器人发送「推送」即可更新订单并补推。"
                 if res.get("started") else res.get("reason", "登录流程未启动")
             )
             _safe_reply(db, message_id, _result_card("平台扫码", tip, "green"))
