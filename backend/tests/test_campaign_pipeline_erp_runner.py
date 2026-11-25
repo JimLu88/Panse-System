@@ -34,7 +34,8 @@ def harness(monkeypatch, tmp_path):
         validate_erp_against_config=lambda *a:None,load_erp_bundle=lambda p:None)
     monkeypatch.setenv('PANSE_API_TOKEN','test-operator')
     monkeypatch.setattr(runner,'validate_runtime',lambda p:None)
-    monkeypatch.setattr(runner,'load_module',lambda path,name:cli if 'cli' in name else calc)
+    load_module=runner.load_module
+    monkeypatch.setattr(runner,'load_module',lambda path,name:load_module(path,name) if 'failure_policy' in name else cli if 'cli' in name else calc)
     monkeypatch.setattr(runner,'api',api)
     def run(*args):
         monkeypatch.setattr(runner.sys,'argv',['runner','--plan-id','1','--output',str(tmp_path),*args])
@@ -80,6 +81,10 @@ def test_claim_failure_never_reaches_browser(harness,monkeypatch):
         if path.endswith('pipeline-claim'):raise TimeoutError('claim response lost')
         return original(base,path,*args)
     monkeypatch.setattr(runner,'api',api)
-    with pytest.raises(TimeoutError):run('--execute')
+    assert run('--execute')==2
     assert 'pipeline_enroll' not in events
     assert not receipts
+    handoff=json.loads(next(output.rglob('ai-takeover.json')).read_text(encoding='utf-8'))
+    assert handoff['next_action']=='ai_takeover_current_campaign'
+    assert handoff['repair_timing']=='after_official_reconciliation'
+    assert handoff['must_confirm_program_stopped_writing'] is True

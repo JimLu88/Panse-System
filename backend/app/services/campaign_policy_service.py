@@ -18,6 +18,20 @@ POLICY_FILENAME = "TAOBAO_CAMPAIGN_SIGNUP_POLICY.json"
 REQUIRED_POLICY_ID = "taobao_campaign_signup_policy"
 
 
+def failure_recovery_action() -> dict:
+    """Instruction to the owning AI; this never launches a second writer."""
+    return {
+        'next_action': 'ai_takeover_current_campaign',
+        'repair_timing': 'after_official_reconciliation',
+        'preserve_original_attempt': True,
+        'must_confirm_program_stopped_writing': True,
+        'unknown_result_action': 'readback_before_any_submission',
+        'successful_scope_action': 'never_resubmit',
+        'ai_retry_scope': 'officially_verified_failed_or_unsubmitted_only',
+        'instruction': '先由活动执行AI接手完成本场已授权报名，取得官方全量清单并逐SKU核对后再修程序。先核对原任务、停止自动程序写入；成功不重传，未知先回读。登录或平台资格阻塞如实报告，其他可完成范围继续。',
+    }
+
+
 def _candidate_paths() -> list[Path]:
     explicit = (os.environ.get("CAMPAIGN_SIGNUP_POLICY_PATH") or "").strip()
     paths: list[Path] = []
@@ -55,13 +69,22 @@ def require_policy() -> dict[str, Any]:
     scope = policy.get("scope_and_idempotency") or {}
     submission_fields = policy.get("submission_fields") or {}
     post_submit = policy.get("post_submit") or {}
-    if execution.get("signup_executor") != "campaign_automation_program_only":
-        raise RuntimeError("活动报名规则未锁定为程序自动执行，已停止")
-    if (execution.get("ai_may_submit") is not False
+    if execution.get("signup_executor") != "program_first_ai_takeover_on_failure":
+        raise RuntimeError("活动报名规则必须为程序优先、异常由AI先完成本场，已停止")
+    recovery = execution.get('program_failure_recovery') or {}
+    if (recovery.get('next_action') != 'ai_takeover_current_campaign'
+            or recovery.get('repair_timing') != 'after_official_reconciliation'
+            or recovery.get('scope') != 'current_authorized_campaign_only'
+            or recovery.get('preserve_original_attempt') is not True
+            or recovery.get('unknown_result_action') != 'readback_before_any_submission'
+            or recovery.get('successful_scope_action') != 'never_resubmit'):
+        raise RuntimeError('活动异常必须先AI接手完成本场、官方核对后再修程序，且保留原任务防重规则')
+    if (execution.get("ai_may_submit") is not True
             or execution.get("ai_may_adjust_price") is not False
-            or execution.get("ai_may_retry_after_failure") is not False
+            or execution.get("ai_may_retry_after_failure") is not True
+            or recovery.get('ai_retry_scope') != 'officially_verified_failed_or_unsubmitted_only'
             or execution.get("manual_signup_api_enabled") is not False):
-        raise RuntimeError("活动报名规则未明确禁止 AI/页面提交、改价或重试，已停止")
+        raise RuntimeError("AI接管只能提交当场已授权范围，不开放任意改价、盲重试或旧页面提交接口")
     if (execution.get("platform_write_probe_enabled") is not False
             or execution.get("maximum_platform_signup_submissions_per_run") != 1):
         raise RuntimeError("活动报名规则未锁定为只允许一次平台报名写入，已停止")

@@ -1,14 +1,14 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-09-03.2",
-  "updated_at": "2026-09-03T14:25:00+08:00",
+  "version": "2026-11-26.1",
+  "updated_at": "2026-11-26T00:00:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
-    "signup_executor": "campaign_automation_program_only",
-    "ai_may_submit": false,
+    "signup_executor": "program_first_ai_takeover_on_failure",
+    "ai_may_submit": true,
     "ai_may_adjust_price": false,
-    "ai_may_retry_after_failure": false,
+    "ai_may_retry_after_failure": true,
     "program_may_retry_after_no_sales_only_failure": false,
     "on_failure": "platform_terminal_no_sales_is_quiet_for_current_campaign_and_retried_next_campaign_all_other_failures_isolate_item_and_alarm",
     "manual_signup_api_enabled": false,
@@ -28,7 +28,19 @@
     "claimed_failed_or_unknown_batch_may_auto_retry": false,
     "automatic_campaign_withdrawal_enabled": false,
     "program_may_create_or_switch_sku_slot": false,
-    "withdrawal_requires_current_explicit_item_list_authorization": true
+    "withdrawal_requires_current_explicit_item_list_authorization": true,
+    "program_failure_recovery": {
+      "next_action": "ai_takeover_current_campaign",
+      "repair_timing": "after_official_reconciliation",
+      "scope": "current_authorized_campaign_only",
+      "preserve_original_attempt": true,
+      "unknown_result_action": "readback_before_any_submission",
+      "successful_scope_action": "never_resubmit",
+      "handoff_action": "save_checkpoint_and_yield_browser_ownership",
+      "completion_evidence": "official_full_export_and_per_sku_reconciliation",
+      "blocked_action": "continue_independent_scope_and_report_exact_blocker_not_start_repair",
+      "ai_retry_scope": "officially_verified_failed_or_unsubmitted_only"
+    }
   },
   "pricing": {
     "real_sku_signup_price": "exact_erp_daily_price",
@@ -40,7 +52,7 @@
     "placeholder_safe_cap_without_live_price_enabled": true,
     "placeholder_safe_cap_authorization": "authoritative_is_custom_placeholder_may_use_coupon_floor_safe_cap_or_conservative_daily_price_fallback_without_current_live_price; known_live_price_uses_the_lower_value; never_changes_daily_price",
     "super_reduce": {
-      "official_rate": 0.10,
+      "official_rate": 0.1,
       "final_target": "erp_mid_promo_price"
     },
     "big_88_and_normal_big_campaign": {
@@ -66,12 +78,12 @@
   },
   "final_price_gate": {
     "formula": "signup_price_minus_official_discount_minus_single_item_discount_equals_erp_target_or_explicit_custom_concession",
-    "per_sku_tolerance_yuan": 0.00,
+    "per_sku_tolerance_yuan": 0.0,
     "explicit_sub_yuan_concession": "allow_only_for_plan_remark_named_sku_ids_after_current_user_authorization",
-    "automatic_small_conflict_max_yuan_inclusive": 0.00,
+    "automatic_small_conflict_max_yuan_inclusive": 0.0,
     "automatic_small_conflict_applies_to": [],
     "explicit_custom_sku_concession": "allow_only_for_plan_remark_named_sku_ids_and_authoritative_custom_placeholder_or_custom_sku_code; never_name_keyword_inference",
-    "custom_sku_min_final_price_ratio_of_immutable_baseline": 0.20,
+    "custom_sku_min_final_price_ratio_of_immutable_baseline": 0.2,
     "explicit_custom_signup_price_marker": "custom_signup_price_authorized",
     "explicit_authorized_custom_signup_price_may_bypass_baseline_ratio": true,
     "explicit_custom_sku_concession_changes_signup_price": true,

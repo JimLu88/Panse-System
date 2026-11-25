@@ -73,6 +73,30 @@ def main():
     mode.add_argument('--recover', metavar='ERP_ATTEMPT_ID', help='只读原任务状态并补回执，绝不重传')
     parser.add_argument('--max-wait', type=int, default=1800)
     args = parser.parse_args()
+    try:
+        return run(args)
+    except (ValueError, RuntimeError, OSError) as exc:
+        handoff = save_ai_handoff(args, getattr(args,'_run_dir',args.output / f'plan-{args.plan_id}'),
+                                  {'state':'startup_or_request_unknown','error':str(exc)},
+                                  getattr(args,'_claim',None))
+        print(json.dumps({'error':str(exc), 'failure_recovery':handoff},ensure_ascii=False))
+        return 2
+
+
+def save_ai_handoff(args, run_dir, result, claim=None):
+    # A handoff instruction, not an automatic browser restart or replay.
+    path = Path(__file__).resolve().parents[1]/'backend/app/services/campaign_policy_service.py'
+    policy = load_module(path, '_erp_failure_policy')
+    handoff = policy.failure_recovery_action()
+    handoff.update(plan_id=args.plan_id, erp_attempt_id=(claim or {}).get('attempt_id'),
+                   local_attempt_id=result.get('attempt_id'), state=result.get('state'),
+                   result_file=str(run_dir/'pipeline-result.json') if (run_dir/'pipeline-result.json').exists() else None)
+    run_dir.mkdir(parents=True,exist_ok=True)
+    (run_dir/'ai-takeover.json').write_text(json.dumps(handoff,ensure_ascii=False,indent=2),encoding='utf-8')
+    return handoff
+
+
+def run(args):
     token = os.environ.get('PANSE_API_TOKEN')
     if not token:
         raise ValueError('缺 PANSE_API_TOKEN；只接受已有操作员凭据')
@@ -88,6 +112,7 @@ def main():
     run_dir = args.output / f"plan-{args.plan_id}" / bundle['price_version']
     if claim:
         run_dir = run_dir / claim['attempt_id']
+    args._run_dir, args._claim = run_dir, claim
     run_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = run_dir/'erp-bundle.json'
     bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -109,6 +134,7 @@ def main():
         claim = api(args.erp_url, f'/api/campaigns/{args.plan_id}/pipeline-claim', token,
                     {'price_version': bundle['price_version']})
         run_dir = run_dir / claim['attempt_id']
+        args._run_dir, args._claim = run_dir, claim
         run_dir.mkdir(parents=True, exist_ok=True)
         bundle_path = run_dir / 'erp-bundle.json'
         bundle_path.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -130,6 +156,7 @@ def main():
     except Exception as exc:
         result = {'state':'unknown_pending_verify' if claim else 'failed', 'error':str(exc)[:2000]}
     (run_dir/'pipeline-result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
+    handoff = save_ai_handoff(args,run_dir,result,claim) if result.get('state') != 'done' else None
     if claim:
         receipt = {'state':result.get('state') if result.get('state') in {'done','partial_done','failed','unknown_pending_verify','needs_manual'} else 'unknown_pending_verify',
             'attempt_id':str(result.get('attempt_id') or (claim.get('receipt') or {}).get('attempt_id') or ''), 'audit':result.get('audit') or {},
@@ -137,6 +164,7 @@ def main():
         if not args.recover or not claim.get('receipt') or claim['receipt']['state']=='unknown_pending_verify':
             api(args.erp_url, f"/api/campaigns/{args.plan_id}/pipeline-receipts/{claim['attempt_id']}", token, receipt)
     print(json.dumps({'state':result.get('state'), 'erp_attempt_id':claim['attempt_id'] if claim else None,
+        'failure_recovery':handoff,
         'result_file':str(run_dir/'pipeline-result.json'), 'erp_reconciliation_complete':False},ensure_ascii=False))
     return 0 if result.get('state')=='done' else 2
 

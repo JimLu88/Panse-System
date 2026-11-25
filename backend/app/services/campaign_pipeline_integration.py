@@ -196,10 +196,13 @@ def record_receipt(db, plan_id, attempt_id, receipt):
         summary['receipt_history'] = history
         summary['receipt'] = receipt
         summary['receipt_sha256'] = digest(receipt)
+        summary['failure_recovery'] = (campaign_policy_service.failure_recovery_action()
+            if receipt['state'] != 'done' else None)
         attempt.result_summary = summary
         # Adapter completion is not authoritative ERP full-scope reconciliation.
         attempt.state = 'unknown_no_retry' if receipt['state']=='unknown_pending_verify' else 'platform_terminal'
         attempt.last_step = 'pipeline_receipt_received'
         db.commit()
     return {'recorded':True, 'attempt_id':attempt.id, 'state':attempt.state,
+        'failure_recovery': (attempt.result_summary or {}).get('failure_recovery'),
         'business_complete':False, 'automatic_retry_allowed':False}

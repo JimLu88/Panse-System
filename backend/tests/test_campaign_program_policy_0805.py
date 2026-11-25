@@ -2,6 +2,8 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+import json
+import pytest
 
 from app.models.campaign import CampaignPlan
 from app.models.pricing import PricingSku
@@ -9,6 +11,15 @@ from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_notification_service
 from app.services import campaign_policy_service, campaign_price_floor_service
 from app.services import campaign_service
+
+
+def test_repair_first_policy_is_rejected(tmp_path, monkeypatch):
+    policy=campaign_policy_service.require_policy()
+    policy['execution']['program_failure_recovery']['repair_timing']='before_signup'
+    path=tmp_path/'policy.json';path.write_text(json.dumps(policy),encoding='utf-8')
+    monkeypatch.setenv('CAMPAIGN_SIGNUP_POLICY_PATH',str(path))
+    with pytest.raises(RuntimeError,match='先AI接手'):
+        campaign_policy_service.require_policy()
 
 
 def _plan(db, campaign_type="big88", tier="big"):
@@ -49,8 +60,9 @@ def _sku(db, *, daily=3000, list_price=4000, big=2000,
 
 def test_root_policy_locks_program_and_real_sku_daily_price():
     policy = campaign_policy_service.require_policy()
-    assert policy["execution"]["signup_executor"] == "campaign_automation_program_only"
-    assert policy["execution"]["ai_may_submit"] is False
+    assert policy["execution"]["signup_executor"] == "program_first_ai_takeover_on_failure"
+    assert policy["execution"]["ai_may_submit"] is True
+    assert policy['execution']['program_failure_recovery']['repair_timing']=='after_official_reconciliation'
     assert policy["execution"]["ai_may_adjust_price"] is False
     assert policy["execution"]["automatic_campaign_withdrawal_enabled"] is False
     assert policy["execution"]["withdrawal_requires_current_explicit_item_list_authorization"] is True

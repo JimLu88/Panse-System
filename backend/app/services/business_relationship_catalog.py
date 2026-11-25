@@ -481,3 +481,6 @@ EDGES += [
     edge('campaign.pipeline_claim','campaign.attempt','保护原入口','同一官方活动身份包含旧URL身份','新占位后旧入口拒绝提交','services/campaign_execution_service.py','def claim_platform_write',kind='protect'),
     edge('campaign.pipeline_claim','campaign.pipeline_receipt','收取原任务证据','相同ERP任务和本地任务绑定','未知可追加结果，明确终态不可覆盖，成功不重传','api/campaigns.py','def pipeline_receipt'),
 ]
+
+NODES += [node('campaign.ai_takeover','活动异常AI先完成本场','campaign','failure_recovery / repair_timing','services/campaign_policy_service.py','def failure_recovery_action','先确认程序停止写入并核对原任务，执行AI完成本场授权范围，官方全量核对后再修代码；未知先回读，成功不重传，不伪称自动唤醒AI。')]
+EDGES += [edge('campaign.pipeline_receipt','campaign.ai_takeover','异常交给执行AI','程序失败或结果未知','先完成业务再修程序；接管不自动解除原占位','services/campaign_pipeline_integration.py','def record_receipt',kind='boundary'),edge('campaign.controller','campaign.ai_takeover','旧连续入口异常同样接管','准备或派发失败','不因程序故障改为先修代码；同一原任务核对后接手','services/campaign_continuous_runtime.py','def readiness',kind='boundary')]

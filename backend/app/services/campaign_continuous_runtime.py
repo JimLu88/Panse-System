@@ -9,6 +9,14 @@ RULE_ID = 'user-continuous-web-agent-20260911'
 
 
 def readiness(db):
+    result = _readiness(db)
+    if not result.get('ready'):
+        from app.services.campaign_policy_service import failure_recovery_action
+        result['failure_recovery'] = failure_recovery_action()
+    return result
+
+
+def _readiness(db):
     result = web_agent_service._get_raw(db, '/api/campaign/continuous/capabilities', timeout=5)
     # Wake once only for a connection failure. A 401, stale rules, missing
     # acceptance, or failed platform action must not start a retry loop.
@@ -31,4 +39,8 @@ def readiness(db):
 
 def dispatch(db):
     # POST once; uncertain response is never resubmitted in this invocation.
-    return web_agent_service._post_raw(db,'/api/campaign/continuous/dispatch',{},timeout=10)
+    result = web_agent_service._post_raw(db,'/api/campaign/continuous/dispatch',{},timeout=10)
+    if not result.get('ok'):
+        from app.services.campaign_policy_service import failure_recovery_action
+        result['failure_recovery'] = failure_recovery_action()
+    return result
