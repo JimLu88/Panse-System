@@ -2376,6 +2376,64 @@ def repair_super_reduce_activation(
     return result
 
 
+class PipelineClaimIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    price_version: str = Field(pattern=r'^[0-9a-f]{64}$')
+
+
+class PipelineReceiptIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    state: str = Field(max_length=40)
+    attempt_id: str = Field(max_length=128)
+    audit: dict = Field(default_factory=dict)
+    steps: list[dict] = Field(default_factory=list, max_length=20)
+    error: str | None = Field(default=None, max_length=2000)
+
+
+@router.get('/{plan_id}/pipeline-bundle')
+def pipeline_bundle(plan_id: int, db: Session = Depends(get_db),
+                    _: User = Depends(require_role('admin', 'operator'))):
+    from app.services.campaign_pipeline_integration import export_bundle
+    try:
+        return export_bundle(db, _get_plan(db, plan_id))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post('/{plan_id}/pipeline-claim')
+def pipeline_claim(plan_id: int, body: PipelineClaimIn,
+                   db: Session = Depends(get_db),
+                   _: User = Depends(require_role('admin', 'operator'))):
+    from app.services.campaign_pipeline_integration import claim
+    _get_plan(db, plan_id)
+    try:
+        return claim(db, plan_id, body.price_version)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.get('/{plan_id}/pipeline-claims/{attempt_id}')
+def pipeline_original_claim(plan_id: int, attempt_id: str,
+                            db: Session = Depends(get_db),
+                            _: User = Depends(require_role('admin', 'operator'))):
+    from app.services.campaign_pipeline_integration import original_claim
+    try:
+        return original_claim(db, plan_id, attempt_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post('/{plan_id}/pipeline-receipts/{attempt_id}')
+def pipeline_receipt(plan_id: int, attempt_id: str, body: PipelineReceiptIn,
+                     db: Session = Depends(get_db),
+                     _: User = Depends(require_role('admin', 'operator'))):
+    from app.services.campaign_pipeline_integration import record_receipt
+    try:
+        return record_receipt(db, plan_id, attempt_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
 @router.post("/{plan_id}/pipeline-comparison")
 async def pipeline_comparison(plan_id: int,
                               activity_file: UploadFile = File(...),

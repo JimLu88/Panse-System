@@ -99,6 +99,15 @@ def record_prewrite_failure(
 
 def claim_platform_write(
         db: Session, attempt_id: str, *, request_id: str) -> CampaignExecutionAttempt:
+    from app.models.campaign import CampaignPlan
+    from app.services.campaign_pipeline_integration import ADAPTER, lock_campaign_plans, protected_attempts
+    candidate = db.get(CampaignExecutionAttempt, attempt_id)
+    plan = db.get(CampaignPlan, candidate.plan_id) if candidate else None
+    if plan:
+        lock_campaign_plans(db, plan)
+        if any((row.result_summary or {}).get('adapter') == ADAPTER
+               for row in protected_attempts(db, plan)):
+            raise ValueError('campaign_pipeline_already_claimed_no_retry')
     attempt = db.execute(select(CampaignExecutionAttempt).where(
         CampaignExecutionAttempt.id == attempt_id).with_for_update()).scalar_one()
     if attempt.write_claimed or attempt.state in TERMINAL_NO_RETRY_STATES:

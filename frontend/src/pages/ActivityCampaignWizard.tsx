@@ -26,6 +26,7 @@ import {
 } from '../api/campaigns';
 import { triggerBlobDownload } from '../utils/download';
 import CampaignPipelineComparison from './CampaignPipelineComparison';
+import CampaignPipelineConnection from './CampaignPipelineConnection';
 
 const STEP_TITLES = ['预检 R0~R17', '单品立减', '程序自动报名', '自动核对', '完成'];
 
@@ -267,6 +268,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           {plan.start_at}{plan.end_at ? ` ~ ${plan.end_at}` : ' 起'}
         </Typography.Text></Space>}>
+      <CampaignPipelineConnection key={`connection-${plan.id}`} planId={plan.id} />
       <CampaignPipelineComparison key={plan.id} planId={plan.id}
         automatic={recon?.pipeline_comparison} automaticError={recon?.pipeline_comparison_error} />
       <Steps size="small" current={step} style={{ marginBottom: 16 }}

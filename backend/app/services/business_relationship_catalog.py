@@ -467,3 +467,17 @@ FLOWS = [
     {'id':'finance','name':'购买行与历史价 → 成本 → 财务结算',
      'steps':['order.child','price.version','finance.estimate','finance.actual','finance.freight','after.payment','finance.profit','settlement.payment','settlement.period']},
 ]
+
+
+# Fifth-round local adapter bridge; completion remains separately reconciled.
+NODES += [
+    node('campaign.pipeline_bundle','新活动程序实时ERP数据','campaign','price_version / allowed_skus / immutable baseline','services/campaign_pipeline_integration.py','def export_bundle','只读当前价格、在售范围与固定基线；不补建基线，商品级立减绑定不冒充全店活动。'),
+    node('campaign.pipeline_claim','新旧入口共同占位','campaign','CampaignExecutionAttempt / adapter / write_claimed','services/campaign_pipeline_integration.py','def claim','真实提交开关默认关闭；提交前核对版本并按官方活动身份串行占位；未知不释放。'),
+    node('campaign.pipeline_receipt','原任务回执与恢复历史','campaign','receipt_history / receipt_sha256','services/campaign_pipeline_integration.py','def record_receipt','只追加同一原任务核对证据；不由本地done直接宣布ERP全量核对完成。'),
+]
+EDGES += [
+    edge('price.current','campaign.pipeline_bundle','读取当场价格与范围','只读且缺固定基线不猜造','相同语义版本稳定，价格变化拒绝旧版本提交','services/campaign_pipeline_integration.py','def export_bundle'),
+    edge('campaign.pipeline_bundle','campaign.pipeline_claim','原版本提交占位','生产开关开启且无已提交记录','新旧入口和重复计划不得启动第二次上传','services/campaign_pipeline_integration.py','def claim',kind='protect'),
+    edge('campaign.pipeline_claim','campaign.attempt','保护原入口','同一官方活动身份包含旧URL身份','新占位后旧入口拒绝提交','services/campaign_execution_service.py','def claim_platform_write',kind='protect'),
+    edge('campaign.pipeline_claim','campaign.pipeline_receipt','收取原任务证据','相同ERP任务和本地任务绑定','未知可追加结果，明确终态不可覆盖，成功不重传','api/campaigns.py','def pipeline_receipt'),
+]

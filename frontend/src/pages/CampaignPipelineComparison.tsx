@@ -28,8 +28,8 @@ export default function CampaignPipelineComparison({ planId, automatic, automati
     finally { setBusy(false); }
   }
   return <Collapse style={{ marginBottom: 16 }} items={[{
-    key: 'comparison', label: '新旧报名程序核对对比', children: <Space direction="vertical" style={{ width: '100%' }}>
-      <Typography.Text>正常自动核对后会同时显示新旧对比，无需另传文件。也可选择已有官方表单独比较。正式报名继续使用原四步程序。</Typography.Text>
+    key: 'comparison', label: '交接初版核对器 · 历史对比', children: <Space direction="vertical" style={{ width: '100%' }}>
+      <Typography.Text>这里固定保留交接初版的核对行为用于历史比较，不代表第五轮修复版。正常核对会复用同一文件；正式报名保持四步顺序。</Typography.Text>
       {automaticError && <Alert type="warning" message={automaticError} />}
       <Upload accept=".xlsx" maxCount={1} beforeUpload={f => { setFile(f); setResult(undefined); return false; }}
         onRemove={() => { setFile(undefined); setResult(undefined); }}>

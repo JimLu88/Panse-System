@@ -1120,7 +1120,7 @@ def campaign_item_exclusions(db: Session, pairs: Optional[list[tuple]] = None) -
         db, pairs if pairs is not None else _mapped_pairs(db))
 
 
-def price_resolution_analysis(db: Session, plan) -> dict:
+def price_resolution_analysis(db: Session, plan, *, seed_baselines: bool = True) -> dict:
     """Resolve fresh platform price-line conflicts without a platform write.
 
     Real SKU signup prices stay exactly equal to ERP daily prices.  Any
@@ -1136,7 +1136,8 @@ def price_resolution_analysis(db: Session, plan) -> dict:
 
     # This is an ERP-only immutable baseline snapshot. It never creates or
     # switches a Taobao SKU and is required for the permanent custom 20% floor.
-    campaign_sku_slot_service.seed_active_slots(db)
+    if seed_baselines:
+        campaign_sku_slot_service.seed_active_slots(db)
 
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
@@ -1458,6 +1459,7 @@ def _erp_listed_product_codes(db: Session) -> set[str] | None:
 
 def build_signup_rows(
         db: Session, plan, *, enforce_price_holds: bool = True,
+        seed_baselines: bool = True,
         allow_placeholder_safe_lowering: bool = False,
         include_candidate_unavailable: bool = True,
         explicit_custom_signup_prices: Optional[dict] = None,
@@ -1506,7 +1508,7 @@ def build_signup_rows(
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
-    price_analysis = price_resolution_analysis(db, plan)
+    price_analysis = price_resolution_analysis(db, plan, seed_baselines=seed_baselines)
     holds = price_analysis["holds"] if enforce_price_holds else []
     price_resolutions = price_analysis["by_sku_id"]
     held_item_ids = {x["taobao_item_id"] for x in holds}
@@ -3202,6 +3204,12 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             existing_id = _plan_single_discount_activity_id(plan)
         if existing_id:
             extra = {"campaign_id": existing_id}
+    if channel == 'single_item_discount' and plan is not None:
+        from app.services.campaign_pipeline_integration import protect_legacy_discount
+        try:
+            protect_legacy_discount(db, plan, committing=phase == 'commit')
+        except ValueError as exc:
+            return {'ok': False, 'step': 'pipeline_owner_guard', 'error': str(exc)}
     j = web_agent_service.upload_file(
         db, channel, phase, xlsx, f"campaign_{channel}.xlsx",
         start_dt=start_dt, end_dt=end_dt, expected_rows=expected_rows, **extra)
