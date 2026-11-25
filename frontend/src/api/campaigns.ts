@@ -256,6 +256,8 @@ export interface CampaignReconSummary {
   product_rows_parsed?: number;
 }
 export interface CampaignReconResult {
+  pipeline_comparison?: import('../pages/CampaignPipelineComparison').PipelineComparisonResult;
+  pipeline_comparison_error?: string;
   ok: boolean;
   report_id: number;
   summary: CampaignReconSummary;

@@ -2376,6 +2376,24 @@ def repair_super_reduce_activation(
     return result
 
 
+@router.post("/{plan_id}/pipeline-comparison")
+async def pipeline_comparison(plan_id: int,
+                              activity_file: UploadFile = File(...),
+                              db: Session = Depends(get_db),
+                              _: User = Depends(require_role("admin", "operator"))):
+    """Replay an existing export with current ERP prices; no database/platform writes."""
+    from app.services.campaign_pipeline_comparison import compare_export, current_maps
+    plan = _get_plan(db, plan_id)
+    data = await activity_file.read(10 * 1024 * 1024 + 1)
+    try:
+        prices, pairs = current_maps(db, plan)
+        return compare_export(data, prices, pairs)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(422, '无法解析官方 XLSX 或 ERP 映射，请检查表格结构') from exc
+
+
 @router.post("/{plan_id}/recon")
 async def recon(plan_id: int,
                 activity_file: Optional[UploadFile] = File(None),
@@ -2422,6 +2440,15 @@ async def recon(plan_id: int,
         product_bytes=product_bytes, source=source)
     if not result.get("ok"):
         raise HTTPException(422, result.get("error", "核对失败"))
+    if activity_bytes:
+        # Reuse the exact official export already obtained by the normal flow.
+        # Diagnostic failure must never undo/replace the authoritative recon receipt.
+        from app.services.campaign_pipeline_comparison import compare_export, current_maps
+        try:
+            prices, pairs = current_maps(db, plan)
+            result['pipeline_comparison'] = compare_export(activity_bytes, prices, pairs)
+        except Exception:
+            result['pipeline_comparison_error'] = '新旧对比未完成；原核对结果保留，请使用独立对比入口查看。'
     return result
 
 

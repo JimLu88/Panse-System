@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "3e4e1ca014c9b5ef3c573cefbdcebd7d2b3dda4de352d66a59fdecc5bf4b8b6e",
+    "backend/app/services/business_relationship_catalog.py": "f4504b868dd78f1989bd4eb4c28cb33cafaa7dabde652c1b525e8159872ad719",
     "backend/app/services/cash_flow_service.py": "13aba45874da07e3756ce807cab826817de3b9facca38818a0bbc0aea8a224f4",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -136,7 +136,10 @@
     "backend/app/services/fulfillment_receipts.py": "0ff35700b6a23dab64d0e2576dbd08d8a5f70fac74b724116fd731ba918309b8",
     "backend/app/services/factory_linked_topup_service.py": "0e0d8fa2b5b8345d44d8cec4ccb8515b2ac04bf50b024407c7bb629fc3e5c430",
     "backend/app/services/partial_refund_void_recovery_service.py": "915902ff1aa18ab8b37f99b66f05d4f75508e7be2078213325c4fa6b26f4fd45",
-    "backend/app/services/feishu_order_push_service.py": "f47764d51818765c91c529940ad7a36455622bc62beb9947cb0b18955a216ecb"
+    "backend/app/services/feishu_order_push_service.py": "f47764d51818765c91c529940ad7a36455622bc62beb9947cb0b18955a216ecb",
+    "backend/app/api/campaigns.py": "9bf4745045148ee13d91b1e5d79e17593fdfbf913b13757376f53237d975a983",
+    "backend/app/services/campaign_pipeline_audit_vendor.py": "41f4939eed4a93df1d0b8ae3077134df23ca5328e3696486c605a85640ed8440",
+    "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86"
   },
   "scoped_review_20261116": {
     "paths": [
