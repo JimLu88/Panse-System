@@ -141,7 +141,7 @@
     "backend/app/services/campaign_pipeline_audit_vendor.py": "41f4939eed4a93df1d0b8ae3077134df23ca5328e3696486c605a85640ed8440",
     "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86",
     "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
-    "backend/app/services/urgent_fulfillment_feishu.py": "0f2fb6146a6bc591ded3c6a9713d62a2e0421fa0e3e020c1a94b3e7e60395ce0"
+    "backend/app/services/urgent_fulfillment_feishu.py": "8c4e341b3570874e4fbe62c1152a10528c2d2f66fade4c1f2437967386930997"
   },
   "scoped_review_20261116": {
     "paths": [

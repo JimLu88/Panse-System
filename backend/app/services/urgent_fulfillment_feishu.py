@@ -4,6 +4,7 @@ Only this table is written. Unknown creates are reconciled by key, never replaye
 """
 from contextlib import contextmanager
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import json
 import threading
 import uuid
@@ -151,8 +152,22 @@ def _index(records):
 
 
 def _same(actual, expected):
-    return all((actual.get(k) == v if k == "剩余天数" else _text(actual.get(k)) == _text(v))
+    return all((_number_equal(actual.get(k), v) if k == "剩余天数" else _text(actual.get(k)) == _text(v))
                for k, v in expected.items())
+
+
+def _number_equal(actual, expected):
+    # Bitable Number fields read back as decimal strings, including zero and
+    # negative days. Empty is distinct from zero; no rounding hides a mismatch.
+    if expected is None:
+        return actual is None or actual == ""
+    if isinstance(actual, bool) or actual is None or actual == "":
+        return False
+    try:
+        number = Decimal(str(actual))
+        return number.is_finite() and number == Decimal(str(expected))
+    except (InvalidOperation, ValueError):
+        return False
 
 
 def sync_daily(db, rows, *, now=None):

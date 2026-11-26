@@ -20,7 +20,14 @@ def remote(db_session, monkeypatch):
     monkeypatch.setattr(service, "_ensure_table", lambda *a: "urgent-table")
     monkeypatch.setattr(notify_service, "get_alert_chat_id", lambda db: "alert-chat")
     def listing(db, token, table):
-        return deepcopy(state["records"]) if table == "urgent-table" else [
+        if table == "urgent-table":
+            records = deepcopy(state["records"])
+            for r in records:
+                value = r["fields"].get("剩余天数")
+                if value is not None:
+                    r["fields"]["剩余天数"] = str(value)
+            return records
+        return [
             {"record_id": "source1", "fields": {"订单号": ROW["order_no"], "子订单号": "child", "商品名称": "柜子", "SKU规格": "1000mm"}},
             {"record_id": "source2", "fields": {"订单号": ROW["order_no"], "子订单号": "refunded", "商品名称": "已退款椅子"}},
         ]
@@ -152,3 +159,12 @@ def test_official_empty_table_and_incomplete_pages(db_session, monkeypatch, payl
     else:
         with pytest.raises(service.fc.FeishuError, match="invalid_pagination"):
             service.fc.list_records(db_session, "base", "empty")
+
+
+@pytest.mark.parametrize("actual,expected,equal", [
+    ("-7", -7, True), ("0", 0, True), ("5.0", 5, True), (None, None, True),
+    ("", None, True), ("", 0, False), ("-7", 7, False), ("5.1", 5, False),
+    ("NaN", 1, False), ("not a number", 1, False), (True, 1, False),
+])
+def test_number_readback_preserves_values(actual, expected, equal):
+    assert service._same({"剩余天数": actual}, {"剩余天数": expected}) is equal
