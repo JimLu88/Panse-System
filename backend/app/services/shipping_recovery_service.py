@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.models.import_file import ImportedFile
 from app.models.settings import SystemSetting
 from app.services import import_storage
@@ -90,6 +90,11 @@ def register(db, manifest):
             raise ValueError('shipping_target_source_roles_invalid')
     elif manifest['source_file_ids'] or manifest['sub_order_nos']:
         raise ValueError('original_target_cannot_override_child_scope')
+    # Serialize registration even when ACTIVE has not been created yet.
+    # The lock ends with this transaction; it does not lock the next day's work
+    # behind a previously downloaded file awaiting a human password.
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(text('SELECT pg_advisory_xact_lock(2611261800)'))
     key = PREFIX + manifest['sha256']
     previous = _row(db, key)
     if previous:
@@ -98,12 +103,27 @@ def register(db, manifest):
             raise ValueError('shipping_target_registration_conflict')
         return {'ok': True, 'target_id': key, 'state': saved['state'], 'password_request_allowed': False}
     active = _row(db, ACTIVE, lock=True)
+    rollover = None
     if active:
-        current = _row(db, json.loads(active.value_plain))
-        if current and json.loads(current.value_plain)['state'] not in ('done', 'partial', 'imported'):
-            raise ValueError('shipping_target_unresolved_do_not_replace')
+        old_key = json.loads(active.value_plain)
+        current = _row(db, old_key, lock=True)
+        if current:
+            old = json.loads(current.value_plain)
+            old_day = date.fromisoformat(old['manifest']['business_date'])
+            old_generated = datetime.fromisoformat(old['manifest']['generated_at'])
+            if day < old_day:
+                raise ValueError('shipping_target_older_business_day_do_not_activate')
+            if old['state'] not in ('done', 'partial', 'imported'):
+                if (manifest['mode'] != 'original' or day <= old_day or generated <= old_generated):
+                    raise ValueError('shipping_target_unresolved_do_not_replace')
+                # Preserve the old state, artifact and result. Only change the
+                # current password destination to a verified newer daily file.
+                rollover = {'target_id': old_key, 'business_date': old_day.isoformat(),
+                            'state': old['state'], 'reason': 'new_business_day'}
     saved = {'manifest': manifest, 'sources': sources, 'state': 'registered',
              'registered_at': datetime.now(timezone.utc).isoformat()}
+    if rollover:
+        saved['previous_pending_target'] = rollover
     _save(db, key, saved)
     _save(db, ACTIVE, key)
     db.commit()

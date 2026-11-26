@@ -35,7 +35,7 @@ NODES = [
      'note':'整单交运确认→保真出表→一次性提交占位→不可替换任务编号→逐单物流证据。资料变化、缺身份和未知结果不重传，失败不自动释放占位。汇总数量不能确认成功；仍由官方报表导入更新订单。0160接口和离线保护已实现，实发开关默认关闭，浏览器身份及逐单物流适配器待验收。'},
     node('shipping.registration','飞书发货登记','shipping','FulfillmentIntake.message_id / order_claim / parcel_claim','services/fulfillment_intake.py','def register','同一条图文与已发原图核对，单包真实提交后只读核验。'),
     node('shipping.deadline','内部交期提醒','shipping','Order.order_date / ship_deadline / seller_memo','services/fulfillment_deadlines.py','def deadline','生产、发货和送达分别核对，汇总进入ERP通知中心。'),
-    node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','先验证共享相对路径、hash、export_id、业务日和真实生成日，再准许一次请求口令；同登记及未知不重放。'),
+    node('sync.shipping_target','发货口令精确文件登记','sync','shipping_target:<sha256>','services/shipping_recovery_service.py','def register','验证路径、hash、export_id及业务日后准许一次请求口令；新业务日切换当前目标，旧待处理记录保留；同日未知不重放。'),
     node('order.shipping_only','仅发货资料的不完整订单','order','Order.platform_field_state.shipping_only','services/taobao_order_import.py','def _commit_shipping','保留真实母单和SKU文字，不造子单、不默认1件、不覆盖购买数量或财务；真实销售子单及明确数量才解除。'),
     node('finance.main_completeness','主力号采集后完整性核对','finance','AlipayFlow + ImportedFile / alipay_main_completeness_latest_v1','services/alipay_collection_audit.py','def after_collection','采集/入账后独立会话只读核对原始账单时间覆盖与逐笔金额日期；零交易日不当缺失。不自动补拉或改账。新异常先持久化发送意图，仅飞书提醒群通知，未知不重发，正常静默。'),
     {'id':'governance.fuge_isolation','label':'孚格独立运行与恢复边界','domain':'governance',

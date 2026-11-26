@@ -240,3 +240,37 @@ def test_bounded_existing_placeholder_repair_preserves_sent_and_never_imports(db
     assert repair.repair(db,apply=True)['existing']
     for num,mid in repair.PROTECTED.items():
         assert db.scalar(select(OrderDetail).where(OrderDetail.factory_no==num)).factory_delivery_message_id==mid
+
+@pytest.mark.parametrize('old_state',['registered','password_mismatch','processing','import_failed','needs_review'])
+def test_new_business_day_does_not_wait_for_old_password(registration,old_state):
+    db,m,p=registration
+    old=target.register(db,m);row=target._row(db,old['target_id'])
+    saved=json.loads(row.value_plain);saved['state']=old_state;row.value_plain=json.dumps(saved);db.commit()
+    original=row.value_plain
+    tomorrow=datetime.fromisoformat(m['generated_at'])+timedelta(days=1)
+    next_file=p.with_name('ExportOrderList125.xlsx');next_file.write_bytes(workbook(values=['3316569963241107899','买家已付款','桌','白色','测试','地址','13800000000']))
+    new={**m,'path':next_file.name,'export_id':'125','sha256':hashlib.sha256(next_file.read_bytes()).hexdigest(),
+         'generated_at':tomorrow.isoformat(),'business_date':tomorrow.date().isoformat(),
+         'order_batch_id':'orders-'+tomorrow.strftime('%Y%m%d')+'-'+'b'*32}
+    result=target.register(db,new)
+    assert result['password_request_allowed']
+    assert json.loads(target._row(db,target.ACTIVE).value_plain)==result['target_id']
+    assert target._row(db,old['target_id']).value_plain==original
+    assert p.is_file() and next_file.is_file()
+    assert not target.register(db,new)['password_request_allowed']
+    assert not target.register(db,m)['password_request_allowed']
+    assert json.loads(target._row(db,target.ACTIVE).value_plain)==result['target_id']
+    current=json.loads(target._row(db,result['target_id']).value_plain)
+    assert current['previous_pending_target']['target_id']==old['target_id']
+
+
+def test_old_day_never_steals_current_password_target(registration):
+    db,m,p=registration;key=target.register(db,m)['target_id']
+    row=target._row(db,key);saved=json.loads(row.value_plain);saved['state']='imported';row.value_plain=json.dumps(saved);db.commit()
+    yesterday=datetime.fromisoformat(m['generated_at'])-timedelta(days=1)
+    other=p.with_name('ExportOrderList126.xlsx');other.write_bytes(workbook(values=['3316569963241107899','买家已付款','桌','旧款','测试','地址','13800000000']))
+    old={**m,'path':other.name,'export_id':'126','sha256':hashlib.sha256(other.read_bytes()).hexdigest(),
+         'generated_at':yesterday.isoformat(),'business_date':yesterday.date().isoformat(),
+         'order_batch_id':'orders-'+yesterday.strftime('%Y%m%d')+'-'+'c'*32}
+    with pytest.raises(ValueError,match='older_business_day'):target.register(db,old)
+    assert json.loads(target._row(db,target.ACTIVE).value_plain)==key
