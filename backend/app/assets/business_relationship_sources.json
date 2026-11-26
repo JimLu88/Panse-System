@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "11943dadd695773074f20c62badeaff90a9d4926b47ead6557324cab1becbdb5",
+    "backend/app/services/business_relationship_catalog.py": "c554bb4ad2dbcf86fbdcbb846256d2962989dd148be0887a1a2f5b942ee285b1",
     "backend/app/services/cash_flow_service.py": "bd36372efe59d19e856e565485acdaf610675fdce238e4b33c9cdcd34eedd97f",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -74,7 +74,7 @@
     "backend/app/services/inventory_demand_service.py": "3c679d00429330629b19e5f021e4ecb596532753b7077dae0fea2665dd41bb94",
     "backend/app/services/inventory_lock_service.py": "1d9e7b7b57272cfc4c2fa94530332781b77c25d6f23a9363574a9622c3e9c5da",
     "backend/app/services/multi_child_closeout_service.py": "05840a40441b3791420d25fa0db94405fa6d5e734df31e807ff0fa60cec23079",
-    "backend/app/services/notify_service.py": "eaa5266ab96925b23eb376503a018f0ad178c12f3ae58b06909a0181258f2a9c",
+    "backend/app/services/notify_service.py": "f1a028de25eda98f3e37fa8f0ddf2f936f9853c88fd9d4203a218c26c257b908",
     "backend/app/services/npd_service.py": "5a9c987e51083b459d640ba9cb4f79d662068630fb202bcfbfb6c1f81e4d8cee",
     "backend/app/services/order_completeness_incident.py": "a9beafb42609a5a8bf9a5a3ed9bf987adae0ca898fafeb6a3e69c87d62cfd3d6",
     "backend/app/services/order_cost_service.py": "50c8c82536280d2a5d21a79a505cba06b652531620e9598e2e214e2d5f0ae3d7",
@@ -93,7 +93,7 @@
     "backend/app/services/remote_report_service.py": "6fba28eea67a6b4e5e53e2330e6b92e4256a53229dd3efa317a11725f4b52d3e",
     "backend/app/services/sales_analytics.py": "2886b733e4eecc5f8d3362d715c79b41f5cc152f251a0e66d90d499205c6f0cf",
     "backend/app/services/sales_rollup_service.py": "a71e84e81bb685eae5d3445e2d519ffe84d33f7e68cafecf0e5cfd962cb1ec40",
-    "backend/app/services/scheduler.py": "06eeb78bee2d88d929fae8bf94d24360d79dcb6ec29a8b12c7bd107b00c72c37",
+    "backend/app/services/scheduler.py": "8b9f6a5c665ed21e380e931e46598c9a811fc1af4f3426e0d8a889c45a3c891a",
     "backend/app/services/shipment_service.py": "0ece15887653479dc5aba6d181cf474dbf6c766258f75d260883dedcf522391a",
     "backend/app/services/staff_salary_service.py": "cf42f77188f311d0c84b10c9a72bcc00b35fdccfee00fbd8a402b6c93bd86fd8",
     "backend/app/services/taobao_order_import.py": "295b48b08e59e2f723bbf36363aa3968937b8bb15ed823cc79caa56745781369",
@@ -124,7 +124,7 @@
     "backend/app/services/platform_order_resume_service.py": "41182def4a4a04cd8bc89e522ebe5c2fa9ab9838952893b205a38f675f37ea72",
     "backend/app/services/order_scoped_resume_service.py": "a364c07144afffc64d2ab198afe74e3f1066170a7e699bd7ad7647967aa65360",
     "backend/app/services/shipping_recovery_service.py": "0b9f3c2eccfa4e02086da7a92f239493fb3ad8e575ba99965b648509b8e64bd3",
-    "backend/app/services/fulfillment_deadlines.py": "da3460f686714eea3c0c991479e8812466d41603ae7297de18445bbd18768d18",
+    "backend/app/services/fulfillment_deadlines.py": "cf73ef75075b313f8492df10d206ffac9c18b8a9c9b106a9ddb9d9309f75989b",
     "backend/app/services/fulfillment_intake.py": "11e20545dfd3fbe504b09113317b576596fedfc9c75f657f2c58b49df1f06ab6",
     "backend/app/services/taobao_shipping.py": "389589da2e5214720384d7703e20502223460f61c2b470b2e5b72a5495303b96",
     "backend/app/services/interaction_notice_service.py": "4afebf36e5bbffd24b2407dbf3c1098d67806a5b14f17d225abdef44a3463239",
@@ -140,7 +140,8 @@
     "backend/app/api/campaigns.py": "3c5500e5815ccb56ad2bcb99cacc99df800b8e7942cc02103b68c73c4fd7633c",
     "backend/app/services/campaign_pipeline_audit_vendor.py": "41f4939eed4a93df1d0b8ae3077134df23ca5328e3696486c605a85640ed8440",
     "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86",
-    "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac"
+    "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
+    "backend/app/services/urgent_fulfillment_feishu.py": "0f2fb6146a6bc591ded3c6a9713d62a2e0421fa0e3e020c1a94b3e7e60395ce0"
   },
   "scoped_review_20261116": {
     "paths": [

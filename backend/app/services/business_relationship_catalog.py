@@ -487,3 +487,13 @@ EDGES += [edge('campaign.pipeline_receipt','campaign.ai_takeover','异常交给�
 
 NODES += [node('finance.balance_source','逐账户余额事实','finance','AccountBalance.account_name / as_of_date / closing_balance','models/finance.py','class AccountBalance','按账户取最新期；余额日期不以入库日代替。'),node('finance.balance_display','可用资金逐类余额展示','finance','alipay_main_balance / bank_balance / other_balance','services/cash_flow_service.py','def compute_summary','主力号与银行卡单列，显示各自来源日期；只拆展示，不修改账户余额，每个账户仅计一次。')]
 EDGES += [edge('finance.balance_source','finance.balance_display','最新余额分行汇总','每个账户取最新期并互斥分类','拆分前后加项总额不变，缺统计日期明确标出','services/cash_flow_service.py','def _classify_account')]
+
+NODES += [
+    node('order.urgent_deadlines','紧急订单内部交期','order','原交期 / 11天紧急 / 5天非常紧急','services/fulfillment_deadlines.py','def pending_orders','只读订单；部分退款继续跟进，全额退款及已发子单退出；不改订单交期、发货或库存。'),
+    node('feishu.urgent_daily','紧急订单每日表','sync','统计日期 + 订单号 / 独立table_id','services/urgent_fulfillment_feishu.py','def _sync','复用原工厂base但不写原表；按日保留快照，同日更新不新增重复；回读后每天仅发一条提醒群链接。'),
+    node('feishu.alert_quiet','提醒群精简规则','sync','通知标题 / 等级 / 路由','services/notify_service.py','def _erp_only_in_alert_chat','普通报表、数据过期及通用重复价保提示留ERP；保留登录、口令、实际异常、具体活动处理提示及业务回复。'),
+]
+EDGES += [
+    edge('order.child','order.urgent_deadlines','按有效子单筛选','已付款或生产中且未发货','有导入子单则不回退母单，全额退款才退出','services/fulfillment_deadlines.py','def pending_orders'),
+    edge('order.urgent_deadlines','feishu.urgent_daily','每日09:10同步','启用且ERP提醒群已配置','日期和订单组成唯一键；未知新增先回读，未知通知不重发','services/urgent_fulfillment_feishu.py','def sync_daily'),
+]

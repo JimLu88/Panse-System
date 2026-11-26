@@ -6,7 +6,8 @@ from sqlalchemy import select
 
 from app.models.order import Order, OrderDetail
 from app.services import alert_service, order_flags, order_service
-from app.services.order_line_delivery_service import line_is_refunded, is_master_summary_line
+from app.services.order_line_delivery_service import line_is_fully_refunded, is_master_summary_line
+from app.services.order_sheet_archive_service import _is_refunded
 
 _BEIJING = timezone(timedelta(hours=8))
 _FIELDS = ("remark", "seller_memo", "buyer_message", "production_note")
@@ -110,12 +111,11 @@ def pending_orders(db, today=None):
         lines.setdefault(line.order_no, []).append(line)
     rows = []
     for order in orders:
-        if (order.ship_date or order.is_refill or order.refund_amount
-                or (order.refund_status and order.refund_status not in ("无退款", "没有申请退款", "未申请退款", "买家未申请退款", "退款失败", "买家撤销退款"))
+        if (order.ship_date or order.is_refill or _is_refunded(order, db=db)
                 or (order.platform_field_state or {}).get("shipping_only")):
             continue
         active = [line for line in lines.get(order.order_no, ())
-                  if not is_master_summary_line(db, line) and not line_is_refunded(line)
+                  if not is_master_summary_line(db, line) and not line_is_fully_refunded(line, db)
                   and order_service.normalize_status(line.line_status) in ("paid", "production")]
         if order.order_no in lines and not active:
             continue
@@ -123,7 +123,9 @@ def pending_orders(db, today=None):
         if info:
             numbers = sorted({line.factory_no for line in active if line.factory_no})
             label = "、".join(f"畔色{n}单" for n in numbers) or order_flags.factory_label(order) or order.order_no
-            rows.append({**info, "order_no": order.order_no, "label": label})
+            rows.append({**info, "order_no": order.order_no, "label": label,
+                         "sub_order_nos": sorted({line.sub_order_no for line in active}),
+                         "refund_note": "存在退款记录，跟进时核实退款范围" if order.refund_amount or any(line.refund_amount for line in active) else ""})
     return sorted(rows, key=lambda row: (row["due"] or "9999", row["order_no"]))
 
 
@@ -137,4 +139,5 @@ def refresh_reminder(db):
         alert_service.upsert(db, kind=key, dedupe_key=key, severity="warn",
             title="紧急订单待跟进", body=f"共 {len(rows)} 单\n" + "\n".join(preview),
             related_url="/orders/kanban?view=urgent", context={"rows": rows}, push_notify=False)
-    return {"orders": len(rows)}
+    from app.services import urgent_fulfillment_feishu
+    return {"orders": len(rows), "feishu": urgent_fulfillment_feishu.sync_daily(db, rows)}

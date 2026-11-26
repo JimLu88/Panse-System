@@ -392,6 +392,10 @@ def test_wechat_inbound_admin_config_never_returns_secrets():
     ("畔色 ERP [售后自动化日报]", "info", "待补原因"),
     ("畔色 ERP [自动取数日报]", "info", "任务汇总"),
     ("畔色 ERP | 发货报表处理结果", "info", "已成功"),
+    ("月度财务报表", "info", "月报"),
+    ("畔色 ERP | 2026年11月经营简报", "info", "月报"),
+    ("畔色 ERP | 月度数据更新提醒", "info", "月初补录"),
+    ("畔色ERP | 大促价保规则确认", "warn", "旧通用提醒"),
 ])
 def test_erp_only_messages_do_not_call_feishu(db_session, monkeypatch, title, level, body):
     monkeypatch.setattr(notify_service, "get_config", lambda db: {"route_mode": "feishu_split", "alert_chat_id": "test"})

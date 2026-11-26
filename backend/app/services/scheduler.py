@@ -2019,8 +2019,8 @@ def _job_promo_rotation_remind(db: Session) -> dict:
         f"再按页面实际期限更新活动计划；未确认前系统暂按{default_days}天冷静期。\n"
         f"（本提醒每天一次，持续到 {end}；冷静期可在活动计划中手动修改。）"
     )
-    notify_service.notify(db, msg, level="warn", title="畔色ERP | 大促价保规则确认")
-    return {"in_window": True, "window": name, "pushed": True}
+    ok, detail = notify_service.notify(db, msg, level="warn", title="畔色ERP | 大促价保规则确认")
+    return {"in_window": True, "window": name, "pushed": ok, "detail": detail}
 
 
 def _job_daily_10_comprehensive_report(db: Session) -> dict:
@@ -2431,7 +2431,7 @@ def _register_default_jobs() -> None:
     from app.services.fulfillment_intake import reconcile_pending
     register_job("shipping_official_readback", "核对淘宝发货回执", reconcile_pending, interval_minutes=20)
     from app.services.fulfillment_deadlines import refresh_reminder
-    register_job("daily_urgent_fulfillment", "紧急订单汇总（ERP通知中心）",
+    register_job("daily_urgent_fulfillment", "紧急订单汇总（ERP及飞书每日表）",
                  refresh_reminder, cron={"hour": 9, "minute": 10})
     from app.services.factory_forward_service import sync_pending
     register_job('factory_forward_sync', '工厂转发登记同步（失败最多5次）',

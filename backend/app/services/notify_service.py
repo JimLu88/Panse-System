@@ -143,8 +143,13 @@ WECHAT_SCOPE_KEY = "wechat_push_scope"
 
 
 def _erp_only_in_alert_chat(title: Optional[str], level: str, text: str) -> bool:
+    if level in {"error", "critical"}:
+        return False
     if title in {"畔色 ERP [销售周报]", "畔色ERP | 本周备货清单", "畔色 ERP [售后自动化日报]",
-                 "畔色 ERP [自动取数日报]"}:
+                 "畔色 ERP [自动取数日报]", "月度财务报表",
+                 "畔色 ERP | 月度数据更新提醒", "畔色ERP | 大促价保规则确认"}:
+        return True
+    if re.fullmatch(r"畔色 ERP \| \d{4}年\d{1,2}月经营简报", title or ""):
         return True
     if re.fullmatch(r"畔色 ERP \| \d+ 项数据待更新", title or ""):
         return True
