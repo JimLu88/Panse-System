@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """配件采购 Excel/CSV 表格导入核心 (网页上传与飞书文件共用)。
 
-列名自动映射; 同 (日期, 供应商, 名称, 金额) 防重。
+列名自动映射; 普通采购沿用旧键，客户明细按客户/规格/加工等完整内容及出现次数防重。
 """
 from __future__ import annotations
 
 import csv as _csv
+from collections import defaultdict, deque
 from decimal import Decimal as _D, InvalidOperation
 from io import StringIO
 from typing import Optional
@@ -19,10 +20,14 @@ TABLE_MAP = {
     "供应商": "supplier", "店铺": "supplier", "对手方": "supplier",
     "购买日期": "purchase_date", "日期": "purchase_date", "采购日期": "purchase_date",
     "配件名称": "material_name", "名称": "material_name", "商品名称": "material_name", "品名": "material_name",
+    "材质及说明": "material_name",
     "规格": "spec",
+    "尺寸(mm)": "spec", "尺寸（mm）": "spec",
+    "姓名": "customer_name", "加工": "processing",
     "数量": "qty",
     "单价": "unit_price",
     "金额": "amount", "总价": "amount", "合计": "amount", "总金额": "amount",
+    "价格": "amount",
     "快递单号": "tracking_no", "运单号": "tracking_no", "物流单号": "tracking_no",
     "备注": "remark",
 }
@@ -42,6 +47,19 @@ def _norm_header(h: Optional[str]) -> str:
     return (h or "").replace(" ", "").replace("　", "").replace("﻿", "").strip()
 
 
+def _detail_remark(rec: dict) -> str:
+    # 姓名是采购对应客户，不是供应商，也不能凭姓名关联平台订单。
+    return "\n".join(
+        label + str(rec.get(field) or "").strip()
+        for field, label in (("customer_name", "姓名："), ("processing", "加工："), ("remark", "备注："))
+        if str(rec.get(field) or "").strip()
+    )
+
+
+def _detail_key(when, supplier, name, amount, spec, qty, remark):
+    return (when, supplier, name, amount, (spec or "").strip(), qty, (remark or "").strip())
+
+
 def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]) -> dict:
     """解析表格并写入采购记录 (多 sheet 全读)。
 
@@ -52,17 +70,26 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
     from app.services import import_clean, tabular
     from app.services.bill_import_service import _date as _parse_date
 
+    stored = db.execute(select(PartPurchase)).scalars().all()
     existing: dict[tuple, PartPurchase] = {
         (r.purchase_date, r.supplier, r.material_name, r.total_amount): r
-        for r in db.execute(select(PartPurchase)).scalars().all()
+        for r in stored if r.purchase_type != "客户明细表导入"
     }
-    inserted = updated = skipped_invalid = 0
+    # 客户明细采用独立身份口径，不与旧的粗粒度采购键混用。
+    # 消耗导入前快照中的同内容记录：同文件内两条完全相同的真实采购也保留，重传时逐条抵扣。
+    detail_existing = defaultdict(deque)
+    for r in stored:
+        if r.purchase_type == "客户明细表导入":
+            detail_existing[_detail_key(r.purchase_date, r.supplier, r.material_name,
+                                       r.total_amount, r.spec, r.qty, r.remark)].append(r)
+    inserted = updated = skipped_invalid = skipped_duplicate = 0
     unmapped_all: set[str] = set()
     for _sheet, text in tabular.to_csv_texts(raw, filename):
         if not text.strip():
             continue
         reader = _csv.DictReader(StringIO(text))
         norm_fields = {_norm_header(h): h for h in (reader.fieldnames or [])}
+        detailed = any(h in norm_fields for h in ("材质及说明", "姓名", "加工"))
         unmapped_all.update(h for h in norm_fields if h and h not in TABLE_MAP)
         for raw_row in reader:
             rec = {}
@@ -77,8 +104,16 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
                 continue
             when = _parse_date(rec.get("purchase_date"))
             supplier = (rec.get("supplier") or "").strip() or None
+            qty = _dec(rec.get("qty")) or _D("1")
+            remark = _detail_remark(rec) if detailed else (rec.get("remark") or None)
             key = (when, supplier, name, amount)
-            if key in existing:
+            if detailed:
+                dkey = _detail_key(when, supplier, name, amount, rec.get("spec"), qty, remark)
+                if detail_existing[dkey]:
+                    detail_existing[dkey].popleft()
+                    skipped_duplicate += 1
+                    continue
+            elif key in existing:
                 # 用新行的非空字段补/覆盖旧记录 (最新数据优先)
                 old = existing[key]
                 changed = False
@@ -92,7 +127,6 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
                 if changed:
                     updated += 1
                 continue
-            qty = _dec(rec.get("qty")) or _D("1")
             row = PartPurchase(
                 purchase_no=_next_purchase_no(db),
                 supplier=supplier,
@@ -104,13 +138,14 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
                 amount=amount,
                 total_amount=amount,
                 tracking_no=import_clean.clean_no(rec.get("tracking_no")),
-                remark=(rec.get("remark") or None),   # 备注(可能含订单号/人名)→ 供导入后自动匹配解析
-                purchase_type="表格导入",
+                remark=remark,
+                purchase_type="客户明细表导入" if detailed else "表格导入",
                 payment_status="paid",
             )
             db.add(row)
             db.flush()
-            existing[key] = row
+            if not detailed:
+                existing[key] = row
             inserted += 1
     db.commit()
     # 导入后【自动匹配】(用户 2026-06-27): 料号→分类 + 备注订单号→related_order_no(→汇总进 actual_parts)
@@ -129,7 +164,8 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
     unmapped = sorted(unmapped_all)
     auto_msg = (f"; 自动匹配 料号{auto.get('material_matched', 0)}/订单{auto.get('order_linked', 0)}"
                 if auto and "error" not in auto else "")
-    return {"inserted": inserted, "updated": updated, "skipped_duplicate": 0,
+    return {"inserted": inserted, "updated": updated, "skipped_duplicate": skipped_duplicate,
             "skipped_invalid": skipped_invalid, "unmapped_columns": unmapped, "auto_match": auto,
-            "message": (f"导入 {inserted} 条, 更新 {updated} 条采购记录" + auto_msg
+            "message": (f"导入 {inserted} 条, 更新 {updated} 条采购记录"
+                        + (f", 重复 {skipped_duplicate} 条" if skipped_duplicate else "") + auto_msg
                         + (f", 未识别列: {','.join(unmapped)}" if unmapped else ""))}

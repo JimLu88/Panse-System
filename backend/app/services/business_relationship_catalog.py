@@ -109,6 +109,7 @@ NODES = [
     node('factory.cards','工厂制作单身份与搜索','factory','Order.order_no / OrderDetail.sub_order_no / factory_no','api/orders.py','def factory_production','只读母单卡片；有效子单编号优先，多个编号全部显示，不修改生产或发货状态'),
     node('purchase.quote','询价与供应商决策','purchase','ProcurementTask','models/procurement.py'),
     node('purchase.parts','配件采购与到货','purchase','PartPurchase','models/order.py','class PartPurchase'),
+    node('purchase.table_import','采购表列名与客户明细防重','purchase','PartPurchase.purchase_type / remark / spec / total_amount','services/purchase_table_import.py','def import_purchases_table_core','客户姓名不作供应商；尺寸和加工保留；完整内容及出现次数防重，普通采购沿用旧更新规则；不按姓名猜订单，不等于库存到货或已核实付款'),
     node('purchase.supplier','供应商资料与评分','purchase','Supplier / SupplierScore','models/supplier.py'),
     node('stock.lock','BOM物料占用','stock','InventoryLockLedger','services/inventory_lock_service.py','def lock_for_factory_order'),
     node('stock.consume','发货消耗与释放','stock','consume_for_shipment / release_factory_order_lock','services/inventory_lock_service.py','def consume_for_shipment'),
@@ -167,6 +168,7 @@ def edge(a, b, action, condition, check, path, anchor='', kind='data', evidence=
 
 
 EDGES = [
+    edge('purchase.table_import','purchase.parts','解析并保存采购明细','名称与金额有效；客户明细按日期/供应商/名称/金额/规格/数量/备注和出现次数匹配','同款同价不同客户不得合并；整行金额不按尺寸数量再乘；旧粗键记录不覆盖，跨格式历史记录需单独核对','services/purchase_table_import.py','def import_purchases_table_core'),
     edge('sync.order_push_command','sync.password','补口令续接原手动批次','manual_request_key持久绑定批次，独立订单凭据不被财务编排覆盖','不推断force_orders等于手动；原batch三角色/hash完整性不降级；仅更新同批次推送状态','services/agent_ingest_service.py','def _orchestrate_locked'),
     edge('sync.inbound','sync.order_push_command','识别推送与推送状态','可信消息、用户身份、允许群、完整指令','数量/口令/图片分支不接管；不执行淘宝发货','services/feishu_bot_service.py','def on_message_event'),
     edge('sync.order_push_command','automation.agent','沿用订单取数与增量送达','独占受理后调用现有订单流程；用户请求标记与原批次持久绑定','白天主动取数补口令不套晚间时段；三报表角色/hash/批次/导入时间仍核验；财务及活动不启动','services/feishu_order_push_service.py','def run_request'),
