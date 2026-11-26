@@ -3,7 +3,7 @@
 Only this table is written. Unknown creates are reconciled by key, never replayed.
 """
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import json
 import threading
@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from app.services import feishu_client as fc, settings_service as settings
 from app.services import factory_dispatch_feishu_service as factory, notify_service
+from app.services.urgent_note_highlights import note_signal
 
 ENABLED_KEY = "urgent_fulfillment_feishu_enabled"
 STATE_KEY = "urgent_fulfillment_feishu_v1"
@@ -20,8 +21,11 @@ TABLE_NAME = "紧急订单（每日）"
 FIELDS = [(n, 1) for n in (
     "工厂下单号", "统计日期", "紧急程度", "商品名称", "SKU规格", "目标日期",
     "跟进事项", "提醒原因", "清单状态", "订单号", "子订单号", "记录键", "更新时间",
-    "退款提示",
-)] + [("剩余天数", 2), ("工厂下单图", 17)]
+    "退款提示", "备注时间要求",
+)] + [("剩余天数", 2), ("工厂下单图", 17), ("备注提醒", 3)]
+# Bitable native colored tags, matching the factory table's established palette.
+COLOR_RED, COLOR_YELLOW, COLOR_NEUTRAL = 44, 24, 10
+TAG_FIELDS = {"紧急程度", "目标日期", "备注提醒"}
 _LOCK = threading.Lock()
 _PG_LOCK = 726112601
 
@@ -111,7 +115,18 @@ def _ensure_table(db, token, state):
         _save(db, state)
         fc.create_field(db, token, table, "工厂下单图", 17)
         fields = {f["field_name"]: f["type"] for f in fc.list_table_fields(db, token, table)}
-    if any(fields.get(n) != t for n, t in FIELDS):
+    for name, kind in [("备注时间要求", 1), ("备注提醒", 3)]:
+        if name not in fields and state.get("table_id") == table:
+            pending_key = "field_pending:" + name
+            if state.get(pending_key):
+                raise RuntimeError("紧急表备注列创建结果待核对，不重复创建")
+            state[pending_key] = True
+            _save(db, state)
+            fc.create_field(db, token, table, name, kind)
+            fields = {f["field_name"]: f["type"] for f in fc.list_table_fields(db, token, table)}
+        if fields.get(name) == kind:
+            state.pop("field_pending:" + name, None)
+    if any(fields.get(n) not in ({1, 3} if n in TAG_FIELDS else {t}) for n, t in FIELDS):
         raise RuntimeError("紧急订单表字段不匹配，不覆盖已有表结构")
     state.pop("image_field_pending", None)
     state.update(app_token=token, table_id=table, table_create_pending=False)
@@ -137,6 +152,14 @@ def build_rows(rows, source, day, updated_at):
                    "非常紧急" if days is not None and days <= 5 else "紧急")
         if row["action"] == "核实交期":
             urgency = "交期待核实"
+        note_level, note_excerpt = note_signal(
+            [row.get("note_excerpt", ""), joined("订单备注")], date.fromisoformat(day))
+        if row.get("note_level") == "red":
+            note_level = "red"
+        if note_level == "red" and urgency not in ("逾期", "交期待核实"):
+            urgency = "非常紧急"
+        elif note_level and (days is None or days > 11) and urgency != "交期待核实":
+            urgency = "时间要求待核实"
         key = f"{day}:{order}"
         result[key] = {
             "工厂下单号": row["label"], "统计日期": day, "紧急程度": urgency,
@@ -147,6 +170,10 @@ def build_rows(rows, source, day, updated_at):
             "订单号": order, "子订单号": "、".join(sorted(children)), "记录键": key,
             "更新时间": updated_at, "退款提示": row.get("refund_note", ""),
             "剩余天数": days,
+            "备注提醒": ("非常紧急 / 请优先核实" if note_level == "red" else
+                         "有时间要求 / 请核实" if note_level else ""),
+            "备注时间要求": (("🔴 " if note_level == "red" else "🟡 ") + note_excerpt
+                            if note_excerpt else ""),
         }
         attachments = _attachments([image for original in originals
                                     for image in factory._remote_attachment_value(original)])
@@ -192,6 +219,58 @@ def _number_equal(actual, expected):
         return False
 
 
+def _tag_color(name, value, today):
+    if name == "紧急程度":
+        return COLOR_RED if value in ("逾期", "非常紧急") else COLOR_YELLOW
+    if name == "备注提醒":
+        return COLOR_RED if value.startswith("非常紧急") else COLOR_YELLOW
+    try:
+        days = (date.fromisoformat(value) - today).days
+    except ValueError:
+        return COLOR_YELLOW
+    return COLOR_RED if days <= 5 else COLOR_YELLOW if days <= 11 else COLOR_NEUTRAL
+
+
+def _ensure_colors(db, token, table, current, expected, day):
+    """Only owned presentation fields; preserve option IDs and every old value."""
+    fields = {f["field_name"]: f for f in fc.list_table_fields(db, token, table)}
+    converted = []
+    for name in sorted(TAG_FIELDS):
+        field = fields[name]
+        if field["type"] not in (1, 3):
+            raise RuntimeError("紧急表颜色字段类型冲突：" + name)
+        options = [dict(o) for o in (field.get("property") or {}).get("options", [])]
+        by_name = {o["name"]: o for o in options}
+        values = {_text(r["fields"].get(name)) for r in current.values()}
+        values.update(_text(f.get(name)) for f in expected.values())
+        for value in sorted(values - {""}):
+            if value not in by_name:
+                option = {"name": value}
+                options.append(option)
+                by_name[value] = option
+        for option in options:
+            option["color"] = _tag_color(name, option["name"], date.fromisoformat(day))
+        if field["type"] == 3 and options == (field.get("property") or {}).get("options", []):
+            continue
+        prop = dict(field.get("property") or {}) if field["type"] == 3 else {}
+        prop["options"] = options
+        fc.update_field(db, token, table, field["field_id"], field_name=name,
+                        field_type=3, property_=prop, ui_type="SingleSelect")
+        verified = next(f for f in fc.list_table_fields(db, token, table) if f["field_name"] == name)
+        actual = {o["name"]: o.get("color") for o in (verified.get("property") or {}).get("options", [])}
+        if verified["type"] != 3 or any(actual.get(o["name"]) != o["color"] for o in options):
+            raise RuntimeError("紧急表颜色设置回读不一致：" + name)
+        if field["type"] == 1:
+            converted.append(name)
+    if converted:
+        readback = _index(fc.list_records(db, token, table))
+        if set(readback) != set(current) or any(
+            not _same(readback[k]["fields"], {n: r["fields"].get(n) for n in converted})
+            for k, r in current.items()
+        ):
+            raise RuntimeError("紧急表文字转颜色标签后值不一致，停止同步")
+
+
 def sync_daily(db, rows, *, now=None):
     if settings.get(db, ENABLED_KEY, env_fallback=False) != "1":
         return {"status": "disabled"}
@@ -222,6 +301,7 @@ def _sync(db, rows, day, updated_at):
     state["pending_rows"] = []
     source = fc.list_records(db, token, factory_table)
     expected = build_rows(rows, source, day, updated_at)
+    _ensure_colors(db, token, table, current, expected, day)
     for key, fields in expected.items():
         if key in current and fields.get("工厂下单图"):
             fields["工厂下单图"] = _attachments(

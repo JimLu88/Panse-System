@@ -18,6 +18,7 @@ ROW = {"order_no": "synthetic-order", "label": "畔色999单", "sub_order_nos": 
 def remote(db_session, monkeypatch):
     state = {"records": [], "messages": [], "creates": 0, "fail": None}
     monkeypatch.setattr(service, "_ensure_table", lambda *a: "urgent-table")
+    monkeypatch.setattr(service, "_ensure_colors", lambda *a: None)
     monkeypatch.setattr(notify_service, "get_alert_chat_id", lambda db: "alert-chat")
     def listing(db, token, table):
         if table == "urgent-table":

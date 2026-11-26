@@ -124,7 +124,7 @@
     "backend/app/services/platform_order_resume_service.py": "41182def4a4a04cd8bc89e522ebe5c2fa9ab9838952893b205a38f675f37ea72",
     "backend/app/services/order_scoped_resume_service.py": "a364c07144afffc64d2ab198afe74e3f1066170a7e699bd7ad7647967aa65360",
     "backend/app/services/shipping_recovery_service.py": "0b9f3c2eccfa4e02086da7a92f239493fb3ad8e575ba99965b648509b8e64bd3",
-    "backend/app/services/fulfillment_deadlines.py": "cf73ef75075b313f8492df10d206ffac9c18b8a9c9b106a9ddb9d9309f75989b",
+    "backend/app/services/fulfillment_deadlines.py": "4ef132cda1f3d48f07d3cd42c7e6b60340c8d51c321f877e7cf8892cf9ba504b",
     "backend/app/services/fulfillment_intake.py": "11e20545dfd3fbe504b09113317b576596fedfc9c75f657f2c58b49df1f06ab6",
     "backend/app/services/taobao_shipping.py": "389589da2e5214720384d7703e20502223460f61c2b470b2e5b72a5495303b96",
     "backend/app/services/interaction_notice_service.py": "4afebf36e5bbffd24b2407dbf3c1098d67806a5b14f17d225abdef44a3463239",
@@ -141,7 +141,8 @@
     "backend/app/services/campaign_pipeline_audit_vendor.py": "41f4939eed4a93df1d0b8ae3077134df23ca5328e3696486c605a85640ed8440",
     "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86",
     "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
-    "backend/app/services/urgent_fulfillment_feishu.py": "e5d57aa1e9df4577d36dcde57bee4a1fae5344d3eae330e6a83fe89b72ebb4bf"
+    "backend/app/services/urgent_fulfillment_feishu.py": "11cc8107abad327e74397a47a4d1d55dfe040892e0c9ea3e99afdb4a9671e2d6",
+    "backend/app/services/urgent_note_highlights.py": "ac0a1269922e6cc256de25566e806fe4dd322adc39f797a3d7d7c598915f50a7"
   },
   "scoped_review_20261116": {
     "paths": [

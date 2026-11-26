@@ -8,6 +8,7 @@ from app.models.order import Order, OrderDetail
 from app.services import alert_service, order_flags, order_service
 from app.services.order_line_delivery_service import line_is_fully_refunded, is_master_summary_line
 from app.services.order_sheet_archive_service import _is_refunded
+from app.services.urgent_note_highlights import note_signal
 
 _BEIJING = timezone(timedelta(hours=8))
 _FIELDS = ("remark", "seller_memo", "buyer_message", "production_note")
@@ -85,16 +86,19 @@ def deadline(order, today):
     elif targets and base and any(target != base for target, _ in targets):
         review.add("核实备注与已确认交期")
     urgent_word = bool(_URGENT.search(text)) and not _QUESTION.search(text)
+    note_level, note_excerpt = note_signal(notes, today)
     remaining = (due - today).days if due else None
     shortened = bool(targets and due and base and due < base)
-    if (remaining is None or remaining > 11) and not review and not urgent_word and not shortened:
+    if (remaining is None or remaining > 11) and not review and not urgent_word and not shortened and not note_level:
         return None
     return {"due": due.isoformat() if due else None, "days": remaining,
             "action": "核实交期" if review else action,
             "reason": "；".join(sorted(review)) or (
                 "按下单时约定的工期" if targets and due != base else
-                "备注要求加急" if urgent_word else "已到提醒期限"),
-            "original_due": base.isoformat() if base else None}
+                "备注要求加急" if urgent_word or note_level == "red" else
+                "备注含时间要求，请核实" if note_level and (remaining is None or remaining > 11) else "已到提醒期限"),
+            "original_due": base.isoformat() if base else None,
+            "note_level": note_level, "note_excerpt": note_excerpt}
 
 
 def pending_orders(db, today=None):
