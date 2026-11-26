@@ -172,7 +172,7 @@ EDGES = [
     edge('sync.order_push_command','automation.agent','沿用订单取数与增量送达','独占受理后调用现有订单流程；用户请求标记与原批次持久绑定','白天主动取数补口令不套晚间时段；三报表角色/hash/批次/导入时间仍核验；财务及活动不启动','services/feishu_order_push_service.py','def run_request'),
     edge('sync.order_push_command','factory.receipt','返回真实推送结果','原流程delivery结果与群消息回执','异常或未知不报成功；回复失败不重跑业务；进程中断保留待核原记录','services/feishu_order_push_service.py','def run_request'),
     edge('automation.batch','sync.route','取数失败仅一次群提醒','普通失败按业务日去重；发货待口令和支付宝待扫码跨天仅一次','重试、最终失败和恢复只进ERP，投递结果未知不重发；其他来源故障不被等待扫码掩盖','services/automation_pipeline_service.py','def _notify_failure_once'),
-    edge('sync.password','sync.route','等待人工输入跨天去重','发送前持久占位；新报表、重启、跨日不重新提醒','只在对应真实恢复后解除；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
+    edge('sync.password','sync.route','按精确报表去重口令提醒','发送前持久占位；同一报表不重复提醒，新报表可单独提醒','旧报表未回复不吞掉新提醒；不保存口令，不改变订单或流水结果','services/interaction_notice_service.py','def claim'),
     edge('order.notes','shipping.deadline','提取内部工期','有下单锚点及明确的完成或发货期限','人工交期、延期及待确认条件优先','services/fulfillment_deadlines.py','def deadline'),
     edge('factory.receipt','shipping.registration','核对原图及主子单','单件单包、有真实子单及发送图归档','压缩图只提供候选，未知提交不重发','services/fulfillment_intake.py','def _match'),
     edge('shipping.registration','shipping.batch','整单登记生成官方模板','原图精确匹配或ERP人工确认全部子单；同店铺、待发无退款且备注落实','快递与快运不混用；主单模板不支持部分交运；不写订单状态或库存','services/fulfillment_batch_service.py','def preview'),

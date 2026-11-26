@@ -93,3 +93,23 @@ def test_no_daily_gap_alert_while_alipay_waits_but_real_mismatch_still_alerts(db
     monkeypatch.setattr(ingest, "get_pending_scans", lambda db: [])
     audit.record_and_notify(db_session, result, send=send)
     assert len(sent) == 2
+
+
+def test_shipping_notice_follows_exact_target_not_yesterdays_wait(db_session):
+    import json
+    from app.models.settings import SystemSetting
+    from app.services import interaction_notice_service as notices
+    db=db_session
+    assert notices.claim(db,notices.SHIPPING_PASSWORD)
+    pointer=SystemSetting(key='shipping_target_active',value_plain=json.dumps('shipping_target:'+'a'*64),is_secret=False)
+    db.add(pointer);db.commit()
+    assert notices.claim(db,notices.SHIPPING_PASSWORD)
+    assert not notices.claim(db,notices.SHIPPING_PASSWORD)
+    db.commit()
+    pointer.value_plain=json.dumps('shipping_target:'+'b'*64);db.commit()
+    assert notices.claim(db,notices.SHIPPING_PASSWORD)
+    assert not notices.claim(db,notices.SHIPPING_PASSWORD)
+    notices.resolve(db,notices.SHIPPING_PASSWORD);db.commit()
+    assert not notices.waiting(db,notices.SHIPPING_PASSWORD)
+    pointer.value_plain=json.dumps('shipping_target:'+'a'*64);db.commit()
+    assert notices.waiting(db,notices.SHIPPING_PASSWORD)
