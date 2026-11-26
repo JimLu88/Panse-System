@@ -97,6 +97,7 @@ class FactorySheet:
     sku_image: Optional[str] = None
     purchase_qty: Optional[int] = None
     quantity_confirmation: Optional[dict] = None
+    quantity_provisional: Optional[dict] = None
     reference_image_notice: Optional[str] = None
 
     # 主材 / 辅材 (图4, 2026-06-12): 取产品总表 main_material / aux_material, 下单图先主材后辅材
@@ -261,6 +262,8 @@ def build_for_order_line(
     detail_id: int,
     *,
     address_pending_for_production: bool = False,
+    allow_provisional: bool = True,
+    _provisional: Optional[dict] = None,
 ) -> FactorySheet:
     """按淘宝子订单商品行生成工厂单；地址、备注仍继承主订单。
 
@@ -305,7 +308,7 @@ def build_for_order_line(
         product_name=product_name,
         sku=sku,
         sku_code=sku_code,
-        qty=confirmed['physical_qty'] if confirmed else detail.qty or 1,
+        qty=confirmed['physical_qty'] if confirmed else 1 if _provisional else detail.qty or 1,
         customer_name=("地址待补" if address_pending_for_production else order.customer_name),
         customer_phone=("待补" if address_pending_for_production else order.customer_phone),
         customer_address=(
@@ -318,20 +321,30 @@ def build_for_order_line(
         production_note=production_note,
         factory_no=detail.factory_no,
         order_is_custom=bool(getattr(order, "is_custom", False)),
-        quantity_verified=bool(confirmed),
+        quantity_verified=bool(confirmed or _provisional),
     )
     sheet.purchase_qty = detail.qty
     sheet.quantity_confirmation = confirmed
+    sheet.quantity_provisional = _provisional
     if (order.platform_field_state or {}).get('shipping_only'):
         sheet.warnings.append(FactorySheetWarning(code='sales_detail_missing', severity='error',
             message='仅有发货资料，缺真实子单及购买数量，禁止据此生产'))
-    if not confirmed and (detail.qty is None or detail.qty <= 0):
+    if not confirmed and not _provisional and (detail.qty is None or detail.qty <= 0):
         # The builder's display fallback is not evidence for a production count.
         if not any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
             sheet.warnings.append(FactorySheetWarning(
                 code='production_quantity_unverified', severity='error',
                 message='原购买数量缺失或无效，实际成品数量待飞书确认；不能默认按1件生产',
             ))
+    if (allow_provisional and not confirmed and not _provisional
+            and any(w.code == 'production_quantity_unverified' for w in sheet.warnings)
+            and not any(w.code == 'sales_detail_missing' for w in sheet.warnings)):
+        from app.services import factory_provisional_quantity_service as provisional
+        marker = provisional.marker(db, order, detail)
+        if marker:
+            return build_for_order_line(db, order_id, detail_id,
+                address_pending_for_production=address_pending_for_production,
+                allow_provisional=False, _provisional=marker)
     # 图片上同时保留主订单和子订单，便于回查，不改变淘宝主订单的客服口径。
     from app.services import factory_linked_topup_service
     factory_linked_topup_service.apply_to_sheet(db, order, sheet, detail.id)

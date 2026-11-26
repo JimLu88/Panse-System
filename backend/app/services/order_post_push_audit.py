@@ -344,11 +344,23 @@ def attach(db, result, *, batch_id=None, only_order_nos=None, only_sub_order_nos
     result["post_push_audit"] = checked
     result["post_push_added_image_count"] = int(checked.get("images_pushed") or 0)
     if not checked.get("ok"):
+        missing, uncertain, review = set(), set(), set()
+        for item in checked.get('remaining', []):
+            identity = item.get('sub_order_no') or item.get('order_no') or item.get('reason')
+            reasons = set(item.get('reasons') or []) | {item.get('reason')}
+            if 'factory_image_not_sent' in reasons:
+                missing.add(identity)
+            elif 'delivery_uncertain_no_replay' in reasons:
+                uncertain.add(identity)
+            else:
+                review.add(identity)
+        checked['delivery_summary'] = {'missing_images': len(missing),
+            'uncertain_delivery': len(uncertain), 'fact_review': len(review)}
         result["_run_status"] = "fail"
         previous = str(result.get("_error") or "")
         result["_error"] = (previous + "；" if previous else "") + (
             "推送后报表核对未完成：" + str(checked.get("reason") or
-                                          f"仍有{checked.get('remaining_count', 0)}项需处理"))
+                                          f"明确缺图{len(missing)}单、发送待核实{len(uncertain)}单、资料或历史核对{len(review)}单"))
         problems = []
         for item in checked.get("remaining", [])[:5]:
             code = item.get("reason") or ",".join(item.get("reasons") or [])

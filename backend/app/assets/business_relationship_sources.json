@@ -1,6 +1,6 @@
 {
   "version": "2026-09-26.3",
-  "reviewed_at": "2026-11-19T10:10:00+00:00",
+  "reviewed_at": "2026-11-26T08:18:40.815382+00:00",
   "sources": {
     "backend/app/api/customization.py": "b12298f908245033c600e52301c29f9968cba3a039726501d11e4aca37260bdc",
     "backend/app/cli/custom_quote_verify.py": "11062052a63450d4a29909654bd5861f75281e15b40ab59cf0c6803ad0b5568f",
@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "3d9102b4624a7d46620f1983a206d6a7ceade90b68e237110f05ae794c2cb741",
+    "backend/app/services/business_relationship_catalog.py": "fbf80f6548561174fabba05eae063d1d5d355db82a2aaed95bed91108e9e601a",
     "backend/app/services/cash_flow_service.py": "bd36372efe59d19e856e565485acdaf610675fdce238e4b33c9cdcd34eedd97f",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -62,11 +62,11 @@
     "backend/app/services/campaign_sku_slot_service.py": "37f0bb6857fece83fb386cee8a78bb4e628bd29fe162069ef3d687b21973c011",
     "backend/app/services/campaign_workflow_service.py": "1ef79efa17d241c0f4948e256314259e1efe2cf2b4003081c9bf328176ad0ad1",
     "backend/app/services/dashboard_monthly_service.py": "18377f29168a162af70d8acf220d131d0686983f9b003b4b952b4700bfd985af",
-    "backend/app/services/factory_dispatch_feishu_service.py": "7ce4971b0ddb2cb12276b9de2ef552f4e9dcdcd42a94e7534f04559de67e05f4",
-    "backend/app/services/factory_production_evidence.py": "911e1690dcb7d8abd96e5dc74b7b2fb3e29a7c232612ba51b82cf62cef6a5f53",
-    "backend/app/services/factory_quantity_request_service.py": "62c899ee1d78ea751f2e31717135438bf5f997d7cc364c197ac048f7f5df6ab2",
+    "backend/app/services/factory_dispatch_feishu_service.py": "d7212f874383da5d79685f99d724bdea8e0969968886daa78173a3c6d502f384",
+    "backend/app/services/factory_production_evidence.py": "3da04dd7aa5db6ab63d5cff7feb8788eb6a87d96b7f8b61a68afaf661e35b4fb",
+    "backend/app/services/factory_quantity_request_service.py": "5df968e3fe61ce508456e9a852c3f97dc798dc8dccf9678c8ccd2a2b8c2c62ec",
     "backend/app/services/factory_settlement_service.py": "571cec94eb4ece62c06aee7362f73f9b7794186c30b683813908279dfa73bb68",
-    "backend/app/services/factory_sheet.py": "b3d5696f7d9cd939057502b309f051e9c4465eca6228db8a220d422c9bf3521a",
+    "backend/app/services/factory_sheet.py": "07103b0da40eea9c21f53059a9c7b7c6743153c68252f1c0457f16da95a10048",
     "backend/app/services/factory_shipping_confirmation_service.py": "6efb62c061a91072a9d0ad4091a0c3ff92d4c4b7dd0b1a4e5fa93ad2887323c4",
     "backend/app/services/feishu_bot_service.py": "da560a57062fe5872be34e7a1eb19952787e09f5283288f5b29f552d5c5e31f0",
     "backend/app/services/feishu_sync_service.py": "501968bee45b42cffb3a60a69e06bb0c4f28b52fb5b598e99f48812f170b2303",
@@ -80,9 +80,9 @@
     "backend/app/services/order_cost_service.py": "50c8c82536280d2a5d21a79a505cba06b652531620e9598e2e214e2d5f0ae3d7",
     "backend/app/services/order_delivery_completion_service.py": "bb85aa2a8954a336301f39a31e1e689af5aa7f3993c97bfd24f285272c871eee",
     "backend/app/services/order_financials.py": "56c1ac3d343155b8c81ca16e29c7d56ca28b990c3952a5a1976b55f20301ba3a",
-    "backend/app/services/order_line_delivery_service.py": "995e8dd3cf1b5f660b541081bb2f39cc94607fffef6aff01eb6d0624e59bf988",
+    "backend/app/services/order_line_delivery_service.py": "b3c8ef3f699d4854768562b837ca9b5ce547a2bcfbc8e2759530a565858da79d",
     "backend/app/services/order_purchase_facts.py": "f0420fc5a60e22f365924755c8c74ff77df0b84bd37a06fff3ea9b254de44ae3",
-    "backend/app/services/order_sheet_archive_service.py": "20f1ff7ce758c73ef2e496e742ac5630f4f2f948f59dcfd5094927e2cd7a0979",
+    "backend/app/services/order_sheet_archive_service.py": "fb95e0ac4eb466b2774af99eb6dcc624eebd889a6931bf5a6ecad8d88410fd90",
     "backend/app/services/order_sync_service.py": "eb3c8a522c045b5e3b70f87f506e91e336c16d518f536d14f750a894a0a68882",
     "backend/app/services/pricing_bom_sync_service.py": "1c50fb1355f51a2abfd131b7e944092b21b948eba1f244f177592667b5cef1c5",
     "backend/app/services/pricing_calc_service.py": "0ceb2f7bec7142febf381e2bf34a61b114de743f8057dd330d4ecf8e2be905b7",
@@ -128,7 +128,7 @@
     "backend/app/services/fulfillment_intake.py": "11e20545dfd3fbe504b09113317b576596fedfc9c75f657f2c58b49df1f06ab6",
     "backend/app/services/taobao_shipping.py": "389589da2e5214720384d7703e20502223460f61c2b470b2e5b72a5495303b96",
     "backend/app/services/interaction_notice_service.py": "4afebf36e5bbffd24b2407dbf3c1098d67806a5b14f17d225abdef44a3463239",
-    "backend/app/services/order_post_push_audit.py": "15a8b466a6cb892cceee5956cc7c479d3b83704cc2877a0b15b0ed28cf950471",
+    "backend/app/services/order_post_push_audit.py": "d070d19aa692df12239cae3476686e0c4754c71c90358f516d04bf3b07b2a2fa",
     "backend/app/api/imports.py": "85a3d2d56ef2ad55febecba935f997a253a5158497d133fe727197b44b824fe8",
     "backend/app/services/fulfillment_batch_service.py": "f6890fc1ff1cb588f70f317e35b7157927a2a3fd4077ffc16de691a56fbdacbe",
     "backend/app/models/fulfillment_intake.py": "63285e36a1ab0546b799bb12461b61391c600b9d5869cb2a4187f5a05554418c",
@@ -142,7 +142,8 @@
     "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86",
     "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
     "backend/app/services/urgent_fulfillment_feishu.py": "11cc8107abad327e74397a47a4d1d55dfe040892e0c9ea3e99afdb4a9671e2d6",
-    "backend/app/services/urgent_note_highlights.py": "ac0a1269922e6cc256de25566e806fe4dd322adc39f797a3d7d7c598915f50a7"
+    "backend/app/services/urgent_note_highlights.py": "ac0a1269922e6cc256de25566e806fe4dd322adc39f797a3d7d7c598915f50a7",
+    "backend/app/services/factory_provisional_quantity_service.py": "8eff7ead8312fab84a1ab215ab8d5c1f3649ce01244544d5dd3141ee9df0d3ab"
   },
   "scoped_review_20261116": {
     "paths": [

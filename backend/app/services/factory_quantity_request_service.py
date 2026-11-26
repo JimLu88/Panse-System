@@ -107,7 +107,20 @@ def question_card(record, *, status=None, choosing=False):
         body += (f"订单备注：{record['notes'] or '无'}\n\n"
                  "点击下方按钮选择实际成品数量，确认后自动生成正式制单图。\n"
                  "也可回复本卡片并 @机器人 填写数量，例如 1 或 2。未确认前请勿生产。")
+    if record.get('delivery_image_key') and not held:
+        state = ('数量已确认，正在更新原图' if record.get('delivery_update_pending') and confirmed else
+                 '已确认数量，原单已更新' if confirmed else '暂按1件已推送，数量待确认')
+        body = (f"畔色{record['factory_no']}单 · {state}\n"
+                f"子单：{record['identity']['sub_order_no']}\n"
+                f"原购买数量：{facts.purchase_quantity_label(record['identity']['purchase_qty'])}\n"
+                f"成品数量：{record.get('physical_qty') if confirmed else 1} 件"
+                + ('（人工已确认）' if confirmed else '（暂定，待确认）')
+                + "\n这是同一张生产单，确认后更新本卡和工厂表，不另下单。"
+                + ("" if confirmed else "\n请点击按钮选择实际数量，也可回复本卡片并 @机器人 填写数量。"))
     elements = [{'tag': 'div', 'text': {'tag': 'plain_text', 'content': body}}]
+    if record.get('delivery_image_key'):
+        elements.append({'tag': 'img', 'img_key': record['delivery_image_key'],
+                         'alt': {'tag': 'plain_text', 'content': '工厂下单图（同一单更新）'}})
     if not confirmed and record.get('state') in ('asking', 'awaiting_reply'):
         value = {'op': 'factory_quantity_choose', 'line_id': record['identity']['line_id'],
                  'revision': record.get('revision', 1)}
@@ -133,7 +146,7 @@ def refresh_cards(db, line_id):
     """Project quantity state; expired cards get one protected status reply."""
     row = _row(db, PREFIX + str(line_id))
     record = _read(row)
-    if not record:
+    if not record or record.get('delivery_update_pending'):
         return
     failed = []
     for mid in _card_ids(record):
@@ -224,7 +237,7 @@ def request_quantity(db, *, line_id):
     if line.factory_delivery_message_id or line.factory_delivery_sent_at or line.factory_delivery_state not in (None, '', 'failed'):
         db.rollback()
         return {'state': 'delivery_claimed'}
-    sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
+    sheet = factory_sheet.build_for_order_line(db, order.id, line.id, allow_provisional=False)
     if not any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
         db.rollback()
         return {'state': 'quantity_already_known'}
@@ -357,13 +370,20 @@ def _confirm(db, line_id, qty, actor, evidence_ref, mid):
             _notice_once(db, mid, f"此前已确认 {record['physical_qty']} 件，本次回复不同，未覆盖、未重复发单。请联系订单负责人核对，勿按本次回复改变生产。")
             return {**result, 'state': 'conflicting_reply'}
         return {**result, 'state': record['state'], 'duplicate': True}
+    if record.get('delivery_update_pending'):
+        db.rollback()
+        return {**result, 'state': 'updating'}
     if record['state'] != 'awaiting_reply':
         db.rollback()
         return {**result, 'state': record['state']}
     line = db.scalar(select(OrderDetail).where(OrderDetail.id == line_id).with_for_update().execution_options(populate_existing=True))
     order = db.scalar(select(Order).where(Order.order_no == line.order_no).with_for_update().execution_options(populate_existing=True)) if line else None
+    from app.services import factory_provisional_quantity_service as provisional
+    provisional_sent = bool(order and line and provisional.can_confirm(
+        db, order, line, record.get('delivery_message_id')))
     if (not _eligible(db, line, order) or facts._identity(order, line) != record['identity']
-            or line.factory_delivery_message_id or line.factory_delivery_sent_at or line.factory_delivery_state not in (None, '', 'failed')):
+            or (not provisional_sent and (line.factory_delivery_message_id or line.factory_delivery_sent_at
+                or line.factory_delivery_state not in (None, '', 'failed')))):
         record.update(state='held', reason='订单变化、关闭或已有发送占用，旧卡片不能确认')
         _save(db, row, record)
         _notice_once(db, mid, '订单状态、规格、购买数量或备注已有变化，或者已经进入发送。此次未确认，请核对最新订单；不要重复回复旧卡片。')
@@ -371,14 +391,19 @@ def _confirm(db, line_id, qty, actor, evidence_ref, mid):
     try:
         facts.confirm_quantity(db, line_id=line_id, expected_sku=line.sku_code,
                                expected_purchase_qty=line.qty, physical_qty=qty, actor=actor,
-                               evidence_ref=evidence_ref, commit=False)
+                               evidence_ref=evidence_ref, commit=False,
+                               provisional_message_id=record.get('delivery_message_id') if provisional_sent else None)
         record.update(state='confirmed', physical_qty=qty, actor=actor,
-                      reply_message_id=mid, confirmation_ref=evidence_ref, confirmed_at=_now(), card_sync_pending=True)
+                      reply_message_id=mid, confirmation_ref=evidence_ref, confirmed_at=_now(), card_sync_pending=True,
+                      **({'delivery_update_pending': True} if provisional_sent else {}))
         _save(db, row, record)
     except ValueError:
         db.rollback()
         _notice_once(db, mid, '订单已有其他数量确认或发送状态变化，本次没有覆盖，也没有重复发单，请人工核对。')
         return {**result, 'state': 'held'}
+    if provisional_sent:
+        delivery = provisional.deliver(db, line_id)
+        return {**result, **delivery, 'physical_qty': qty}
     refresh_cards(db, line_id)
     from app.services import order_sheet_archive_service as sheets
     delivery = sheets.reconcile_order_line_delivery(db, limit=1, only_sub_order_nos={line.sub_order_no})
@@ -458,6 +483,16 @@ def complete_pending_receipts(db, *, only_sub_order_nos=None):
     for row in rows:
         record = _read(row)
         if only_sub_order_nos is not None and record['identity']['sub_order_no'] not in only_sub_order_nos:
+            continue
+        if record.get('delivery_message_id'):
+            from app.services import factory_provisional_quantity_service as provisional
+            line_id = record['identity']['line_id']
+            if record.get('delivery_update_pending'):
+                provisional.deliver(db, line_id)
+            elif record.get('factory_sync_pending'):
+                provisional.sync_table(db, line_id)
+            if record.get('card_sync_pending'):
+                refresh_cards(db, line_id)
             continue
         if record.get('card_sync_pending'):
             refresh_cards(db, record['identity']['line_id'])
@@ -572,9 +607,9 @@ def remind_pending(db, *, only_sub_order_nos=None):
         line = db.get(OrderDetail, record['identity']['line_id'])
         order = db.scalar(select(Order).where(Order.order_no == line.order_no)) if line else None
         if (not _eligible(db, line, order) or record['identity'] != facts._identity(order, line)
-                or line.factory_delivery_message_id or line.factory_delivery_sent_at
-                or line.factory_delivery_state not in (None, '', 'failed')
-                or facts.quantity_confirmation(db, order, line)):
+                or (not record.get('provisional_delivered') and (line.factory_delivery_message_id or line.factory_delivery_sent_at
+                    or line.factory_delivery_state not in (None, '', 'failed')))
+                or record.get('delivery_update_pending') or facts.quantity_confirmation(db, order, line)):
             db.rollback()
             continue
         _remind(db, row, record)

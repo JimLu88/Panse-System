@@ -438,7 +438,8 @@ def _production_projection(db, order, line=None):
             '数量确认依据':'制单事实读取失败：' + type(exc).__name__,
             '生产事实状态':'当前事实读取失败，请勿据此新增生产'}}
     confirmed = getattr(sheet, 'quantity_confirmation', None)
-    qty_unknown = (not confirmed and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
+    provisional = getattr(sheet, 'quantity_provisional', None)
+    qty_unknown = (not confirmed and not provisional and (type(purchase_qty) is not int or purchase_qty <= 0)) or any(
         w.code in {'production_quantity_unverified', 'sales_detail_missing'} for w in sheet.warnings)
     blockers = [w.code for w in sheet.warnings if w.code in {'production_quantity_unverified', 'sales_detail_missing', 'linked_topup_binding_stale'}]
     size_unverified = not sheet.size_info or any(w.code in (
@@ -451,11 +452,11 @@ def _production_projection(db, order, line=None):
         'quantity': quantity, 'size': sheet.size_info or '尺寸尚未核实', 'blocked': bool(blockers),
         'fields': {
             '原购买数量': purchase_qty if type(purchase_qty) is int and purchase_qty > 0 else None,
-            '确认成品数量': quantity,
-            '数量确认状态': ('待确认，请勿生产' if qty_unknown else '人工已确认' if confirmed else '按有效购买数'),
-            '数量确认依据': ((confirmed.get('evidence_ref') or '') if confirmed else
+            '确认成品数量': None if provisional else quantity,
+            '数量确认状态': ('暂按1件，待确认' if provisional else '待确认，请勿生产' if qty_unknown else '人工已确认' if confirmed else '按有效购买数'),
+            '数量确认依据': ('用户要求待确认订单暂按1件推送，确认后更新原单' if provisional else (confirmed.get('evidence_ref') or '') if confirmed else
                          '原购买记录；无定制计价数量歧义' if not qty_unknown else '缺有效成品数量依据'),
-            '生产事实状态': (('当前事实待核实，请勿据此新增生产：' + ', '.join(blockers)) if blockers
+            '生产事实状态': ('暂按1件下单，数量待确认；确认后更新本单，不新增生产单' if provisional else ('当前事实待核实，请勿据此新增生产：' + ', '.join(blockers)) if blockers
                          else '尺寸尚未核实；数量按制单口径核对（不代表已经生产或发齐）' if size_unverified
                          else '数量与已提供尺寸按制单口径核对（不代表已经生产或发齐）')
                          + ('；其他制单提醒：' + ', '.join(other_warnings) if other_warnings else ''),

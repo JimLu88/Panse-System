@@ -258,7 +258,19 @@ def audit_sent_line_content(lines: list[OrderDetail], sent: dict[str, ImportedFi
             and bool(confirmation.get('actor')) and bool(confirmation.get('evidence_ref')))
         if confirmation and not valid_confirmation:
             wrong.append('quantity_confirmation_invalid')
-        if snapshot.get('qty') != line.qty and not valid_confirmation:
+        provisional = snapshot.get('quantity_provisional') or {}
+        pidentity = provisional.get('identity') or {}
+        valid_provisional = (provisional.get('schema') == 'factory-quantity-provisional-v1'
+            and provisional.get('policy') == 'factory_quantity_provisional_one_v1'
+            and provisional.get('physical_qty') == snapshot.get('qty') == 1
+            and snapshot.get('purchase_qty') == line.qty
+            and pidentity.get('line_id') == line.id and pidentity.get('order_no') == line.order_no
+            and pidentity.get('sub_order_no') == line.sub_order_no
+            and pidentity.get('sku_code') == line.sku_code and pidentity.get('purchase_qty') == line.qty
+            and bool(provisional.get('evidence_ref')))
+        if provisional and not valid_provisional:
+            wrong.append('quantity_provisional_invalid')
+        if snapshot.get('qty') != line.qty and not valid_confirmation and not valid_provisional:
             wrong.append('quantity_changed')
         if snapshot.get('sku_code') != line.sku_code:
             wrong.append('sku_changed')

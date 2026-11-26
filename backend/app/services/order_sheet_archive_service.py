@@ -312,6 +312,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
     if getattr(sheet, 'quantity_confirmation', None):
         from app.services.factory_production_evidence import purchase_quantity_label
         quantity_text = f'已确认成品 {int(sheet.qty)} 件（原拍下数量 {purchase_quantity_label(sheet.purchase_qty)}）'
+    if getattr(sheet, 'quantity_provisional', None):
+        quantity_text = f'暂按 1 件下单 · 数量待确认（原购买数量 {sheet.purchase_qty}）；确认后更新本单，不重复下单'
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
@@ -607,6 +609,7 @@ def archive_sent_line_snapshot(
                 "product_code": rendered_sheet.product_code,
                 "purchase_qty": rendered_sheet.purchase_qty,
                 "quantity_confirmation": rendered_sheet.quantity_confirmation,
+                "quantity_provisional": rendered_sheet.quantity_provisional,
                 "size_info": rendered_sheet.size_info,
                 "size_unverified": '尺寸尚未核实' in (rendered_sheet.production_note or ''),
                 "production_note": rendered_sheet.production_note,
@@ -713,6 +716,17 @@ def reconcile_order_line_delivery(
                 line.id,
                 address_pending_for_production=address_pending_for_production,
             )
+            if sheet.quantity_provisional:
+                from app.services import factory_provisional_quantity_service as provisional
+                line.factory_delivery_state = 'failed'
+                db.commit()
+                outcome = provisional.deliver(db, line.id)
+                if outcome.get('state') == 'sent':
+                    pushed.append(sub_order_no)
+                else:
+                    failed.append({'order_no': order.order_no, 'sub_order_no': sub_order_no,
+                                   'reason': outcome.get('state'), 'quantity_delivery': outcome})
+                continue
             if any(w.code == 'production_quantity_unverified' for w in sheet.warnings):
                 from app.services import factory_quantity_request_service as quantities
                 line.factory_delivery_state = 'failed'
@@ -2061,7 +2075,7 @@ def push_daily(db: Session) -> dict:
         result["summary_suppressed"] = "address_release_only"
         return result
     if result.get("_run_status") == "fail":
-        text = "下单图自动推送未完成：" + str(result.get("_error") or "未返回原因")
+        text = ("工厂推单核对提醒：" if result.get("post_push_audit") else "下单图自动推送未完成：") + str(result.get("_error") or "未返回原因")
     elif image_count:
         head = f"今日推送 {image_count} 张工厂下单图到工厂群，报表与飞书核对完成"
         if result["images_remaining"]:

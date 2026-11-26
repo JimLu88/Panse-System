@@ -118,14 +118,18 @@ def quantity_confirmation(db, order, line):
 
 
 def confirm_quantity(db, *, line_id, expected_sku, expected_purchase_qty,
-                     physical_qty, actor, evidence_ref, commit=True):
+                     physical_qty, actor, evidence_ref, commit=True, provisional_message_id=None):
     """Operator-only: caller must hold explicit user confirmation; no inference."""
     if type(physical_qty) is not int or physical_qty<=0 or not actor or not evidence_ref:
         raise ValueError('缺少明确实物数量、确认人或依据')
     line=db.scalar(select(OrderDetail).where(OrderDetail.id==line_id).with_for_update())
     order=db.scalar(select(Order).where(Order.order_no==line.order_no)) if line else None
+    allowed_sent = False
+    if provisional_message_id and order:
+        from app.services import factory_provisional_quantity_service as provisional
+        allowed_sent = provisional.can_confirm(db, order, line, provisional_message_id)
     if (not order or line.sku_code!=expected_sku or line.qty!=expected_purchase_qty
-            or line.factory_delivery_message_id or line.factory_delivery_state not in (None,'','failed')):
+            or (not allowed_sent and (line.factory_delivery_message_id or line.factory_delivery_state not in (None,'','failed')))):
         raise ValueError('订单事实变化或已有发送/未知记录，不能写确认')
     identity=_identity(order,line)
     key=f'factory_quantity_confirmation:{line.id}'
