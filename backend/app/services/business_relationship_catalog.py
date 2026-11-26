@@ -490,7 +490,7 @@ EDGES += [edge('finance.balance_source','finance.balance_display','最新余额�
 
 NODES += [
     node('order.urgent_deadlines','紧急订单内部交期','order','原交期 / 11天紧急 / 5天非常紧急','services/fulfillment_deadlines.py','def pending_orders','只读订单；部分退款继续跟进，全额退款及已发子单退出；不改订单交期、发货或库存。'),
-    node('feishu.urgent_daily','紧急订单每日表','sync','统计日期 + 订单号 / 独立table_id','services/urgent_fulfillment_feishu.py','def _sync','复用原工厂base但不写原表；按日保留快照，同日更新不新增重复；回读后每天仅发一条提醒群链接。'),
+    node('feishu.urgent_daily','紧急订单每日表','sync','统计日期 + 订单号 / 独立table_id','services/urgent_fulfillment_feishu.py','def _sync','复用原工厂base但不写原表；精确有效子单的工厂下单图附件去重同步，多子单保留多图，缺图不清既有附件；按日保留快照，同日更新不新增重复；回读后每天仅发一条提醒群链接。'),
     node('feishu.alert_quiet','提醒群精简规则','sync','通知标题 / 等级 / 路由','services/notify_service.py','def _erp_only_in_alert_chat','普通报表、数据过期及通用重复价保提示留ERP；保留登录、口令、实际异常、具体活动处理提示及业务回复。'),
 ]
 EDGES += [

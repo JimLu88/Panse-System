@@ -44,7 +44,7 @@
     "backend/app/services/approval_service.py": "31027a07d4f278ee4926b042bbd473f1c732eb48063708e7b7cd0a2f30380c76",
     "backend/app/services/automation_pipeline_service.py": "074fabac052974bd322bad75e4695e84ecb29c4209b3d61b7c664aab37fe317a",
     "backend/app/services/backup_service.py": "3cfd5d4b57adaa1692919264b6575e0eed89dcdeaad41a2fedb274876b285012",
-    "backend/app/services/business_relationship_catalog.py": "c554bb4ad2dbcf86fbdcbb846256d2962989dd148be0887a1a2f5b942ee285b1",
+    "backend/app/services/business_relationship_catalog.py": "3d9102b4624a7d46620f1983a206d6a7ceade90b68e237110f05ae794c2cb741",
     "backend/app/services/cash_flow_service.py": "bd36372efe59d19e856e565485acdaf610675fdce238e4b33c9cdcd34eedd97f",
     "backend/app/services/settlement_import_service.py": "58fac5ba8d0b1656a714d22f64d81402c6549cb9f903cfa20fb4150f869691ab",
     "backend/app/services/feedback_notification_service.py": "22ff90e5246c4e6f1192d6dfed37d2854bb9f2483ae7d43ff1654cf5375cf837",
@@ -141,7 +141,7 @@
     "backend/app/services/campaign_pipeline_audit_vendor.py": "41f4939eed4a93df1d0b8ae3077134df23ca5328e3696486c605a85640ed8440",
     "backend/app/services/campaign_pipeline_comparison.py": "bcbb705f63bbb3dd4cc4759d6947ff117188c3e9e7843e226c0051810c1dbe86",
     "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
-    "backend/app/services/urgent_fulfillment_feishu.py": "8c4e341b3570874e4fbe62c1152a10528c2d2f66fade4c1f2437967386930997"
+    "backend/app/services/urgent_fulfillment_feishu.py": "e5d57aa1e9df4577d36dcde57bee4a1fae5344d3eae330e6a83fe89b72ebb4bf"
   },
   "scoped_review_20261116": {
     "paths": [

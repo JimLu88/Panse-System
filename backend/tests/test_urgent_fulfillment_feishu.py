@@ -168,3 +168,42 @@ def test_official_empty_table_and_incomplete_pages(db_session, monkeypatch, payl
 ])
 def test_number_readback_preserves_values(actual, expected, equal):
     assert service._same({"剩余天数": actual}, {"剩余天数": expected}) is equal
+
+
+def test_images_follow_exact_active_children_and_ignore_readback_metadata():
+    source = [
+        {"fields": {"订单号": ROW["order_no"], "子订单号": "child", "工厂下单图": [{"file_token": "a", "name": "order.jpg", "url": "temporary"}]}},
+        {"fields": {"订单号": ROW["order_no"], "子订单号": "child2", "工厂下单图": [{"file_token": "b"}, {"file_token": "a"}]}},
+        {"fields": {"订单号": ROW["order_no"], "子订单号": "refunded", "工厂下单图": [{"file_token": "wrong"}]}},
+        {"fields": {"订单号": "other", "子订单号": "child", "工厂下单图": [{"file_token": "wrong2"}]}},
+    ]
+    row = {**ROW, "sub_order_nos": ["child", "child2"]}
+    fields = next(iter(service.build_rows([row], source, DAY, DAY).values()))
+    assert fields["工厂下单图"] == [{"file_token": "a"}, {"file_token": "b"}]
+    assert service._same({"工厂下单图": [{"file_token": "b", "size": 42}, {"file_token": "a", "url": "changed"}]}, {"工厂下单图": fields["工厂下单图"]})
+    assert not service._same({"工厂下单图": [{"file_token": "wrong"}]}, {"工厂下单图": fields["工厂下单图"]})
+
+
+def test_missing_source_does_not_clear_existing_images(db_session, remote):
+    service._sync(db_session, [ROW], DAY, DAY)
+    remote["records"][0]["fields"]["工厂下单图"] = [{"file_token": "employee-image"}]
+    service._sync(db_session, [ROW], DAY, DAY+" 10:00")
+    assert remote["records"][0]["fields"]["工厂下单图"] == [{"file_token": "employee-image"}]
+    assert len(remote["messages"]) == 1
+
+
+def test_image_field_created_once_and_unknown_reconciled(db_session, monkeypatch):
+    monkeypatch.setattr(service, "_tables", lambda *a: [{"table_id": "owned", "name": service.TABLE_NAME}])
+    fields = [{"field_name": n, "type": t} for n, t in service.FIELDS if n != "工厂下单图"]
+    monkeypatch.setattr(service.fc, "list_table_fields", lambda *a: deepcopy(fields))
+    calls = []
+    def create(db, base, table, name, kind):
+        calls.append(table)
+        fields.append({"field_name": name, "type": kind})
+        raise TimeoutError("unknown but created")
+    monkeypatch.setattr(service.fc, "create_field", create)
+    with pytest.raises(TimeoutError):
+        service._ensure_table(db_session, "base", {"app_token": "base", "table_id": "owned"})
+    assert service._ensure_table(db_session, "base", service._load(db_session)) == "owned"
+    assert calls == ["owned"]
+    assert not service._load(db_session).get("image_field_pending")

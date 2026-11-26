@@ -21,7 +21,7 @@ FIELDS = [(n, 1) for n in (
     "工厂下单号", "统计日期", "紧急程度", "商品名称", "SKU规格", "目标日期",
     "跟进事项", "提醒原因", "清单状态", "订单号", "子订单号", "记录键", "更新时间",
     "退款提示",
-)] + [("剩余天数", 2)]
+)] + [("剩余天数", 2), ("工厂下单图", 17)]
 _LOCK = threading.Lock()
 _PG_LOCK = 726112601
 
@@ -102,8 +102,18 @@ def _ensure_table(db, token, state):
             raise RuntimeError("紧急订单表创建后未核实")
     table = matched[0]["table_id"]
     fields = {f["field_name"]: f["type"] for f in fc.list_table_fields(db, token, table)}
+    # Only the explicitly owned urgent table may receive this additive field.
+    # A timed-out creation is read back next time, never blindly repeated.
+    if "工厂下单图" not in fields and state.get("table_id") == table:
+        if state.get("image_field_pending"):
+            raise RuntimeError("紧急表图片列创建结果待核对，不重复创建")
+        state["image_field_pending"] = True
+        _save(db, state)
+        fc.create_field(db, token, table, "工厂下单图", 17)
+        fields = {f["field_name"]: f["type"] for f in fc.list_table_fields(db, token, table)}
     if any(fields.get(n) != t for n, t in FIELDS):
         raise RuntimeError("紧急订单表字段不匹配，不覆盖已有表结构")
+    state.pop("image_field_pending", None)
     state.update(app_token=token, table_id=table, table_create_pending=False)
     _save(db, state)
     return table
@@ -138,7 +148,17 @@ def build_rows(rows, source, day, updated_at):
             "更新时间": updated_at, "退款提示": row.get("refund_note", ""),
             "剩余天数": days,
         }
+        attachments = _attachments([image for original in originals
+                                    for image in factory._remote_attachment_value(original)])
+        if attachments:
+            result[key]["工厂下单图"] = attachments
     return result
+
+
+def _attachments(value):
+    return list({item["file_token"]: {"file_token": item["file_token"]}
+                 for item in (value or [])
+                 if isinstance(item, dict) and item.get("file_token")}.values())
 
 
 def _index(records):
@@ -152,7 +172,9 @@ def _index(records):
 
 
 def _same(actual, expected):
-    return all((_number_equal(actual.get(k), v) if k == "剩余天数" else _text(actual.get(k)) == _text(v))
+    return all(({x["file_token"] for x in _attachments(actual.get(k))} ==
+                {x["file_token"] for x in _attachments(v)} if k == "工厂下单图" else
+                _number_equal(actual.get(k), v) if k == "剩余天数" else _text(actual.get(k)) == _text(v))
                for k, v in expected.items())
 
 
@@ -200,6 +222,10 @@ def _sync(db, rows, day, updated_at):
     state["pending_rows"] = []
     source = fc.list_records(db, token, factory_table)
     expected = build_rows(rows, source, day, updated_at)
+    for key, fields in expected.items():
+        if key in current and fields.get("工厂下单图"):
+            fields["工厂下单图"] = _attachments(
+                factory._remote_attachment_value(current[key]["fields"]) + fields["工厂下单图"])
     # Same-day rows that leave the active set are retained with an explicit
     # status; previous days and any employee-added columns remain untouched.
     for key, record in current.items():
