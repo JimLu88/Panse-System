@@ -130,3 +130,13 @@ def test_expired_card_replacement_once(provisional,monkeypatch):
     assert p.deliver(f.db,f.line.id)['state']=='sent'
     assert f.line.factory_delivery_message_id=='REPLACEMENT'
     assert p.deliver(f.db,f.line.id)['duplicate']
+
+
+def test_archive_source_fits_production_postgres_column(provisional,monkeypatch):
+    from app.models.import_file import ImportedFile
+    f=provisional;archive=sheets.archive_sent_line_snapshot
+    def checked(*a,**kw):
+        assert len(kw['source']) <= ImportedFile.__table__.c.source.type.length
+        return archive(*a,**kw)
+    monkeypatch.setattr(sheets,'archive_sent_line_snapshot',checked)
+    assert p.deliver(f.db,f.line.id)['state']=='sent'

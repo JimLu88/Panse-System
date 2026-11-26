@@ -143,7 +143,7 @@
     "backend/app/services/campaign_pipeline_integration.py": "0f7e8b34394b01b57c2b7eefd3d8f415d90a12ffd8394630b1e2e7728384fcac",
     "backend/app/services/urgent_fulfillment_feishu.py": "11cc8107abad327e74397a47a4d1d55dfe040892e0c9ea3e99afdb4a9671e2d6",
     "backend/app/services/urgent_note_highlights.py": "ac0a1269922e6cc256de25566e806fe4dd322adc39f797a3d7d7c598915f50a7",
-    "backend/app/services/factory_provisional_quantity_service.py": "8eff7ead8312fab84a1ab215ab8d5c1f3649ce01244544d5dd3141ee9df0d3ab"
+    "backend/app/services/factory_provisional_quantity_service.py": "0042ff753c1e58df44c08a71406d2f240a9006c494a6475d0cf4083ad33bcb6b"
   },
   "scoped_review_20261116": {
     "paths": [

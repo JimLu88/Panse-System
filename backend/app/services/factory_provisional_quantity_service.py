@@ -121,7 +121,7 @@ def _deliver(db, line_id):
             proposed['expired_card_replacements'] = latest['expired_card_replacements']
             proposed['card_message_id'] = mid
         sheets.archive_sent_line_snapshot(db, order, line, png,
-            source='factory_quantity_card_update', rendered_sheet=sheet)
+            source='quantity_card', rendered_sheet=sheet)
         line.factory_delivery_state = 'sent'
         line.factory_delivery_message_id = mid
         line.factory_delivery_sent_at = line.factory_delivery_sent_at or datetime.now(timezone.utc)
