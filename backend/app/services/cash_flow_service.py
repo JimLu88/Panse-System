@@ -576,11 +576,21 @@ def compute_summary(db: Session) -> dict:
             stamp = "统计日期未完整登记" if dates else "统计日期未登记"
         else:
             stamp = "统计日期：" + (dates[0] if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}")
-        return "、".join(b.account_name for b in selected) + " · " + stamp
+        description = "、".join(b.account_name for b in selected) + " · " + stamp
+        estimates = [b for b in selected if "余利宝" in b.account_name]
+        if estimates:
+            description += "；" + "；".join(
+                f"余利宝估算余额 {_d(b.closing_balance):,.2f} 元（截至 {b.as_of_date.isoformat() if b.as_of_date else '日期未登记'}，按流水估算，非实时余额）"
+                for b in estimates)
+        return description
+
+    alipay_label = "支付宝企业号等账户余额"
+    if any("余利宝" in b.account_name and _classify_account(b.account_name) == "alipay" for b in balances):
+        alipay_label += "（含余利宝估算）"
 
     additions = [
         {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": deposit_source},
-        {"key": "alipay_balance", "label": "支付宝企业号等账户余额", "amount": bal_alipay, "manual": False, "source": balance_source("alipay")},
+        {"key": "alipay_balance", "label": alipay_label, "amount": bal_alipay, "manual": False, "source": balance_source("alipay")},
         {"key": "alipay_main_balance", "label": "支付宝主力号余额", "amount": bal_main, "manual": False, "source": balance_source("alipay_main")},
         {"key": "bank_balance", "label": "银行卡余额", "amount": bal_bank, "manual": False, "source": balance_source("bank")},
         {"key": "aggregate_balance", "label": "淘宝聚合结算余额", "amount": bal_aggregate, "manual": False, "source": "账户余额汇总"},
