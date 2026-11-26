@@ -26,6 +26,26 @@ def _add_order(db, order_no, status, paid, *, theoretical=None, is_refill=False)
     ))
 
 
+def test_main_and_bank_display_separately_without_double_count(db_session):
+    db=db_session
+    before=cash_flow_service.compute_summary(db)['total_additions']
+    _add_balance(db,'主力号',2026,10,4111.07)
+    _add_balance(db,'主力号',2026,11,4997.68)
+    _add_balance(db,'银行卡-个体户私人',2026,6,30000)
+    _add_balance(db,'万师傅',2026,11,12)
+    db.flush()
+    main=db.query(AccountBalance).filter_by(account_name='主力号',period_month=11).one()
+    main.as_of_date=date(2026,11,26);db.flush()
+    summary=cash_flow_service.compute_summary(db)
+    rows={r['key']:r for r in summary['additions']}
+    assert rows['alipay_main_balance']['amount']==Decimal('4997.68')
+    assert rows['bank_balance']['amount']==Decimal('30000')
+    assert rows['other_balance']['amount']==Decimal('12')
+    assert '2026-11-26' in rows['alipay_main_balance']['source']
+    assert '统计日期未登记' in rows['bank_balance']['source']
+    assert summary['total_additions']-before==Decimal('35009.68')
+
+
 def test_cash_flow_summary_formula(db_session):
     db = db_session
 
@@ -68,7 +88,8 @@ def test_cash_flow_summary_formula(db_session):
     assert add["alipay_balance"] == Decimal("212051.48")   # 207095.16 + 4956.32 (取最新期)
     assert add["aggregate_balance"] == Decimal("44481.56")
     assert add["promotion_balance"] == Decimal("3553.44")
-    assert add["other_balance"] == Decimal("30000")        # 银行卡也计入
+    assert add["bank_balance"] == Decimal("30000")
+    assert add["other_balance"] == Decimal("0")
     assert add["awaiting_receipt"] == Decimal("2000")
     assert add["not_shipped"] == Decimal("1000")
 

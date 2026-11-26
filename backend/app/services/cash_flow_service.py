@@ -4,10 +4,10 @@
 
 加项 (现在还有多少能动用的钱):
   (a) 平台保证金            — 手动常量 (settings: cashflow_shop_deposit)
-  (b) 支付宝账户余额(全部)  — AccountBalance 最新期末, 账户名含「支付宝」全部账户
+  (b) 支付宝企业号等账户余额 — AccountBalance 最新期末；主力号单独列示
   (c) 淘宝聚合结算账户余额  — 账户名含「聚合」
   (d) 推广账户余额          — 账户名含「推广」
-  (e) 其他账户余额(银行卡等)— 其余账户 (银行卡/个体户私账等也是真金, 计入)
+  (e) 主力号、银行卡及其余账户余额 — 分行显示来源与统计日期，每个账户只计一次
   (f) 订单待确认收货金额    — Σ paid_amount, status=shipped (已发货未签收)
   (g) 订单未发货金额        — Σ paid_amount, status=paid   (已付款未发货)
 
@@ -100,6 +100,10 @@ def _latest_balances(db: Session) -> list[AccountBalance]:
 
 def _classify_account(name: str) -> str:
     n = name or ""
+    if n in {"主力号", "支付宝主力号"}:
+        return "alipay_main"
+    if "银行卡" in n:
+        return "bank"
     if "支付宝" in n:
         return "alipay"
     if "聚合" in n:
@@ -513,6 +517,7 @@ def compute_summary(db: Session) -> dict:
         deposit_source = "手动维护(单值)"
 
     bal_alipay = bal_aggregate = bal_promotion = bal_other = Decimal("0")
+    bal_main = bal_bank = Decimal("0")
     balances = _latest_balances(db)
     latest_period: Optional[tuple[int, int]] = None
     bal_as_of: Optional[date] = None   # 余额统计日期 (新鲜度按此算, 不用入库时间)
@@ -521,6 +526,10 @@ def compute_summary(db: Session) -> dict:
         amt = _d(b.closing_balance)
         if cat == "alipay":
             bal_alipay += amt
+        elif cat == "alipay_main":
+            bal_main += amt
+        elif cat == "bank":
+            bal_bank += amt
         elif cat == "aggregate":
             bal_aggregate += amt
         elif cat == "promotion":
@@ -558,12 +567,25 @@ def compute_summary(db: Session) -> dict:
     refill_commission = _refill_unpaid_commission(db)
     tax_q = _quarterly_tax(db)   # 待缴税费(季度): 当季必扣 + 上季未标已缴的
 
+    def balance_source(category):
+        selected = [b for b in balances if _classify_account(b.account_name) == category]
+        dates = sorted({b.as_of_date.isoformat() for b in selected if b.as_of_date})
+        if not selected:
+            return "账户余额汇总 · 暂无记录"
+        if any(b.as_of_date is None for b in selected):
+            stamp = "统计日期未完整登记" if dates else "统计日期未登记"
+        else:
+            stamp = "统计日期：" + (dates[0] if len(dates) == 1 else f"{dates[0]} 至 {dates[-1]}")
+        return "、".join(b.account_name for b in selected) + " · " + stamp
+
     additions = [
         {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": deposit_source},
-        {"key": "alipay_balance", "label": "支付宝账户余额(全部)", "amount": bal_alipay, "manual": False, "source": "账户余额汇总"},
+        {"key": "alipay_balance", "label": "支付宝企业号等账户余额", "amount": bal_alipay, "manual": False, "source": balance_source("alipay")},
+        {"key": "alipay_main_balance", "label": "支付宝主力号余额", "amount": bal_main, "manual": False, "source": balance_source("alipay_main")},
+        {"key": "bank_balance", "label": "银行卡余额", "amount": bal_bank, "manual": False, "source": balance_source("bank")},
         {"key": "aggregate_balance", "label": "淘宝聚合结算余额", "amount": bal_aggregate, "manual": False, "source": "账户余额汇总"},
         {"key": "promotion_balance", "label": "推广账户余额", "amount": bal_promotion, "manual": False, "source": "账户余额汇总"},
-        {"key": "other_balance", "label": "其他账户余额(银行卡等)", "amount": bal_other, "manual": False, "source": "账户余额汇总"},
+        {"key": "other_balance", "label": "其余账户余额", "amount": bal_other, "manual": False, "source": balance_source("other")},
         {"key": "awaiting_receipt", "label": "订单待确认收货金额", "amount": awaiting_receipt, "manual": False, "source": "订单(已发货)"},
         {"key": "not_shipped", "label": "订单未发货金额", "amount": not_shipped, "manual": False, "source": "订单(已付款)"},
         {"key": "factory_advance", "label": "工厂预付款(待抵扣)", "amount": factory_advance_balance,

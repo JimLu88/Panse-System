@@ -484,3 +484,6 @@ EDGES += [
 
 NODES += [node('campaign.ai_takeover','活动异常AI先完成本场','campaign','failure_recovery / repair_timing','services/campaign_policy_service.py','def failure_recovery_action','先确认程序停止写入并核对原任务，执行AI完成本场授权范围，官方全量核对后再修代码；未知先回读，成功不重传，不伪称自动唤醒AI。')]
 EDGES += [edge('campaign.pipeline_receipt','campaign.ai_takeover','异常交给执行AI','程序失败或结果未知','先完成业务再修程序；接管不自动解除原占位','services/campaign_pipeline_integration.py','def record_receipt',kind='boundary'),edge('campaign.controller','campaign.ai_takeover','旧连续入口异常同样接管','准备或派发失败','不因程序故障改为先修代码；同一原任务核对后接手','services/campaign_continuous_runtime.py','def readiness',kind='boundary')]
+
+NODES += [node('finance.balance_source','逐账户余额事实','finance','AccountBalance.account_name / as_of_date / closing_balance','models/finance.py','class AccountBalance','按账户取最新期；余额日期不以入库日代替。'),node('finance.balance_display','可用资金逐类余额展示','finance','alipay_main_balance / bank_balance / other_balance','services/cash_flow_service.py','def compute_summary','主力号与银行卡单列，显示各自来源日期；只拆展示，不修改账户余额，每个账户仅计一次。')]
+EDGES += [edge('finance.balance_source','finance.balance_display','最新余额分行汇总','每个账户取最新期并互斥分类','拆分前后加项总额不变，缺统计日期明确标出','services/cash_flow_service.py','def _classify_account')]
