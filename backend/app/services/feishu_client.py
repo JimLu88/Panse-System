@@ -267,6 +267,10 @@ def list_records(db: Session, app_token: str, table_id: str,
         data = _req(db, "GET", base, params=params)
         if not isinstance(data, dict) or not isinstance(data.get('has_more'), bool):
             raise FeishuError('invalid_pagination_metadata: explicit has_more required')
+        # Feishu's official empty-table response is items=null,total=0.
+        # Accept only that explicit empty first page, never an incomplete page.
+        if not out and data.get('items') is None and data.get('total') == 0 and data['has_more'] is False:
+            return []
         if not isinstance(data.get('items', []), list):
             raise FeishuError('invalid_pagination_items')
         for item in data.get("items", []) or []:

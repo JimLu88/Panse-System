@@ -137,3 +137,18 @@ def test_table_create_recovered_from_intent(db_session, monkeypatch):
     assert len(tables) == 1
     with pytest.raises(RuntimeError, match="不接管"):
         service._ensure_table(db_session, "base", {})
+
+
+@pytest.mark.parametrize("payload,valid", [
+    ({"has_more": False, "items": None, "total": 0}, True),
+    ({"has_more": False, "items": None, "total": 3}, False),
+    ({"has_more": True, "items": None, "total": 0}, False),
+    ({"has_more": False, "items": "invalid", "total": 0}, False),
+])
+def test_official_empty_table_and_incomplete_pages(db_session, monkeypatch, payload, valid):
+    monkeypatch.setattr(service.fc, "_req", lambda *a, **kw: payload)
+    if valid:
+        assert service.fc.list_records(db_session, "base", "empty") == []
+    else:
+        with pytest.raises(service.fc.FeishuError, match="invalid_pagination"):
+            service.fc.list_records(db_session, "base", "empty")
